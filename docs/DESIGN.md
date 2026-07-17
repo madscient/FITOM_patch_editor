@@ -180,6 +180,55 @@ GUIからは一切編集できない状態になっていた。`Profile.h`/`.cpp
 あり、本ライブラリの実装後にFITOM_X側で拡張された可能性がある。次回
 着手する際は`docs/STATUS.md`の既知の未対応一覧を参照。
 
+### D-009: `banks.*[].file` の相対パス解決基点をFITOM_X側の仕様変更に追従・確認
+
+FITOM_X本体側で、`profile.json`の`banks.*[].file`(hw_banks/sw_banks/
+patch_banks/drum_banks/scc_wave_banks/pcm_banks)の相対パス解決基点が、
+「起動時のカレントワーキングディレクトリ」から「プロファイルファイル
+自身が置かれているディレクトリ」に変更された(FITOM_X側コミット
+`eed0b4a "Fix. banks.*[].file resolve relative to profile's own
+directory, not CWD"`、2026-07-17。詳細は同リポジトリの
+`docs/patch-structure-design.md`「相対パスの解決基点」節を参照)。
+これに伴い、`FITOM_staging`(製品バンドル用presetプロファイル管理
+リポジトリ)側の実プロファイルも`banks/`への参照が
+`"banks/OPN/gm/xxx.hwbank.json"`から`"../../banks/OPN/gm/xxx.hwbank.json"`
+のような形に更新されている(`config/profiles/`が`banks/`の2階層下に
+あるため)。
+
+本エディタ側 (`PatchWorkspace::load()` / `PatchWorkspace::resolve()`)
+は、そもそも設計時点から`rootDir_ = profileJsonPath.parent_path()`を
+基点に相対パスを解決する実装になっており、**追従のためのコード変更は
+不要だった**(元々「プロファイル自身のディレクトリ」を基点にしていた
+ため、たまたま新仕様と一致していた)。念のため以下の2点を実機で確認
+した。
+
+- `FITOM_staging/config/profiles/unified_preset.profile.json`
+  (`"../../banks/..."`形式の参照を含む実プロファイル)を
+  `PatchWorkspace::load()`で読み込み、`hw_banks=63`/`patch_banks=5`/
+  `sw_banks=7`/`drum_banks=15`が全件warningsなしで解決されることを
+  確認(`fpe_data`をリンクした一時的な検証用実行ファイルで確認、
+  検証後に削除済み・リポジトリには残していない)。
+- `FITOM_X/config/profiles/`配下の`preset_opl`/`preset_opm`/
+  `preset_opn`/`emulator_opn_family`の各`.profile.json`も同様に確認。
+  一部`patch_banks[bank=0].file`が空文字列("プレースホルダ、まだ
+  ネイティブパッチバンク未割り当ての意図と思われる)だったり、
+  `emulator_opn_family.profile.json`が参照する
+  `../../banks/sw/necopn_gm.swbank.json`/
+  `../../banks/patches/necopn_gm.patchbank.json`が
+  `FITOM_X`リポジトリ側に実ファイルとして存在しない(`banks/sw/`には
+  `default_gm.swbank.json`はあるが`necopn_gm.swbank.json`は無い)ために
+  warningが出るケースはあったが、いずれも**パス解決自体は意図通り**で
+  (`rootDir_`+相対パスの結合結果は正しい)、参照先ファイルが実際に
+  存在するかどうかの問題であり、`read loosely / skip and warn`という
+  既存方針(D-003)通りに動作している。本エディタ側の実装や
+  `docs/patch-structure-design.md`側の仕様に不一致は無い。
+
+`scc_wave_banks[]`/`pcm_banks[]`(参照先ファイル自体の内容モデル化は
+D-008の時点で未着手のまま)についても、`ref.file`の相対パス自体は
+同じ`resolve()`経由で解決されるため、今回の仕様変更の影響は同様に
+「元から一致していた」。将来`SccWaveBank`/`PcmBank`を実装する際も、
+この`resolve()`をそのまま使えばよい。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
