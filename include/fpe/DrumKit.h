@@ -13,15 +13,13 @@
 // Source: docs/patch-structure-design.md ("リズムチャンネル: ドラムマップ
 // による解決", "チョークグループ"), docs/terminology.md ("ドラムキット").
 //
-// NOTE ON CONFIDENCE: the source docs give a complete, literal JSON example
-// only for the "direct" kit type. The per-note field list for "routed" kits
-// is reconstructed from prose references (DrumNote.voicePatchType,
-// DrumNote.playNote, DrumNote.sw_bank/sw_prog, PatchManager::resolveDrum) and
-// is NOT confirmed against `config_schema/drumkit.schema.json` in the actual
-// FITOM_X source tree. Field names below are a best-effort match to the
-// naming convention used elsewhere (snake_case matching the other *.json
-// formats) - verify against the real schema before relying on this for
-// production use.
+// CONFIRMED (2026-07-17) against the real
+// config_schema/drumkit.schema.json: the original guessed field names below
+// (note/name/voice_patch_type/patch_bank/patch_prog/play_note/sw_bank/
+// sw_prog) were all correct, but the schema additionally has per-note
+// fine_tune/pan/gate_time (routed kits) and, for "direct" kits,
+// voice_patch_type/sw_bank/sw_prog/fine_tune/pan/gate_time as single
+// whole-kit values - none of which were modeled before this pass.
 
 namespace fpe {
 
@@ -39,6 +37,11 @@ struct DrumNote {
     int patch_prog = 0;
 
     uint8_t play_note = 60;     // actual pitch sounded (absolute MIDI note)
+
+    // kfs units, 1 semitone = 64 steps (see docs/terminology.md "kfs") - not cents.
+    int fine_tune = 0;
+    int pan = 0;                // pan offset, added to the resolved ToneLayer's pan_offset
+    int gate_time = 0;          // timer ticks; 0 = stop on NoteOff
 
     // Per-note performance-patch override; -1 = not set (falls back to the
     // resolved HwPatch's own sw_bank/sw_prog).
@@ -61,11 +64,18 @@ struct DrumKit {
     std::vector<DrumNote> notes;
     std::vector<std::vector<uint8_t>> choke_groups; // groups of MIDI notes that mutually cut each other off
 
-    // --- "direct" fields ---
+    // --- "direct" fields --- (single whole-kit values, applied to every
+    // synthesized note - see effectiveNotes())
     int patch_bank = 0;
     int patch_prog = 0;
     uint8_t note_min = 0;
     uint8_t note_max = 127;
+    VoicePatchType voice_patch_type = VoicePatchType::None;
+    int sw_bank = -1;
+    int sw_prog = -1;
+    int fine_tune = 0;
+    int pan = 0;
+    int gate_time = 0;
 
     // --- runtime metadata (not part of the on-disk JSON shape) ---
     int prog = 0;              // profile.json drum_banks[].prog (Program Change value that selects this kit)

@@ -50,10 +50,19 @@
   Windows: `\\.\pipe\FITOM_X_MIDI`、Linux/macOS:
   `/tmp/fitom_x_midi.sock`)。FITOM_Xが起動していない場合はオフライン
   動作にフォールバックする設計が既に前提。
-- **`docs/DESIGN.md` D-002の推測箇所の実スキーマ照合** — FITOM_X本体の
-  実リポジトリ(`profile.schema.json` 等)にアクセスできる状況になり
-  次第、`patch_banks[]`/`sw_banks[]`の配列名と、"routed"ドラムキット
-  の`notes[]`要素のフィールド構成を確認・必要なら修正する。
+- **`docs/DESIGN.md` D-002の推測箇所の実スキーマ照合** — 2026-07-17、
+  FITOM_X本体の実リポジトリと`FITOM_staging`(製品バンドルpreset
+  プロファイル)にアクセスできる状況になり、照合・修正済み(詳細は
+  D-008参照)。`banks`ネストの見落とし(重大)と`DrumNote`/`DrumKit`の
+  フィールド不足を修正、実プロファイルでの動作も確認済み。
+- **`VoicePatchType.cpp`の`group`文字列テーブルが実スキーマのenumと
+  一部不一致** — 実スキーマ(`hw_banks[].group`)には`OPNA`/`OPNB`/
+  `SCCP`/`PSG`/`PCM`が含まれるが、`VoicePatchType.cpp`のテーブルには
+  未登録(D-008参照)。次に着手する際に追加・確認する。
+- **`*.sccwave.json`/`*.pcmbank.json`の内容モデル化** — `Profile`に
+  `scc_wave_banks[]`/`pcm_banks[]`のref(bank+file)は追加したが、
+  参照先ファイル自体のデータモデル(`SccWaveBank`/`PcmBank`クラス)は
+  未着手。`PatchWorkspace`はまだこれらの内容をロードしない(D-008参照)。
 - **`find_package(imgui CONFIG REQUIRED)` 等、実際のvcpkgでのビルド** —
   2026-07-17、Windows実機(`vcpkg-windows-vs2026`プリセット)で検証
   済み。configure・ビルド・`ctest`(85項目)・GUI実行ファイルの起動
@@ -130,3 +139,41 @@
   まずGUIウィンドウが実際に画面に描画されるかを確認する。その後、
   `fpe::PatchWorkspace`の上にパッチブラウザ/エディタ本体のUI実装に
   着手する。
+
+### 2026-07-17 (同マシン、D-002の実スキーマ照合・修正)
+- やったこと: ユーザーからFITOM_X本体の実リポジトリ
+  (`source/repos/FITOM_X`)と、製品バンドル用presetプロファイル管理
+  リポジトリ(`source/repos/FITOM_staging`)への参照許可を得て、
+  `docs/DESIGN.md` D-002で保留していた推測箇所を実スキーマ
+  (`config_schema/profile.schema.json`、`drumkit.schema.json`)と実
+  プロファイル(`FITOM_staging/config/profiles/unified_preset.profile.json`
+  等)で照合(詳細な経緯・判断はD-008参照)。重大な見落としを発見:
+  `hw_banks[]`/`patch_banks[]`/`sw_banks[]`/`drum_banks[]`は
+  トップレベルではなく`"banks": {...}`オブジェクトの下にネストされて
+  おり、旧`Profile.cpp`はこれをトップレベルキーとして読んでいたため、
+  実際の製品プロファイルを読み込むと4配列とも常に空になり、しかも
+  `banks`キー全体が`Profile::extra`に不透明に保持されて編集不能になる
+  という実害のあるバグだった。`Profile.h`/`.cpp`を修正して`banks`
+  オブジェクト経由で読み書きするようにし、新たに存在が判明した
+  `scc_wave_banks[]`/`pcm_banks[]`のref(`SccWaveBankRef`/`PcmBankRef`、
+  bank+file)も追加(参照先ファイル内容のモデル化は未着手、D-008/
+  既知の未対応参照)。あわせて`DrumNote`/`DrumKit`("routed"の
+  notes[]要素、"direct"キット全体)に欠落していた`fine_tune`/`pan`/
+  `gate_time`と、"direct"側の`voice_patch_type`/`sw_bank`/`sw_prog`を
+  追加。`fixtures/profile.json`・`fixtures/drums/*.drumkit.json`を
+  実データ形状に更新し、`tests/smoke_test.cpp`にこれらの新フィールド
+  の検証を追加(85→98項目、全通過)。さらに一時的な検証用プログラムを
+  fpe_data.libにリンクしてビルドし、実際の
+  `unified_preset.profile.json`を読み込ませたところ
+  `hw_banks=63 patch_banks=5 sw_banks=7 drum_banks=15`とファイル内容
+  通りに解決されることを確認(修正前なら全て0になっていたはずの値)。
+  検証用プログラムはテスト後に削除済み(リポジトリには含まれない)。
+- 未完了・既知の問題: `VoicePatchType.cpp`の`group`文字列テーブルが
+  実スキーマのenum(`OPNA`/`OPNB`/`SCCP`/`PSG`/`PCM`)と一部不一致
+  (D-008参照、未修正)。`*.sccwave.json`/`*.pcmbank.json`の内容
+  モデル化は未着手。GUIウィンドウの実描画確認・パッチブラウザ/
+  エディタのUI本体も引き続き未着手。
+- 次にやること: `VoicePatchType.cpp`のテーブルに`OPNA`/`OPNB`/`SCCP`/
+  `PSG`/`PCM`を追加するかどうか検討(FITOM_X側で最近拡張された可能性
+  があるため、追加前に実際の用途を確認)。その後、GUIウィンドウの
+  実描画確認とパッチブラウザ/エディタのUI実装に着手する。

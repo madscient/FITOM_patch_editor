@@ -77,6 +77,16 @@ static void testLoad(fpe::PatchWorkspace& ws) {
     CHECK(ws.deviceBanks().size() == 1);
     CHECK(ws.drumKits().size() == 2);
 
+    // Bank registries live nested under profile.json's "banks" object on
+    // disk (confirmed against the real profile.schema.json); this checks
+    // that nesting was actually parsed, not silently dropped into `extra`.
+    CHECK(!ws.profile().extra.contains("banks"));
+    CHECK(ws.profile().scc_wave_banks.size() == 1);
+    if (!ws.profile().scc_wave_banks.empty()) {
+        CHECK(ws.profile().scc_wave_banks[0].bank == 0);
+        CHECK(ws.profile().scc_wave_banks[0].file == "banks/scc/default.sccwave.json");
+    }
+
     auto* patchBank = ws.findNativePatchBank(0);
     CHECK(patchBank != nullptr);
     if (patchBank) {
@@ -125,17 +135,28 @@ static void testLoad(fpe::PatchWorkspace& ws) {
         CHECK(routedKit->choke_groups[0].size() == 3);
         auto* note = routedKit->findNote(42);
         CHECK(note != nullptr);
-        if (note) CHECK(note->name == "Closed Hi-Hat");
+        if (note) {
+            CHECK(note->name == "Closed Hi-Hat");
+            CHECK(note->fine_tune == 5);
+            CHECK(note->pan == 20);
+            CHECK(note->gate_time == 10);
+        }
     }
 
     auto* directKit = ws.findDrumKit(1);
     CHECK(directKit != nullptr);
     if (directKit) {
         CHECK(directKit->type == fpe::DrumKitType::Direct);
+        CHECK(directKit->fine_tune == 10);
+        CHECK(directKit->pan == 5);
+        CHECK(directKit->gate_time == 3);
         auto notes = directKit->effectiveNotes();
         CHECK(notes.size() == static_cast<size_t>(directKit->note_max - directKit->note_min + 1));
         CHECK(notes.front().note == directKit->note_min);
         CHECK(notes.front().play_note == directKit->note_min);
+        CHECK(notes.front().fine_tune == 10);
+        CHECK(notes.front().pan == 5);
+        CHECK(notes.front().gate_time == 3);
     }
 }
 

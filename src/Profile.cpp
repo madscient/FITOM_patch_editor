@@ -46,10 +46,31 @@ void from_json(const nlohmann::json& j, DrumBankRef& v) {
     v.file = getRequired<std::string>(j, "file", "drum_banks[]");
 }
 
+void to_json(nlohmann::json& j, const SccWaveBankRef& v) {
+    j = nlohmann::json{{"bank", v.bank}, {"file", v.file}};
+    if (!v.name.empty()) j["name"] = v.name;
+}
+void from_json(const nlohmann::json& j, SccWaveBankRef& v) {
+    v.bank = getOr<int>(j, "bank", 0);
+    v.file = getRequired<std::string>(j, "file", "scc_wave_banks[]");
+    v.name = getOr<std::string>(j, "name", "");
+}
+
+void to_json(nlohmann::json& j, const PcmBankRef& v) {
+    j = nlohmann::json{{"bank", v.bank}, {"file", v.file}};
+    if (!v.name.empty()) j["name"] = v.name;
+}
+void from_json(const nlohmann::json& j, PcmBankRef& v) {
+    v.bank = getOr<int>(j, "bank", 0);
+    v.file = getRequired<std::string>(j, "file", "pcm_banks[]");
+    v.name = getOr<std::string>(j, "name", "");
+}
+
 namespace {
-constexpr const char* kManagedKeys[] = {
-    "profile_name", "hw_banks", "patch_banks", "sw_banks", "drum_banks",
-};
+// All bank-registry arrays live nested under "banks" on disk (confirmed
+// against the real profile.schema.json - see NOTE in Profile.h); only
+// "profile_name" and "banks" itself are managed at the top level.
+constexpr const char* kManagedKeys[] = {"profile_name", "banks"};
 bool isManagedKey(const std::string& key) {
     for (auto k : kManagedKeys) if (key == k) return true;
     return false;
@@ -59,17 +80,28 @@ bool isManagedKey(const std::string& key) {
 void to_json(nlohmann::json& j, const Profile& v) {
     j = v.extra.is_object() ? v.extra : nlohmann::json::object();
     j["profile_name"] = v.profile_name;
-    if (!v.hw_banks.empty() || j.contains("hw_banks")) j["hw_banks"] = v.hw_banks;
-    if (!v.patch_banks.empty() || j.contains("patch_banks")) j["patch_banks"] = v.patch_banks;
-    if (!v.sw_banks.empty() || j.contains("sw_banks")) j["sw_banks"] = v.sw_banks;
-    if (!v.drum_banks.empty() || j.contains("drum_banks")) j["drum_banks"] = v.drum_banks;
+
+    nlohmann::json banks = nlohmann::json::object();
+    if (!v.hw_banks.empty()) banks["hw_banks"] = v.hw_banks;
+    if (!v.patch_banks.empty()) banks["patch_banks"] = v.patch_banks;
+    if (!v.sw_banks.empty()) banks["sw_banks"] = v.sw_banks;
+    if (!v.drum_banks.empty()) banks["drum_banks"] = v.drum_banks;
+    if (!v.scc_wave_banks.empty()) banks["scc_wave_banks"] = v.scc_wave_banks;
+    if (!v.pcm_banks.empty()) banks["pcm_banks"] = v.pcm_banks;
+    if (!banks.empty()) j["banks"] = banks;
 }
 void from_json(const nlohmann::json& j, Profile& v) {
     v.profile_name = getOr<std::string>(j, "profile_name", "");
-    v.hw_banks = getOr<std::vector<HwBankRef>>(j, "hw_banks", {});
-    v.patch_banks = getOr<std::vector<PatchBankRef>>(j, "patch_banks", {});
-    v.sw_banks = getOr<std::vector<SwBankRef>>(j, "sw_banks", {});
-    v.drum_banks = getOr<std::vector<DrumBankRef>>(j, "drum_banks", {});
+
+    nlohmann::json banks = nlohmann::json::object();
+    if (j.is_object() && j.contains("banks") && j.at("banks").is_object()) banks = j.at("banks");
+
+    v.hw_banks = getOr<std::vector<HwBankRef>>(banks, "hw_banks", {});
+    v.patch_banks = getOr<std::vector<PatchBankRef>>(banks, "patch_banks", {});
+    v.sw_banks = getOr<std::vector<SwBankRef>>(banks, "sw_banks", {});
+    v.drum_banks = getOr<std::vector<DrumBankRef>>(banks, "drum_banks", {});
+    v.scc_wave_banks = getOr<std::vector<SccWaveBankRef>>(banks, "scc_wave_banks", {});
+    v.pcm_banks = getOr<std::vector<PcmBankRef>>(banks, "pcm_banks", {});
 
     v.extra = nlohmann::json::object();
     if (j.is_object()) {

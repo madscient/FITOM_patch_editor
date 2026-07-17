@@ -5,6 +5,6 @@
   "notes": [
     { "note": 36, "name": "Bass Drum 1", "voice_patch_type": 0, "patch_bank": 0, "patch_prog": 0, "play_note": 36 },
     { "note": 38, "name": "Acoustic Snare", "voice_patch_type": 0, "patch_bank": 0, "patch_prog": 0, "play_note": 38 },
-    { "note": 42, "name": "Closed Hi-Hat", "voice_patch_type": 25, "patch_bank": 0, "patch_prog": 0, "play_note": 42, "sw_bank": 0, "sw_prog": 0 }
+    { "note": 42, "name": "Closed Hi-Hat", "voice_patch_type": 25, "patch_bank": 0, "patch_prog": 0, "play_note": 42, "sw_bank": 0, "sw_prog": 0, "fine_tune": 5, "pan": 20, "gate_time": 10 }
   ]
 }
