@@ -54,13 +54,13 @@
   実リポジトリ(`profile.schema.json` 等)にアクセスできる状況になり
   次第、`patch_banks[]`/`sw_banks[]`の配列名と、"routed"ドラムキット
   の`notes[]`要素のフィールド構成を確認・必要なら修正する。
-- **`find_package(imgui CONFIG REQUIRED)` 等、実際のvcpkgでのビルドが
-  未検証** — 開発環境の制約上、apt取得のヘッダ/ライブラリと
-  vcpkgが実際に使うのと同タグ(v1.92.8)のimguiソースをその場で
-  ビルドして代用検証した(コンパイル・リンクは成功、ディスプレイが
-  ない環境のため実際のウィンドウ表示は未確認)。実際に
-  `cmake --preset vcpkg-windows` 等でvcpkg経由のビルドが通ることは
-  未検証。**次にWindows環境等で作業する際、最初にこれを確認すること。**
+- **`find_package(imgui CONFIG REQUIRED)` 等、実際のvcpkgでのビルド** —
+  2026-07-17、Windows実機(`vcpkg-windows-vs2026`プリセット)で検証
+  済み。configure・ビルド・`ctest`(85項目)・GUI実行ファイルの起動
+  まで確認(下記進捗ログ参照)。GUI実行中のウィンドウ描画自体(実際に
+  画面にImGuiのUIが正しく表示されるか)はスクリーンショット取得に
+  失敗したため未確認のまま。次にWindows環境で作業する際は、まず
+  ウィンドウが実際に描画されるかを確認すること。
 
 ## 進捗ログ
 
@@ -103,3 +103,30 @@
 - 次にやること: 実マシン(Windows、vcpkg導入済み)で
   `cmake --preset vcpkg-windows`(または`-vs2026`)が通ることを確認
   してから、パッチブラウザ/エディタのUI実装に着手する。
+
+### 2026-07-17 (別マシン、vcpkg実ビルド検証)
+- やったこと: このマシンで`VCPKG_ROOT`が未設置のパス
+  (`D:\Programs\x64\vcpkg`)を指していたため、実体のある`d:\vcpkg`に
+  ユーザー環境変数として更新(マシン固有設定のためリポジトリには
+  含めていない)。`cmake --preset vcpkg-windows-vs2026`でconfigureし、
+  vcpkg経由で依存関係(nlohmann-json/imgui/glfw3/glew)一式の取得・
+  ビルドが成功することを確認。続けて`cmake --build`でビルドしたところ、
+  `apps/gui/main.cpp`が`<backends/imgui_impl_glfw.h>` /
+  `<backends/imgui_impl_opengl3.h>`という`backends/`プレフィックス
+  付きパスでインクルードしていたためGUIターゲットのみビルド失敗
+  (`fpe_data`・スモークテストは成功)。実際のvcpkg imguiポート
+  (v1.92.8)はバックエンドヘッダーを`include/`直下にフラットに配置
+  することが判明(以前サンドボックス環境でapt取得のヘッダ構成を代用
+  検証した際とはレイアウトが異なっていた)。`main.cpp`のインクルード
+  パスを`<imgui_impl_glfw.h>` / `<imgui_impl_opengl3.h>`に修正して
+  再ビルド・成功。`ctest`で85項目全通過も確認。
+  `fitom_patch_editor_gui.exe`を実行しプロセスが起動・継続すること
+  (即クラッシュしないこと)を確認したが、実際にウィンドウが描画
+  されているかのスクリーンショット確認には失敗した(意図せず別の
+  無関係なウィンドウが写り込んだため、確認前にファイルを削除した)。
+- 未完了・既知の問題: GUIウィンドウの実描画確認は未完了。パッチ
+  ブラウザ/エディタのUI本体はまだ未着手。
+- 次にやること: 次回このマシンまたは別のWindows環境で作業する際は、
+  まずGUIウィンドウが実際に画面に描画されるかを確認する。その後、
+  `fpe::PatchWorkspace`の上にパッチブラウザ/エディタ本体のUI実装に
+  着手する。
