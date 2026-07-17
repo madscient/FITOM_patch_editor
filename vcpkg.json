@@ -1,0 +1,17 @@
+{
+  "name": "fitom-patch-editor",
+  "version": "0.1.0",
+  "description": "Offline patch/profile editor for FITOM_X (Dear ImGui GUI + JSON data model).",
+  "dependencies": [
+    "nlohmann-json",
+    "glfw3",
+    "glew",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "opengl3-binding"
+      ]
+    }
+  ]
+}

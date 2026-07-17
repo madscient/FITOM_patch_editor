@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fitom_patch_editor_data CXX)
+project(fitom_patch_editor CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,17 +10,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(FPE_BUILD_TESTS "Build fpe smoke tests" ON)
+option(FPE_BUILD_GUI "Build the Dear ImGui GUI shell (apps/gui)" ON)
 
-# --- nlohmann/json (header-only) ---------------------------------------
-include(FetchContent)
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.3
-  GIT_SHALLOW TRUE
-)
-set(JSON_BuildTests OFF CACHE INTERNAL "")
-FetchContent_MakeAvailable(nlohmann_json)
+# All third-party dependencies (nlohmann-json, imgui, glfw3, glew) are
+# declared in vcpkg.json (manifest mode) and resolved via find_package()
+# below. Configure with the vcpkg toolchain file, e.g.:
+#   cmake --preset vcpkg   (see CMakePresets.json; requires VCPKG_ROOT)
+# or manually:
+#   cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+
+find_package(nlohmann_json CONFIG REQUIRED)
 
 # --- fpe_data: the JSON data-model / I/O library -------------------------
 add_library(fpe_data STATIC
@@ -60,4 +59,26 @@ if(FPE_BUILD_TESTS)
   target_link_libraries(fpe_smoke_test PRIVATE fpe_data)
   add_test(NAME fpe_smoke_test COMMAND fpe_smoke_test
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+# --- fitom_patch_editor_gui: Dear ImGui (GLFW + OpenGL3) shell -------------
+# Currently just the windowing/render-loop shell (see apps/gui/main.cpp) -
+# the patch browser/editor UI itself is built on top of fpe::PatchWorkspace
+# in later work.
+if(FPE_BUILD_GUI)
+  find_package(glfw3 CONFIG REQUIRED)
+  find_package(GLEW REQUIRED)
+  find_package(OpenGL REQUIRED)
+  find_package(imgui CONFIG REQUIRED)
+
+  add_executable(fitom_patch_editor_gui apps/gui/main.cpp)
+  target_link_libraries(fitom_patch_editor_gui PRIVATE
+    fpe_data
+    imgui::imgui
+    glfw
+    GLEW::GLEW
+    OpenGL::GL
+  )
+  target_compile_definitions(fitom_patch_editor_gui PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+  target_compile_features(fitom_patch_editor_gui PRIVATE cxx_std_17)
 endif()
