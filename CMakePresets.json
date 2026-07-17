@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 23, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vcpkg",
+      "displayName": "vcpkg (manifest mode)",
+      "description": "Configures with the vcpkg toolchain file. Requires the VCPKG_ROOT environment variable to point at a vcpkg checkout (https://github.com/microsoft/vcpkg).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/vcpkg",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "vcpkg-windows",
+      "displayName": "vcpkg (Windows, Visual Studio 2022)",
+      "inherits": "vcpkg",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    }
+  ]
+}
