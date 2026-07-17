@@ -4,5 +4,8 @@
   "patch_bank": 10,
   "patch_prog": 0,
   "note_min": 27,
-  "note_max": 87
+  "note_max": 87,
+  "fine_tune": 10,
+  "pan": 5,
+  "gate_time": 3
 }

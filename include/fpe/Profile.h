@@ -9,17 +9,17 @@
 // ("*.profile.json — プロファイル"), docs/patch-structure-design.md
 // (hw_banks[]/drum_banks[] examples).
 //
-// NOTE ON CONFIDENCE: docs/config-design.md's own worked examples
-// (profiles/emulator_only.profile.json, profiles/studio.profile.json) only
-// show `profile_name`, `hw_plugins[]` and `midi_inputs[]`. The registry
-// array names for native patch banks and performance banks are inferred by
-// analogy with the confirmed `hw_banks[]` (docs/patch-structure-design.md
-// "HwBank 側のタグ付けルール") and `drum_banks[]`
-// (docs/patch-structure-design.md "リズムチャンネル: ドラムマップによる解決")
-// arrays: `patch_banks[]` for *.patchbank.json and `sw_banks[]` for
-// *.swbank.json, each keyed the same way (`bank` index + `file` path).
-// Verify these two names against the real profile.schema.json before
-// treating them as authoritative.
+// CONFIRMED (2026-07-17) against the real FITOM_X
+// config_schema/profile.schema.json and a production
+// unified_preset.profile.json: `patch_banks[]`/`sw_banks[]` were guessed
+// correctly by name, but all six bank-registry arrays
+// (hw_banks/patch_banks/sw_banks/drum_banks/scc_wave_banks/pcm_banks) live
+// nested under a top-level `"banks": { ... }` object, not at the profile's
+// top level as originally assumed. `scc_wave_banks[]`/`pcm_banks[]` are new
+// (not previously modeled at all); their referenced file formats
+// (*.sccwave.json / *.pcmbank.json) are still out of scope for this
+// library (refs are preserved for round-tripping, but PatchWorkspace does
+// not load their content - see docs/STATUS.md).
 
 namespace fpe {
 
@@ -65,14 +65,43 @@ struct DrumBankRef {
 void to_json(nlohmann::json& j, const DrumBankRef& v);
 void from_json(const nlohmann::json& j, DrumBankRef& v);
 
+// profile.json banks.scc_wave_banks[] entry (*.sccwave.json registration).
+// Confirmed against config_schema/profile.schema.json; the referenced
+// *.sccwave.json content itself is not modeled by this library yet (ref is
+// preserved for round-tripping only).
+struct SccWaveBankRef {
+    int bank = 0;
+    std::string file;
+    std::string name;
+};
+void to_json(nlohmann::json& j, const SccWaveBankRef& v);
+void from_json(const nlohmann::json& j, SccWaveBankRef& v);
+
+// profile.json banks.pcm_banks[] entry (*.pcmbank.json registration).
+// Confirmed against config_schema/profile.schema.json; the referenced
+// *.pcmbank.json content itself is not modeled by this library yet (ref is
+// preserved for round-tripping only).
+struct PcmBankRef {
+    int bank = 0;
+    std::string file;
+    std::string name;
+};
+void to_json(nlohmann::json& j, const PcmBankRef& v);
+void from_json(const nlohmann::json& j, PcmBankRef& v);
+
 // Top-level profile.
 struct Profile {
     std::string profile_name;
 
+    // All six live under the profile's "banks" object on disk (see
+    // to_json/from_json in Profile.cpp) - the members here are flattened
+    // for convenient access.
     std::vector<HwBankRef> hw_banks;
     std::vector<PatchBankRef> patch_banks;
     std::vector<SwBankRef> sw_banks;
     std::vector<DrumBankRef> drum_banks;
+    std::vector<SccWaveBankRef> scc_wave_banks;
+    std::vector<PcmBankRef> pcm_banks;
 
     // Everything else in the file (hw_plugins[], midi_inputs[],
     // midi_outputs[], midi_backend, psg_fallback_chip, devices[], ...) is
