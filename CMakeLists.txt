@@ -12,6 +12,19 @@ endif()
 option(FPE_BUILD_TESTS "Build fpe smoke tests" ON)
 option(FPE_BUILD_GUI "Build the Dear ImGui GUI shell (apps/gui)" ON)
 
+if(MSVC)
+  # /utf-8: source files (including this project's Japanese comments and
+  # string literals) are UTF-8; without this, MSVC falls back to the
+  # active Windows code page (e.g. Shift-JIS/932 on a Japanese system
+  # locale) to interpret them, which both misdisplays the comments
+  # (C4819) and can corrupt multi-byte UTF-8 string literals outright
+  # (a byte sequence that happens to decode as backslash/quote under
+  # Shift-JIS). Applies project-wide via add_compile_options rather than
+  # per-target since every target here compiles files that #include
+  # fpe_data's Japanese-commented headers.
+  add_compile_options(/utf-8)
+endif()
+
 # All third-party dependencies (nlohmann-json, imgui, glfw3, glew) are
 # declared in vcpkg.json (manifest mode) and resolved via find_package()
 # below. Configure with the vcpkg toolchain file, e.g.:
