@@ -1,0 +1,20 @@
+{
+  "profile_name": "Test Profile",
+  "patch_banks": [
+    { "bank": 0, "file": "patches/00_general.patchbank.json", "name": "General" }
+  ],
+  "sw_banks": [
+    { "bank": 0, "file": "sw/default_gm.swbank.json", "name": "Default GM" }
+  ],
+  "hw_banks": [
+    { "group": "OPM", "bank": 0, "file": "banks/OPM/dx27_dx100/00_default.hwbank.json" }
+  ],
+  "drum_banks": [
+    { "prog": 0, "name": "Standard Kit", "file": "drums/std_kit.drumkit.json" },
+    { "prog": 1, "name": "OPL4 AWM GM std kit", "file": "drums/direct_kit.drumkit.json" }
+  ],
+  "midi_inputs": ["Test Input"],
+  "hw_plugins": [
+    { "name": "FitomEmuIF", "dll": "FitomEmuIF.dll", "profile": "fmhwif_profile.json", "auto_devices": true }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Default GM",
+  "patches": [
+    {
+      "prog": 0,
+      "name": "Slow Vibrato",
+      "sw": { "LWF": 6, "LFS": 0, "LFM": 0, "LFD": 20, "LFR": 30, "LFI": 10, "depth_cents": 50 },
+      "ops": [
+        { "VTL": 20, "SLW": 6, "SLR": 40, "SLD": 10 },
+        { "VTL": 20 },
+        { "VTL": 20 },
+        { "VTL": 20 }
+      ],
+      "fine_transpose": 0
+    }
+  ]
+}

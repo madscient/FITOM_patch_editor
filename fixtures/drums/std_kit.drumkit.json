@@ -1,0 +1,10 @@
+{
+  "type": "routed",
+  "name": "Standard Kit",
+  "choke_groups": [[42, 44, 46]],
+  "notes": [
+    { "note": 36, "name": "Bass Drum 1", "voice_patch_type": 0, "patch_bank": 0, "patch_prog": 0, "play_note": 36 },
+    { "note": 38, "name": "Acoustic Snare", "voice_patch_type": 0, "patch_bank": 0, "patch_prog": 0, "play_note": 38 },
+    { "note": 42, "name": "Closed Hi-Hat", "voice_patch_type": 25, "patch_bank": 0, "patch_prog": 0, "play_note": 42, "sw_bank": 0, "sw_prog": 0 }
+  ]
+}
