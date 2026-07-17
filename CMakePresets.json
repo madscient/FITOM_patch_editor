@@ -1,6 +1,6 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 23, "patch": 0 },
+  "cmakeMinimumRequired": { "major": 4, "minor": 2, "patch": 0 },
   "configurePresets": [
     {
       "name": "vcpkg",
@@ -19,6 +19,19 @@
       "inherits": "vcpkg",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
+      }
+    },
+    {
+      "name": "vcpkg-windows-vs2026",
+      "displayName": "vcpkg (Windows, Visual Studio 2026)",
+      "description": "Requires CMake >= 4.2 (the 'Visual Studio 18 2026' generator was added in 4.2; VS 2026 currently bundles an older CMake, so install a newer CMake separately if needed).",
+      "inherits": "vcpkg",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2026",
       "cacheVariables": {
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       }

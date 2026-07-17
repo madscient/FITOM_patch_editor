@@ -98,16 +98,37 @@ hw_banks[]エントリの `group` がサンプルベース系の`VoicePatchType`
 
 ## ビルド方法
 
-CMake 3.20以上、C++17対応コンパイラ、[vcpkg](https://github.com/microsoft/vcpkg)
+CMake 3.20以上(Visual Studio 2026向けプリセットを使う場合はCMake 4.2
+以上)、C++17対応コンパイラ、[vcpkg](https://github.com/microsoft/vcpkg)
 が必要です。`VCPKG_ROOT` 環境変数がvcpkgのチェックアウト先を指している
 前提で、マニフェストモード(`vcpkg.json`)が依存関係を自動的に解決します。
 
 ```bash
-cmake --preset vcpkg          # Linux/macOS。Windowsは --preset vcpkg-windows
+cmake --preset vcpkg          # Linux/macOS
 cmake --build build/vcpkg
 ctest --test-dir build/vcpkg --output-on-failure   # fpe_dataのテストのみ実行
 ./build/vcpkg/fitom_patch_editor_gui               # GUIアプリケーションを起動
 ```
+
+Windowsでは、Visual Studioのバージョンに応じて以下のプリセットを使います。
+
+| プリセット | 対象 |
+|---|---|
+| `vcpkg-windows` | Visual Studio 2022 (`Visual Studio 17 2022`、CMake 3.20以上) |
+| `vcpkg-windows-vs2026` | Visual Studio 2026 (`Visual Studio 18 2026`、**CMake 4.2以上が必要**) |
+
+```powershell
+cmake --preset vcpkg-windows-vs2026
+cmake --build build/vs2026 --config RelWithDebInfo
+```
+
+`Visual Studio 18 2026`ジェネレータはCMake 4.2で追加されたもので、
+Visual Studio 2026に同梱されているCMake(4.1.1)より新しいバージョンが
+必要です。`cmake --version`で4.2未満の場合は、
+[cmake.org](https://cmake.org/download/)から新しいCMakeを別途インストール
+してPATHを通してください(Visual StudioのCMake統合を使う場合は、
+Visual Studioの設定でCMakeの実行ファイルパスを上書きするか、Visual
+Studio自体の更新を待つ必要があります)。
 
 プリセットを使わない場合は、通常のCMake手順に
 `-DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake`
