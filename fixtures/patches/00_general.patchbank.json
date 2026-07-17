@@ -1,0 +1,25 @@
+{
+  "name": "General",
+  "patches": [
+    {
+      "prog": 0,
+      "name": "Test Strings",
+      "sw_bank": 0,
+      "sw_prog": 0,
+      "poly": 0,
+      "layers": [
+        {
+          "voice_patch_type": 25,
+          "hw_bank": 0,
+          "hw_prog": 0,
+          "note_range_lo": 0,
+          "note_range_hi": 127,
+          "transpose": 0,
+          "volume_offset": 0,
+          "pan_offset": 0,
+          "enabled": true
+        }
+      ]
+    }
+  ]
+}

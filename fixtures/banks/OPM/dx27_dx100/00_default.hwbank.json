@@ -1,0 +1,19 @@
+{
+  "name": "DX27/DX100 bank 0",
+  "patches": [
+    {
+      "prog": 0,
+      "name": "E.Piano 1",
+      "hw": { "FB": 3, "ALG": 4, "AMS": 0, "PMS": 0, "NFQ": 0 },
+      "ops": [
+        { "AR": 31, "DR": 10, "SL": 2, "RR": 8, "TL": 10, "MUL": 1 },
+        { "AR": 31, "DR": 10, "SL": 2, "RR": 8, "TL": 30, "MUL": 1 },
+        { "AR": 31, "DR": 10, "SL": 2, "RR": 8, "TL": 10, "MUL": 1 },
+        { "AR": 31, "DR": 10, "SL": 2, "RR": 8, "TL": 0, "MUL": 1 }
+      ],
+      "ext": {},
+      "sw_bank": 0,
+      "sw_prog": 0
+    }
+  ]
+}
