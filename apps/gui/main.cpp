@@ -8,6 +8,14 @@
 //     -> load succeeds -> Outline (read-only tree of the loaded profile)
 //     -> load fails    -> error popup, stays on FileBrowser
 //
+// If a profile path is given as argv[1], that profile is loaded up front
+// and the app starts directly on Outline (as if it had just been picked
+// from FileBrowser), skipping MainMenu/FileBrowser entirely. This is for
+// launching from an already-running FITOM_X instance, which knows which
+// profile it currently has loaded and can hand that path straight to the
+// editor. On load failure, falls back to the normal MainMenu + error
+// popup (see main()).
+//
 // "新規プロファイル作成"/"プロファイル削除" are shown in the main menu
 // but intentionally left disabled - not implemented yet. Patch editing
 // forms, CRUD UI, and the virtual MIDI controller are also still future
@@ -378,7 +386,7 @@ void renderErrorPopup(AppContext& ctx) {
 
 } // namespace
 
-int main(int, char**) {
+int main(int argc, char** argv) {
     glfwSetErrorCallback(glfwErrorCallback);
     if (!glfwInit()) {
         std::fprintf(stderr, "glfwInit() failed\n");
@@ -420,6 +428,16 @@ int main(int, char**) {
     ImGui_ImplOpenGL3_Init(glslVersion);
 
     AppContext ctx;
+
+    // argv[1], if given, is the path to the profile that should already be
+    // "open" on startup (see file-level comment above). Loading doesn't
+    // touch the GL/ImGui state, so it's safe to do before the render loop
+    // starts; tryLoadProfile() already handles success (-> Outline) and
+    // failure (errorMessage set, state stays MainMenu) uniformly with the
+    // FileBrowser pick path.
+    if (argc > 1) {
+        tryLoadProfile(ctx, fs::path(argv[1]));
+    }
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
