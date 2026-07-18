@@ -8,13 +8,24 @@
 //     -> load succeeds -> Outline (read-only tree of the loaded profile)
 //     -> load fails    -> error popup, stays on FileBrowser
 //
-// If a profile path is given as argv[1], that profile is loaded up front
-// and the app starts directly on Outline (as if it had just been picked
-// from FileBrowser), skipping MainMenu/FileBrowser entirely. This is for
-// launching from an already-running FITOM_X instance, which knows which
-// profile it currently has loaded and can hand that path straight to the
-// editor. On load failure, falls back to the normal MainMenu + error
-// popup (see main()).
+// If a profile path is given as argv[1] (and only that one argument),
+// that profile is loaded up front and the app starts directly on Outline
+// (as if it had just been picked from FileBrowser), skipping
+// MainMenu/FileBrowser entirely. This is for launching from an
+// already-running FITOM_X instance, which knows which profile it
+// currently has loaded and can hand that path straight to the editor. On
+// load failure, falls back to the normal MainMenu + error popup (see
+// main()).
+//
+// Kiosk mode (D-026): `fitom_patch_editor_gui.exe <profile.json>
+// <hwbank-file> <prog>` (exactly 3 arguments) skips MainMenu/Outline/
+// BankDetail entirely and opens a single, full-viewport patch editor for
+// that bank+prog - no menu ever shown, and closing that one editor window
+// exits the whole process. Also meant for launching from FITOM_X, but for
+// the narrower "jump straight into editing this one patch" case rather
+// than "open this profile". A bad kiosk invocation (missing profile,
+// bank/prog not found) fails fast via stderr + a nonzero exit code before
+// any window is created - see main().
 //
 // Outline also has a "新規バンク作成" button (renderNewBankDialog()) that
 // creates a new native/device/performance bank or drum kit - bank
@@ -56,6 +67,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -320,6 +332,16 @@ struct AppContext {
     // within a single load (this GUI is still read-only, see file header).
     BankCategory selectedCategory = BankCategory::Native;
     size_t selectedIndex = 0;
+
+    // Kiosk mode (D-026): launched with a profile + hwbank file + prog CLI
+    // triple instead of just a profile path. When true, the main loop skips
+    // MainMenu/Outline/BankDetail/dialogs entirely and renders only
+    // kioskEditor, full-viewport - see main()'s render loop. Closing it
+    // (its own title-bar X) exits the whole process immediately, matching
+    // "パッチ編集を終了したらそのまま終了する" - there is no menu to fall
+    // back to in this mode.
+    bool kioskMode = false;
+    PatchEditorWindow kioskEditor;
 };
 
 void tryLoadProfile(AppContext& ctx, const fs::path& file) {
@@ -332,6 +354,22 @@ void tryLoadProfile(AppContext& ctx, const fs::path& file) {
     }
     ctx.workspace = std::move(newWorkspace);
     ctx.state = AppState::Outline;
+}
+
+// Kiosk mode (D-026) identifies its target bank by file path rather than by
+// bank index, since the CLI caller (FITOM_X) knows which *.hwbank.json it's
+// pointing at but not this editor's internal vector indices. Matches via
+// fs::equivalent() (not string/path equality) so a relative CLI argument,
+// a differently-cased path, or a path through a symlink all still match
+// the same on-disk file the profile resolved to.
+std::optional<size_t> findDeviceBankIndexByFile(fpe::PatchWorkspace& ws, const fs::path& hwbankFile) {
+    std::error_code ec;
+    for (size_t i = 0; i < ws.deviceBanks().size(); ++i) {
+        if (fs::equivalent(ws.deviceBanks()[i].sourceFile, hwbankFile, ec) && !ec) {
+            return i;
+        }
+    }
+    return std::nullopt;
 }
 
 void selectBank(AppContext& ctx, BankCategory category, size_t index) {
@@ -1851,6 +1889,46 @@ void renderErrorPopup(AppContext& ctx) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Kiosk mode (D-026): `fitom_patch_editor_gui.exe <profile.json>
+    // <hwbank-file> <prog>` (argc==4) launches directly into a single,
+    // full-viewport patch editor for that bank+prog and exits the whole
+    // process as soon as it's closed - no menu, no outline. Meant to be
+    // spawned by a running FITOM_X instance as a focused "edit this one
+    // patch" child process. The plain `<profile.json>` form (argc==2,
+    // D-010) is unchanged and still opens the normal windowed UI at
+    // Outline. Resolved and validated before glfwInit()/any window
+    // creation, so a bad kiosk invocation fails fast via stderr + a
+    // nonzero exit code rather than as an in-GUI error popup - there is
+    // no interactive fallback to show one in.
+    fpe::PatchWorkspace kioskWorkspace;
+    std::optional<size_t> kioskBankIndex;
+    int kioskProg = 0;
+    const bool kioskRequested = (argc == 4);
+    if (kioskRequested) {
+        const fs::path profilePath = argv[1];
+        const fs::path hwbankFile = argv[2];
+        try {
+            kioskProg = std::stoi(argv[3]);
+        } catch (const std::exception&) {
+            std::fprintf(stderr, "kiosk mode: invalid prog number '%s'\n", argv[3]);
+            return 1;
+        }
+        try {
+            kioskWorkspace.load(profilePath);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "kiosk mode: failed to load profile '%s': %s\n", profilePath.string().c_str(),
+                         e.what());
+            return 1;
+        }
+        kioskBankIndex = findDeviceBankIndexByFile(kioskWorkspace, hwbankFile);
+        if (!kioskBankIndex || !kioskWorkspace.deviceBanks()[*kioskBankIndex].findByProg(kioskProg)) {
+            std::fprintf(stderr,
+                         "kiosk mode: no device patch bank/prog matching '%s' prog %d found in profile '%s'\n",
+                         hwbankFile.string().c_str(), kioskProg, profilePath.string().c_str());
+            return 1;
+        }
+    }
+
     glfwSetErrorCallback(glfwErrorCallback);
     if (!glfwInit()) {
         std::fprintf(stderr, "glfwInit() failed\n");
@@ -1898,17 +1976,26 @@ int main(int argc, char** argv) {
     // path (argv[1]) overrides preferences.autoLoadProfilePath for this run
     // only - ctx.preferences itself is never written back from argv, so the
     // saved preference file is untouched regardless of how this run was
-    // launched (see D-018).
+    // launched (see D-018). Kiosk mode loads Preferences too (for the same
+    // RtMidi-fallback port/channel the normal preview keyboard uses,
+    // D-026) but never consults autoLoadEnabled/argv[1]-as-profile - its
+    // workspace/bank/prog were already resolved above.
     ctx.preferences = loadPreferences();
     ctx.previewOutput.configureRtMidiPort(ctx.preferences.midiPortIndex);
 
-    // argv[1], if given, is the path to the profile that should already be
-    // "open" on startup (see file-level comment above). Loading doesn't
-    // touch the GL/ImGui state, so it's safe to do before the render loop
-    // starts; tryLoadProfile() already handles success (-> Outline) and
-    // failure (errorMessage set, state stays MainMenu) uniformly with the
-    // FileBrowser pick path.
-    if (argc > 1) {
+    if (kioskRequested) {
+        ctx.kioskMode = true;
+        ctx.workspace = std::move(kioskWorkspace);
+        ctx.kioskEditor.bankIndex = *kioskBankIndex;
+        ctx.kioskEditor.prog = kioskProg;
+        ctx.kioskEditor.open = true;
+    } else if (argc > 1) {
+        // argv[1], if given, is the path to the profile that should already
+        // be "open" on startup (see file-level comment above). Loading
+        // doesn't touch the GL/ImGui state, so it's safe to do before the
+        // render loop starts; tryLoadProfile() already handles success
+        // (-> Outline) and failure (errorMessage set, state stays
+        // MainMenu) uniformly with the FileBrowser pick path.
         tryLoadProfile(ctx, fs::path(argv[1]));
     } else if (ctx.preferences.autoLoadEnabled && !ctx.preferences.autoLoadProfilePath.empty()) {
         tryLoadProfile(ctx, fs::path(ctx.preferences.autoLoadProfilePath));
@@ -1921,29 +2008,50 @@ int main(int argc, char** argv) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
-        ImGui::Begin("FITOM_X Patch Editor");
+        if (ctx.kioskMode) {
+            // No outer "FITOM_X Patch Editor" menu/outline frame at all in
+            // this mode (D-026) - just the one patch editor, forced to
+            // fill the whole viewport every frame (so it reads as "docked
+            // full-size" rather than a movable/resizable floating window,
+            // per the project owner's fallback if a truly chrome-less
+            // window turned out to be more complex than it's worth). It
+            // keeps its own title bar/close-X (unlike the borderless
+            // ideal) specifically so there's still an obvious, discoverable
+            // way to finish editing - closing it exits the whole process.
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::Begin("パッチ編集", &ctx.kioskEditor.open,
+                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+            renderPatchEditor(ctx, ctx.kioskEditor);
+            ImGui::End();
+            if (!ctx.kioskEditor.open) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+        } else {
+            ImGui::SetNextWindowSize(ImVec2(900, 700), ImGuiCond_FirstUseEver);
+            ImGui::Begin("FITOM_X Patch Editor");
 
-        switch (ctx.state) {
-            case AppState::MainMenu:
-                renderMainMenu(ctx);
-                break;
-            case AppState::FileBrowser:
-                renderFileBrowser(ctx);
-                break;
-            case AppState::Outline:
-                renderOutline(ctx);
-                break;
-            case AppState::BankDetail:
-                renderBankDetail(ctx);
-                break;
+            switch (ctx.state) {
+                case AppState::MainMenu:
+                    renderMainMenu(ctx);
+                    break;
+                case AppState::FileBrowser:
+                    renderFileBrowser(ctx);
+                    break;
+                case AppState::Outline:
+                    renderOutline(ctx);
+                    break;
+                case AppState::BankDetail:
+                    renderBankDetail(ctx);
+                    break;
+            }
+            renderPatchEditors(ctx);
+            renderNewBankDialog(ctx);
+            renderPreferencesDialog(ctx); // also renders the shared path-picker modal, nested inside its own popup (see D-019)
+            renderErrorPopup(ctx);
+
+            ImGui::End();
         }
-        renderPatchEditors(ctx);
-        renderNewBankDialog(ctx);
-        renderPreferencesDialog(ctx); // also renders the shared path-picker modal, nested inside its own popup (see D-019)
-        renderErrorPopup(ctx);
-
-        ImGui::End();
 
         ImGui::Render();
         int displayW = 0, displayH = 0;
