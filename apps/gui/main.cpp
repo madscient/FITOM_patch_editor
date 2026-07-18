@@ -754,6 +754,13 @@ void renderPreferencesDialog(AppContext& ctx) {
 
         ImGui::SetNextItemWidth(150);
         ImGui::SliderInt("出力MIDI CH", &d.midiChannel, 0, 15);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "MIDI出力ポートのフォールバック時のみ使用\n"
+                "(FITOM_Xの内部パイプに接続できている場合はFITOM_X側が\n"
+                "接続ごとに自動でチャンネルを割り当てるため、この設定は\n"
+                "使われません)");
+        }
 
         if (!d.errorMessage.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", d.errorMessage.c_str());
@@ -1568,7 +1575,7 @@ void sendFullRegisteredOverride(AppContext& ctx, PatchEditorWindow& editor) {
     if (editor.bankIndex >= banks.size()) return;
     const auto& bank = banks[editor.bankIndex];
     if (ctx.previewOutput.ensureReady() == PreviewOutput::ActiveBackend::None) return;
-    const uint8_t ch = static_cast<uint8_t>(std::clamp(ctx.preferences.midiChannel, 0, 15));
+    const uint8_t ch = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
     ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(bank.voicePatchType), static_cast<uint8_t>(bank.bankIndex),
                                     static_cast<uint8_t>(editor.registered.prog));
     ctx.previewOutput.sendHwPatchOverride(ch, buildHwPatchOverrideJson(editor.registered).dump());
@@ -1705,12 +1712,18 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::Separator();
     const PreviewOutput::ActiveBackend backend = ctx.previewOutput.ensureReady();
     const bool connected = backend != PreviewOutput::ActiveBackend::None;
-    const char* statusText = backend == PreviewOutput::ActiveBackend::FitomXPipe ? "FITOM_Xに接続済み"
-                              : backend == PreviewOutput::ActiveBackend::RtMidi   ? "MIDI出力(フォールバック)で試聴中"
-                                                                                  : "未接続(オフライン、プリファレンスでMIDI出力を設定できます)";
+    const uint8_t previewChannel = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
+    // For the pipe backend, the channel shown here is the one FITOM_X
+    // assigned this connection (docs/plugin-midi-pipe.md 4.1), not a
+    // user-chosen value - showing it helps confirm multiple simultaneously
+    // running patch editor instances really did get distinct channels.
+    const std::string statusText =
+        backend == PreviewOutput::ActiveBackend::FitomXPipe
+            ? "FITOM_Xに接続済み(割当CH " + std::to_string(previewChannel) + ")"
+        : backend == PreviewOutput::ActiveBackend::RtMidi ? "MIDI出力(フォールバック)で試聴中"
+                                                           : "未接続(オフライン、プリファレンスでMIDI出力を設定できます)";
     ImGui::TextColored(connected ? ImVec4(0.4f, 1.0f, 0.6f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "試聴: %s",
-                        statusText);
-    const uint8_t previewChannel = static_cast<uint8_t>(std::clamp(ctx.preferences.midiChannel, 0, 15));
+                        statusText.c_str());
 
     // Realtime diff-only SysEx streaming (D-027): every frame, compare the
     // live in-memory patch against whatever FITOM_X was last actually told
@@ -2045,9 +2058,11 @@ void renderErrorPopup(AppContext& ctx) {
 // launch, D-010) as a concurrent, non-waited child process - it never
 // observes this process's exit code, so a bare `return 1` is invisible to
 // everyone (D-029, per the project owner: FITOM_X runs concurrently and
-// can't block waiting for this process's return value). A message box is
-// the only way a human actually sees a startup failure that happens
-// before any ImGui window exists to show renderErrorPopup() in.
+// can't block waiting for this process's return value). Originally added
+// for startup failures that happen before any ImGui window exists to show
+// renderErrorPopup() in; also reused mid-session (D-030) for the MIDI
+// pipe's connection-capacity rejection, since that too should end the
+// process rather than continue in a half-broken state.
 // Windows-only for now (consistent with this project's other native-API
 // code, e.g. Preferences.cpp's exeDir() - POSIX untested).
 void showFatalErrorBox(const std::string& message) {
@@ -2234,6 +2249,20 @@ int main(int argc, char** argv) {
             renderErrorPopup(ctx);
 
             ImGui::End();
+        }
+
+        // D-030: FITOM_X's MIDI pipe accepted our connection but explicitly
+        // refused to assign a channel because 16 other patch editor
+        // instances are already connected (docs/plugin-midi-pipe.md 4.1).
+        // Unlike "FITOM_X isn't running" (silently fall back to offline/
+        // RtMidi), this is a real error the user needs to act on - show it
+        // and exit, same pattern as showFatalErrorBox()'s other callers
+        // (D-029), just reachable mid-session instead of only at startup.
+        if (ctx.previewOutput.pipeRejectedForCapacity()) {
+            showFatalErrorBox(
+                "FITOM_Xへの接続数が上限(16)に達しているため、これ以上パッチエディタで試聴接続できません。\n"
+                "他のパッチエディタウィンドウを閉じてから、もう一度開いてください。");
+            glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
         ImGui::Render();

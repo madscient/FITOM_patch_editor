@@ -1,5 +1,7 @@
 #include "PreviewOutput.h"
 
+#include <algorithm>
+
 #include "MidiMessages.h"
 
 void PreviewOutput::configureRtMidiPort(int portIndex) {
@@ -16,6 +18,11 @@ PreviewOutput::ActiveBackend PreviewOutput::ensureReady() {
     if (pipe_.ensureConnected()) return ActiveBackend::FitomXPipe;
     if (rtMidi_.isOpen()) return ActiveBackend::RtMidi;
     return ActiveBackend::None;
+}
+
+uint8_t PreviewOutput::activeChannel(int fallbackChannel) const {
+    if (pipe_.isConnected()) return pipe_.assignedChannel();
+    return static_cast<uint8_t>(std::clamp(fallbackChannel, 0, 15));
 }
 
 bool PreviewOutput::send(const std::vector<uint8_t>& bytes) {
