@@ -15,7 +15,9 @@ struct Preferences {
     bool autoLoadEnabled = false;    // load autoLoadProfilePath automatically on startup (no argv[1] given)
     std::string autoLoadProfilePath;
     int midiPortIndex = -1;          // RtMidi output port index for the preview fallback; -1 = disabled
-    int midiChannel = 0;             // 0-15, used for both the FITOM_X pipe and the RtMidi fallback
+    int midiChannel = 0;              // 0-15, RtMidi fallback only - the FITOM_X pipe gets its channel
+                                       // assigned by FITOM_X itself per-connection (D-030), this value
+                                       // is ignored whenever that pipe is connected
 };
 
 // Resolves the preferences JSON file's path: <exe's own directory>/

@@ -31,6 +31,20 @@ public:
     // actually be used right now, for the preview status line.
     ActiveBackend ensureReady();
 
+    // The channel callers should pass to every method below. When
+    // connected to FITOM_X's pipe, that's the channel FITOM_X assigned
+    // during the connect handshake (docs/plugin-midi-pipe.md 4.1) - NOT a
+    // caller-chosen value, so multiple simultaneously-running patch editor
+    // instances don't collide. Only falls back to fallbackChannel (the
+    // Preferences-configured "出力MIDI CH") for the RtMidi output, which
+    // has no such negotiation.
+    uint8_t activeChannel(int fallbackChannel) const;
+
+    // True once ensureReady()/ensureConnected() found FITOM_X already
+    // serving its maximum 16 connections - a real error the caller should
+    // surface (see MidiPipeClient::wasRejectedForCapacity()).
+    bool pipeRejectedForCapacity() const { return pipe_.wasRejectedForCapacity(); }
+
     bool selectDevice(uint8_t channel, uint8_t voicePatchTypeCc0, uint8_t hwBank, uint8_t hwProg);
     bool sendHwPatchOverride(uint8_t channel, const std::string& json);
     bool sendSwPatchOverride(uint8_t channel, const std::string& json);
