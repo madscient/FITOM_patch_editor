@@ -896,18 +896,21 @@ HwOpFieldRanges opnOpRanges() {
 }
 
 // OPL(YM3526)/OPL2(YM3812)/OPL3_2(YMF262 2op residual) family - confirmed
-// against core/src/OPL_new.cpp's actual register-write masks (FB&7,
-// ALG&1, AR/DR&0x1F, SL&0xF, RR read as a plain 4bit value, SR&0x1F
-// (shifted into the same 4bit RR register when >0 - see
-// docs/voice-parameter-reference.md's OPL section for the SR/RR/EGT
-// conversion table), KSL as a 2bit field packed into TL's register,
-// MUL&0xF, TL truncated to 6bit on the wire via tl6()=v>>1 but the field
-// itself stays the usual 7bit/0-127 range like every other chip) and
-// docs/voice-parameter-reference.md (DT1/DT2/EGT explicitly called out as
-// "無関係" for this family - SR/RR cover the same ground EGT would - and
-// REV/EGS/DT3 are OPZ-only). WS differs per chip: OPL has no waveform
-// register at all (always sine), OPL2 is 2bit (0-3), OPL3_2 (the real
-// OPL3 chip's 2op mode) is 3bit (0-7) - see D-021.
+// against core/src/OPL_new.cpp's actual register-write masks. AR/DR/SR are
+// read via `& 0x1F` but immediately narrowed to 4bit via `ar4()=v>>1`
+// before reaching the hardware register (same pattern TL uses via
+// `tl6()=v>>1`) - the effective, actually-distinguishable range editors
+// should expose is the post-shift 4bit (0-15) width, not the wider
+// pre-shift mask (D-023 correction to D-021, which had wrongly used the
+// pre-shift 5bit/7bit widths). RR is read as a plain 4bit value with no
+// shift (`& 0xF` directly onto the register), so it was already correct
+// at 0-15. KSL is a 2bit field packed into TL's register, MUL&0xF.
+// docs/voice-parameter-reference.md's OPL section documents the SR/RR/EGT
+// conversion table (DT1/DT2/EGT explicitly called out as "無関係" for
+// this family - SR/RR cover the same ground EGT would - and REV/EGS/DT3
+// are OPZ-only). WS differs per chip: OPL has no waveform register at all
+// (always sine), OPL2 is 2bit (0-3), OPL3_2 (the real OPL3 chip's 2op
+// mode) is 3bit (0-7) - see D-021.
 HwVoiceFieldRanges oplVoiceRanges() {
     HwVoiceFieldRanges r;
     r.FB = {0, 7, true};
@@ -920,12 +923,12 @@ HwVoiceFieldRanges oplVoiceRanges() {
 }
 HwOpFieldRanges oplOpRanges(int wsMax) {
     HwOpFieldRanges r;
-    r.AR = {0, 31, true};
-    r.DR = {0, 31, true};
+    r.AR = {0, 15, true};
+    r.DR = {0, 15, true};
     r.SL = {0, 15, true};
-    r.SR = {0, 31, true};
+    r.SR = {0, 15, true};
     r.RR = {0, 15, true};
-    r.TL = {0, 127, true};
+    r.TL = {0, 63, true};
     r.KSR = {0, 1, true};
     r.KSL = {0, 3, true};
     r.MUL = {0, 15, true};
@@ -950,19 +953,24 @@ HwOpFieldRanges oplOpRanges(int wsMax) {
 // widths as OPL/OPL2/OPL3_2 (AR/DR/SL/SR/RR/KSR/KSL/MUL/AM/VIB/TL - the
 // doc's "ops[1].TL only" note describes the carrier's perceived loudness,
 // but op[0]'s TL is still written to hardware (register 0x02) and affects
-// modulation depth, so both stay used=true here). ALG is NOT a connection
-// selector for OPLL like it is for OPL/OPL2/OPL3_2 - hw.ALG is instead a
-// 4bit ROM preset instrument number (only meaningful when
-// ext.ALG_EXT bit0=1; ignored/0 for user tones), so it's plain-edited
-// here (no connection-diagram image - see isOplAlgFamily()). WS is a
-// genuine but narrower field than the rest of the OPL family: 1 bit per
-// operator (core/src/OPLL_new.cpp: `(WS&1)<<3`/`(WS&1)<<4`), not
-// mentioned in the doc's OPLL field table at all - confirmed by reading
-// the actual register-write code since the doc has a gap here.
+// modulation depth, so both stay used=true here). ALG is fixed at 0 for
+// every patch this editor's common ops[]-editable layout ever shows
+// (D-023 correction to D-021): hw.ALG is only read at all when
+// ext.ALG_EXT bit0 (preset flag) is set (`instNo = preset ? ALG&0xF : 0`
+// in core/src/OPLL_new.cpp), and preset/ROM patches are exactly the
+// `isBuiltinRef()==true` case that never reaches this ops[] editor in the
+// first place (see D-021's addendum on OPLL builtin banks) - so within
+// this editor, ALG is always the ignored/0 user-tone case, hence
+// unused=false here (not a connection selector, unlike OPL/OPL2/OPL3_2 -
+// see isOplAlgFamily()). WS is a genuine but narrower field than the rest
+// of the OPL family: 1 bit per operator (core/src/OPLL_new.cpp:
+// `(WS&1)<<3`/`(WS&1)<<4`), not mentioned in the doc's OPLL field table
+// at all - confirmed by reading the actual register-write code since the
+// doc has a gap here.
 HwVoiceFieldRanges opllVoiceRanges() {
     HwVoiceFieldRanges r;
     r.FB = {0, 7, true};
-    r.ALG = {0, 15, true};
+    r.ALG = {0, 0, false};
     r.AMS = {0, 0, false};
     r.PMS = {0, 0, false};
     r.NFQ = {0, 0, false};
