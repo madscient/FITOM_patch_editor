@@ -1178,9 +1178,13 @@ nlohmann::json buildHwPatchOverrideJson(const fpe::HwPatch& patch) {
 // (`ranges.TL.maxV`, not a hardcoded constant - D-024 fix: this used to
 // normalize every chip against a fixed /99, so a chip whose real range is
 // narrower than 0-99 (e.g. OPN/OPL/OPLL's 0-31 AR/DR/SR) could never
-// visually reach "full speed" even at its own maximum value); SL is an
-// absolute sustain height on the same scale (taller = louder, normalized
-// against `ranges.SL.maxV`), not a further attenuation of the peak. If SR
+// visually reach "full speed" even at its own maximum value); SL is ALSO
+// an attenuation like TL (0 = no further attenuation/sustain stays at the
+// TL-scaled peak, max = fully attenuated/silent - D-025 fix: this used to
+// treat SL as an absolute height with the opposite polarity and no
+// relationship to TL at all). Sustain height is therefore the peak
+// (already reduced by TL) further scaled down by SL's own attenuation
+// fraction, not an independent value on the same 0-1 scale. If SR
 // ("Sustain Rate (0 = sustain/ADSR mode, >0 = percussive mode)" per
 // FmHwOp's own comment) is nonzero, the envelope doesn't hold a flat
 // sustain - it keeps decaying toward 0 at a rate derived from SR instead,
@@ -1197,13 +1201,14 @@ void renderEnvelopeCurve(const fpe::FmHwOp& op, const HwOpFieldRanges& ranges) {
         const float norm = 1.0f - std::min<float>(rate, maxRate) / denom; // slower rate -> wider (longer) segment
         return std::max(0.03f, norm) * weight;
     };
-    auto levelToNorm = [](uint8_t level, int maxLevel) {
+    // 0 = no attenuation, max = fully attenuated (TL/SL's shared convention).
+    auto attenuationToNorm = [](uint8_t level, int maxLevel) {
         const float denom = static_cast<float>(std::max(maxLevel, 1));
         return std::min<float>(level, maxLevel) / denom;
     };
 
-    const float peak = 1.0f - levelToNorm(op.TL, ranges.TL.maxV);
-    const float sustain = levelToNorm(op.SL, ranges.SL.maxV);
+    const float peak = 1.0f - attenuationToNorm(op.TL, ranges.TL.maxV);
+    const float sustain = peak * (1.0f - attenuationToNorm(op.SL, ranges.SL.maxV));
     const bool percussive = op.SR > 0;
 
     const float attackW = rateToSegWidth(op.AR, ranges.AR.maxV, size.x * 0.30f);
