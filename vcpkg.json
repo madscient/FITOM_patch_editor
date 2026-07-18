@@ -6,6 +6,7 @@
     "nlohmann-json",
     "glfw3",
     "glew",
+    "rtmidi",
     {
       "name": "imgui",
       "features": [

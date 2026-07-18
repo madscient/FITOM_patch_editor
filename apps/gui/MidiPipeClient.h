@@ -1,9 +1,8 @@
 #pragma once
 #include <cstdint>
-#include <string>
 #include <vector>
 
-// Thin client for FITOM_X's internal MIDI pipe (FITOM_X repo's
+// Thin transport for FITOM_X's internal MIDI pipe (FITOM_X repo's
 // docs/plugin-midi-pipe.md): a named pipe on Windows
 // (\\.\pipe\FITOM_X_MIDI) or a Unix domain socket on Linux/macOS
 // (/tmp/fitom_x_midi.sock). Send-only, single client, silently
@@ -16,9 +15,10 @@
 // to the same spec as the Windows named-pipe path but has not been
 // exercised on this development machine (Windows-only so far).
 //
-// There is no fallback to real MIDI hardware/virtual ports when FITOM_X
-// isn't running - see docs/DESIGN.md D-015 for why that's out of scope
-// for now.
+// Pure transport only (raw byte send + connection state) - message
+// building lives in MidiMessages.h (shared with the RtMidiOutput
+// fallback), and picking which transport to use for a given call lives in
+// PreviewOutput (see docs/DESIGN.md D-018).
 class MidiPipeClient {
 public:
     MidiPipeClient() = default;
@@ -36,25 +36,7 @@ public:
     // ensureConnected() retries) on write failure.
     bool sendRaw(const std::vector<uint8_t>& bytes);
 
-    // docs/plugin-midi-pipe.md section 5.1: direct device select + program change.
-    bool selectDevice(uint8_t channel, uint8_t voicePatchTypeCc0, uint8_t hwBank, uint8_t hwProg);
-    // section 5.2: HwPatch/SwPatch parameter override (private SysEx). `json` is the
-    // ASCII JSON payload only - this wraps it in the F0 00 48 01 ... F7 envelope.
-    bool sendHwPatchOverride(uint8_t channel, const std::string& json);
-    bool sendSwPatchOverride(uint8_t channel, const std::string& json);
-    // section 5.3: note on/off.
-    bool noteOn(uint8_t channel, uint8_t note, uint8_t velocity);
-    bool noteOff(uint8_t channel, uint8_t note, uint8_t velocity = 0);
-    // Generic Control Change - used for the preview keyboard's CC#1
-    // (modulation) / CC#7 (volume) levers.
-    bool sendControlChange(uint8_t channel, uint8_t ccNumber, uint8_t value);
-    // section 5.5: cleanup (also clears HwPatch/SwPatch overrides).
-    bool allSoundOff(uint8_t channel);
-    bool resetAllControllers(uint8_t channel);
-
 private:
-    bool sendParamOverride(uint8_t subCmd, uint8_t channel, const std::string& json);
-
 #ifdef _WIN32
     void* handle_ = nullptr; // HANDLE, kept opaque to avoid pulling <windows.h> into this header
 #else

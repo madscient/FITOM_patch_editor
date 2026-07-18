@@ -31,8 +31,10 @@
 // modulation / CC#7 volume levers to its left) that plays notes through
 // FITOM_X's internal MIDI pipe (MidiPipeClient, see
 // docs/plugin-midi-pipe.md in the FITOM_X repo) when an instance is
-// running; silently unavailable otherwise (no fallback to real MIDI
-// hardware - see docs/DESIGN.md D-015). Field sliders use each chip
+// running, falling back to a real MIDI output port (RtMidi, configured via
+// the "プリファレンス" dialog) otherwise - see PreviewOutput and
+// docs/DESIGN.md D-018 (this superseded D-015's original "no fallback"
+// decision). Field sliders use each chip
 // family's confirmed register width where known (OPN/OPN2 so far - see
 // getVoiceFieldRanges()/getOpFieldRanges(), D-016) and grey out fields the
 // chip doesn't read; other chip families still fall back to a generic
@@ -70,7 +72,8 @@
 #include <nlohmann/json.hpp>
 
 #include "BmpLoader.h"
-#include "MidiPipeClient.h"
+#include "Preferences.h"
+#include "PreviewOutput.h"
 #include "fpe/PatchWorkspace.h"
 #include "fpe/VoicePatchType.h"
 
@@ -111,6 +114,18 @@ enum class AppState { MainMenu, FileBrowser, Outline, BankDetail };
 // currently showing (see AppContext::selectedIndex).
 enum class BankCategory { Native, Performance, Device, SampleZone, Pcm, Drum };
 
+// Matches both "<name>.profile.json" (the naming convention used by
+// production profiles) and a bare "profile.json" (used by fixtures/ and
+// presumably valid too - it's just ".profile.json" with an empty <name>
+// prefix). Shared by FileBrowserState and PathPickerState below so both
+// in-app browsers agree on what counts as a profile file.
+bool isProfileFileName(const std::string& name) {
+    const std::string suffix = ".profile.json";
+    return name == "profile.json" ||
+           (name.size() > suffix.size() &&
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0);
+}
+
 // Lists *.profile.json files (and subdirectories, for navigation) in one
 // directory. Re-scanned via refresh() whenever the current directory
 // changes - not re-scanned every frame.
@@ -131,17 +146,66 @@ struct FileBrowserState {
                 std::error_code ec;
                 if (entry.is_directory(ec) && !ec) {
                     subdirs.push_back(p);
-                } else if (entry.is_regular_file(ec) && !ec) {
-                    const std::string name = p.filename().string();
-                    const std::string suffix = ".profile.json";
-                    // Matches both "<name>.profile.json" (the naming convention used by
-                    // production profiles) and a bare "profile.json" (used by fixtures/
-                    // and presumably valid too - it's just ".profile.json" with an empty
-                    // <name> prefix).
-                    const bool matches = name == "profile.json" ||
-                                         (name.size() > suffix.size() &&
-                                          name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0);
-                    if (matches) profileFiles.push_back(p);
+                } else if (entry.is_regular_file(ec) && !ec && isProfileFileName(p.filename().string())) {
+                    profileFiles.push_back(p);
+                }
+            }
+        } catch (const fs::filesystem_error& e) {
+            listError = e.what();
+        }
+        std::sort(subdirs.begin(), subdirs.end());
+        std::sort(profileFiles.begin(), profileFiles.end());
+        std::snprintf(pathInput, sizeof(pathInput), "%s", currentDir.string().c_str());
+    }
+
+    void setDir(const fs::path& dir) {
+        std::error_code ec;
+        fs::path canon = fs::weakly_canonical(dir, ec);
+        currentDir = (ec || canon.empty()) ? dir : canon;
+        refresh();
+    }
+};
+
+// A small in-app directory/file browser, reusable anywhere the UI needs a
+// folder or *.profile.json path text field with a trailing "参照..."
+// (browse) button - this is meant to be the project-wide convention for
+// every such field (see docs/DESIGN.md D-019), rather than a native OS file
+// dialog (no such library is a dependency of this project - see D-006 on
+// vcpkg-only deps). One instance lives on AppContext and is repointed at
+// whichever text buffer is currently being browsed for (see
+// openPathPicker()) - only one such picker can be open at a time, which is
+// fine since it's always opened modally.
+//
+// IMPORTANT: renderPathPicker() must be called from *inside* the calling
+// dialog's own BeginPopupModal/EndPopup block (nested, "stacked modals"
+// style), never as a sibling call after that block's EndPopup() has
+// already run - otherwise its OpenPopup()/BeginPopupModal() resolve in the
+// wrong ID-stack context and silently fail to open, leaving the caller's
+// modal stuck open-but-blocking with nothing visibly rendered. See
+// renderPreferencesDialog() for the correct call site.
+struct PathPickerState {
+    bool open = false;
+    bool pickFolder = false; // true: OK confirms currentDir itself; false: pick a *.profile.json file
+    fs::path currentDir;
+    std::vector<fs::path> subdirs;
+    std::vector<fs::path> profileFiles; // only populated/shown when !pickFolder
+    char pathInput[1024] = {};
+    std::string listError;
+    char* target = nullptr; // caller-owned buffer that OK/double-click writes the picked path into
+    size_t targetSize = 0;
+
+    void refresh() {
+        subdirs.clear();
+        profileFiles.clear();
+        listError.clear();
+        try {
+            for (const auto& entry : fs::directory_iterator(currentDir, fs::directory_options::skip_permission_denied)) {
+                const auto& p = entry.path();
+                std::error_code ec;
+                if (entry.is_directory(ec) && !ec) {
+                    subdirs.push_back(p);
+                } else if (!pickFolder && entry.is_regular_file(ec) && !ec && isProfileFileName(p.filename().string())) {
+                    profileFiles.push_back(p);
                 }
             }
         } catch (const fs::filesystem_error& e) {
@@ -214,6 +278,22 @@ struct PatchEditorWindow {
     int ccVolume = 100;   // CC#7 lever position (0-127), GM default volume
 };
 
+// Editable working copy shown by renderPreferencesDialog() - only written
+// back to AppContext::preferences (and disk, via savePreferences()) on OK,
+// so Cancel discards any in-progress edits cleanly. Populated fresh from
+// the current Preferences + a live RtMidi port scan each time the dialog
+// is opened (see openPreferencesDialog()).
+struct PreferencesDialogState {
+    bool open = false;
+    char profileFolder[1024] = {};
+    bool autoLoadEnabled = false;
+    char autoLoadProfilePath[1024] = {};
+    int midiPortIndex = -1; // -1 = "(なし)", otherwise an index into `midiPorts`
+    int midiChannel = 0;
+    std::vector<std::string> midiPorts; // snapshot from PreviewOutput::listRtMidiPorts() at dialog-open time
+    std::string errorMessage;           // e.g. save failure, shown inline
+};
+
 struct AppContext {
     fpe::PatchWorkspace workspace;
     AppState state = AppState::MainMenu;
@@ -222,10 +302,15 @@ struct AppContext {
     NewBankDialogState newBankDialog;
     std::vector<PatchEditorWindow> openEditors;
     int nextEditorId = 0;
-    // One shared connection to FITOM_X's internal MIDI pipe (docs/plugin-midi-pipe.md
-    // in the FITOM_X repo allows only a single client anyway), reused by
-    // every open patch editor's preview keyboard.
-    MidiPipeClient midiPipe;
+    // One shared preview output (FITOM_X's internal MIDI pipe, falling
+    // back to a regular MIDI port via RtMidi - see PreviewOutput,
+    // docs/DESIGN.md D-018), reused by every open patch editor's preview
+    // keyboard. The pipe only allows a single client anyway
+    // (docs/plugin-midi-pipe.md in the FITOM_X repo).
+    PreviewOutput previewOutput;
+    Preferences preferences;
+    PreferencesDialogState preferencesDialog;
+    PathPickerState pathPicker; // shared browse-button popup, see PathPickerState/openPathPicker()
 
     // Selection driving the BankDetail screen - which category/index into
     // the corresponding PatchWorkspace vector. Only meaningful while
@@ -418,6 +503,234 @@ void renderNewBankDialog(AppContext& ctx) {
     if (!stayOpen) d.open = false;
 }
 
+// Opens the shared PathPickerState pointed at `target` (a caller-owned
+// fixed-size char buffer, e.g. one of PreferencesDialogState's fields).
+// Starts browsing from target's current value if it looks like a usable
+// existing path, else the process's current directory.
+void openPathPicker(AppContext& ctx, bool pickFolder, char* target, size_t targetSize) {
+    PathPickerState& p = ctx.pathPicker;
+    p.pickFolder = pickFolder;
+    p.target = target;
+    p.targetSize = targetSize;
+
+    fs::path start = fs::current_path();
+    std::error_code ec;
+    if (target[0] != '\0') {
+        const fs::path candidate(target);
+        if (pickFolder) {
+            if (fs::is_directory(candidate, ec) && !ec) start = candidate;
+        } else if (candidate.has_parent_path() && fs::is_directory(candidate.parent_path(), ec) && !ec) {
+            start = candidate.parent_path();
+        }
+    }
+    p.setDir(start);
+    p.open = true;
+}
+
+void renderPathPicker(AppContext& ctx) {
+    PathPickerState& p = ctx.pathPicker;
+    if (!p.open) return;
+
+    const char* title = p.pickFolder ? "フォルダを選択" : "プロファイルファイルを選択";
+    ImGui::OpenPopup(title);
+    bool stayOpen = true;
+    if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(p.pickFolder ? "フォルダをダブルクリックで移動し、「このフォルダを選択」で確定します。"
+                                             : "*.profile.json をダブルクリックして選択します。");
+        ImGui::Separator();
+
+        ImGui::TextUnformatted("パス:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(480);
+        const bool enterPressed = ImGui::InputText("##pathpickerinput", p.pathInput, sizeof(p.pathInput),
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::Button("移動") || enterPressed) {
+            const fs::path dir(p.pathInput);
+            std::error_code ec;
+            if (fs::is_directory(dir, ec) && !ec) {
+                p.setDir(dir);
+            } else {
+                p.listError = "フォルダが見つかりません: " + dir.string();
+            }
+        }
+
+        if (!p.listError.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", p.listError.c_str());
+        }
+
+        ImGui::Separator();
+        ImGui::BeginChild("pathpickerlist", ImVec2(600, 300), true);
+
+        if (p.currentDir.has_parent_path() && p.currentDir != p.currentDir.parent_path()) {
+            if (ImGui::Selectable("../ (上へ)", false, ImGuiSelectableFlags_AllowDoubleClick) &&
+                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                p.setDir(p.currentDir.parent_path());
+            }
+        }
+        for (const auto& d : p.subdirs) {
+            const std::string label = "[D] " + d.filename().string();
+            if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick) &&
+                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                p.setDir(d);
+            }
+        }
+        if (!p.pickFolder) {
+            for (const auto& f : p.profileFiles) {
+                const std::string label = f.filename().string();
+                if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick) &&
+                    ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    std::snprintf(p.target, p.targetSize, "%s", f.string().c_str());
+                    p.open = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            if (p.subdirs.empty() && p.profileFiles.empty()) {
+                ImGui::TextDisabled("(このフォルダに *.profile.json はありません)");
+            }
+        } else if (p.subdirs.empty()) {
+            ImGui::TextDisabled("(サブフォルダはありません)");
+        }
+
+        ImGui::EndChild();
+        ImGui::Separator();
+
+        if (p.pickFolder) {
+            if (ImGui::Button("このフォルダを選択", ImVec2(160, 0))) {
+                std::snprintf(p.target, p.targetSize, "%s", p.currentDir.string().c_str());
+                p.open = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+        }
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!stayOpen) p.open = false;
+}
+
+// Populates the dialog's editable working copy from the current
+// Preferences + a fresh RtMidi port scan, then opens it. The port list is
+// re-scanned each time (not cached across the app's lifetime) since ports
+// can appear/disappear (USB MIDI interfaces, loopMIDI, etc) while the app
+// is running.
+void openPreferencesDialog(AppContext& ctx) {
+    PreferencesDialogState& d = ctx.preferencesDialog;
+    std::snprintf(d.profileFolder, sizeof(d.profileFolder), "%s", ctx.preferences.profileFolder.c_str());
+    d.autoLoadEnabled = ctx.preferences.autoLoadEnabled;
+    std::snprintf(d.autoLoadProfilePath, sizeof(d.autoLoadProfilePath), "%s",
+                  ctx.preferences.autoLoadProfilePath.c_str());
+    d.midiPorts = ctx.previewOutput.listRtMidiPorts();
+    d.midiPortIndex = ctx.preferences.midiPortIndex;
+    if (d.midiPortIndex >= static_cast<int>(d.midiPorts.size())) {
+        d.midiPortIndex = -1; // the previously-saved port is gone (device unplugged, etc)
+    }
+    d.midiChannel = ctx.preferences.midiChannel;
+    d.errorMessage.clear();
+    d.open = true;
+}
+
+void renderPreferencesDialog(AppContext& ctx) {
+    PreferencesDialogState& d = ctx.preferencesDialog;
+    if (!d.open) return;
+
+    ImGui::OpenPopup("プリファレンス");
+    bool stayOpen = true;
+    if (ImGui::BeginPopupModal("プリファレンス", &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Folder/file path fields get a trailing "参照..." browse button
+        // that opens the shared in-app PathPickerState (see D-019) instead
+        // of relying purely on manual typing.
+        ImGui::TextUnformatted("優先プロファイルフォルダ");
+        ImGui::SetNextItemWidth(400);
+        ImGui::InputText("##profileFolderInput", d.profileFolder, sizeof(d.profileFolder));
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("「プロファイル読み込み」を開いたときの初期フォルダ");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("参照...##browseProfileFolder")) {
+            openPathPicker(ctx, /*pickFolder=*/true, d.profileFolder, sizeof(d.profileFolder));
+        }
+
+        ImGui::Checkbox("起動時にプロファイルを自動読み込み", &d.autoLoadEnabled);
+        if (!d.autoLoadEnabled) ImGui::BeginDisabled();
+        ImGui::TextUnformatted("自動読み込みプロファイルパス");
+        ImGui::SetNextItemWidth(400);
+        ImGui::InputText("##autoLoadProfilePathInput", d.autoLoadProfilePath, sizeof(d.autoLoadProfilePath));
+        ImGui::SameLine();
+        if (ImGui::Button("参照...##browseAutoLoadProfilePath")) {
+            openPathPicker(ctx, /*pickFolder=*/false, d.autoLoadProfilePath, sizeof(d.autoLoadProfilePath));
+        }
+        if (!d.autoLoadEnabled) ImGui::EndDisabled();
+        ImGui::TextDisabled("(コマンドライン引数でプロファイルを指定した場合はこの設定より優先されます)");
+
+        ImGui::Separator();
+        const char* currentPortLabel = (d.midiPortIndex < 0 || d.midiPortIndex >= static_cast<int>(d.midiPorts.size()))
+                                            ? "(なし)"
+                                            : d.midiPorts[static_cast<size_t>(d.midiPortIndex)].c_str();
+        if (ImGui::BeginCombo("出力MIDIポート", currentPortLabel)) {
+            const bool noneSelected = d.midiPortIndex < 0;
+            if (ImGui::Selectable("(なし)", noneSelected)) d.midiPortIndex = -1;
+            if (noneSelected) ImGui::SetItemDefaultFocus();
+            for (int i = 0; i < static_cast<int>(d.midiPorts.size()); ++i) {
+                const bool selected = (i == d.midiPortIndex);
+                if (ImGui::Selectable(d.midiPorts[static_cast<size_t>(i)].c_str(), selected)) d.midiPortIndex = i;
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("FITOM_Xの内部パイプが見つからない場合の試聴用フォールバック出力先");
+        }
+        if (!ctx.previewOutput.rtMidiAvailable()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "このビルドではMIDI出力が利用できません。");
+        }
+
+        ImGui::SetNextItemWidth(150);
+        ImGui::SliderInt("出力MIDI CH", &d.midiChannel, 0, 15);
+
+        if (!d.errorMessage.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", d.errorMessage.c_str());
+        }
+
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            ctx.preferences.profileFolder = d.profileFolder;
+            ctx.preferences.autoLoadEnabled = d.autoLoadEnabled;
+            ctx.preferences.autoLoadProfilePath = d.autoLoadProfilePath;
+            ctx.preferences.midiPortIndex = d.midiPortIndex;
+            ctx.preferences.midiChannel = std::clamp(d.midiChannel, 0, 15);
+            if (savePreferences(ctx.preferences)) {
+                ctx.previewOutput.configureRtMidiPort(ctx.preferences.midiPortIndex);
+                d.open = false;
+                ImGui::CloseCurrentPopup();
+            } else {
+                d.errorMessage = "設定の保存に失敗しました:\n" + preferencesFilePath().string();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
+            d.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        // Nested modal (Dear ImGui's "stacked modals" pattern): the picker's
+        // own OpenPopup()/BeginPopupModal() must be called from inside this
+        // modal's Begin/EndPopupModal block, not as a sibling call after
+        // EndPopup() - otherwise the picker's popup ID resolves in the
+        // wrong ID-stack context and BeginPopupModal fails silently,
+        // leaving a dangling "プリファレンス" modal that swallows input but
+        // renders nothing (this shipped once as a real bug - the picker was
+        // rendered from a separate top-level main() call - see D-019 fix).
+        renderPathPicker(ctx);
+
+        ImGui::EndPopup();
+    }
+    if (!stayOpen) d.open = false;
+}
+
 void renderMainMenu(AppContext& ctx) {
     ImGui::TextUnformatted("FITOM_X Patch Editor");
     ImGui::Separator();
@@ -426,7 +739,12 @@ void renderMainMenu(AppContext& ctx) {
     const ImVec2 buttonSize(260, 0);
 
     if (ImGui::Button("プロファイル読み込み", buttonSize)) {
-        ctx.browser.setDir(fs::current_path());
+        fs::path startDir = fs::current_path();
+        if (!ctx.preferences.profileFolder.empty()) {
+            std::error_code ec;
+            if (fs::is_directory(ctx.preferences.profileFolder, ec) && !ec) startDir = ctx.preferences.profileFolder;
+        }
+        ctx.browser.setDir(startDir);
         ctx.state = AppState::FileBrowser;
     }
 
@@ -439,6 +757,10 @@ void renderMainMenu(AppContext& ctx) {
     ImGui::Button("プロファイル削除", buttonSize);
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("未実装 (次回以降)");
+
+    if (ImGui::Button("プリファレンス", buttonSize)) {
+        openPreferencesDialog(ctx);
+    }
 }
 
 void renderFileBrowser(AppContext& ctx) {
@@ -514,8 +836,6 @@ void renderToneLayer(int index, const fpe::ToneLayer& layer) {
 }
 
 // --- Patch editor (Device/HwPatch only for now - see D-015) --------------
-
-constexpr uint8_t kPreviewMidiChannel = 0;
 
 // Per-field valid range for a given chip family, used to size sliders and
 // grey out fields the chip doesn't actually read (D-016). `used=false`
@@ -1009,9 +1329,14 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     }
 
     ImGui::Separator();
-    const bool connected = ctx.midiPipe.ensureConnected();
+    const PreviewOutput::ActiveBackend backend = ctx.previewOutput.ensureReady();
+    const bool connected = backend != PreviewOutput::ActiveBackend::None;
+    const char* statusText = backend == PreviewOutput::ActiveBackend::FitomXPipe ? "FITOM_Xに接続済み"
+                              : backend == PreviewOutput::ActiveBackend::RtMidi   ? "MIDI出力(フォールバック)で試聴中"
+                                                                                  : "未接続(オフライン、プリファレンスでMIDI出力を設定できます)";
     ImGui::TextColored(connected ? ImVec4(0.4f, 1.0f, 0.6f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "試聴: %s",
-                        connected ? "FITOM_Xに接続済み" : "FITOM_X未接続(オフライン)");
+                        statusText);
+    const uint8_t previewChannel = static_cast<uint8_t>(std::clamp(ctx.preferences.midiChannel, 0, 15));
 
     // CC#1 (modulation) / CC#7 (volume) levers to the left of the preview
     // keyboard, matching the reference editors' "pitch/mod" lever layout.
@@ -1026,7 +1351,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     int mod = editor.ccMod;
     if (ImGui::VSliderInt("##mod", ImVec2(24, kLeverHeight), &mod, 0, 127)) {
         editor.ccMod = std::clamp(mod, 0, 127);
-        if (connected) ctx.midiPipe.sendControlChange(kPreviewMidiChannel, 1, static_cast<uint8_t>(editor.ccMod));
+        if (connected) ctx.previewOutput.sendControlChange(previewChannel, 1, static_cast<uint8_t>(editor.ccMod));
     }
     ImGui::TextUnformatted("Mod");
     ImGui::EndGroup();
@@ -1035,7 +1360,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     int vol = editor.ccVolume;
     if (ImGui::VSliderInt("##vol", ImVec2(24, kLeverHeight), &vol, 0, 127)) {
         editor.ccVolume = std::clamp(vol, 0, 127);
-        if (connected) ctx.midiPipe.sendControlChange(kPreviewMidiChannel, 7, static_cast<uint8_t>(editor.ccVolume));
+        if (connected) ctx.previewOutput.sendControlChange(previewChannel, 7, static_cast<uint8_t>(editor.ccVolume));
     }
     ImGui::TextUnformatted("Vol");
     ImGui::EndGroup();
@@ -1043,14 +1368,14 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
 
     KeyboardResult kb = renderPreviewKeyboard(48, 22, kLeverHeight); // 3 octaves, C3-C6
     if (kb.pressedNote >= 0 && connected) {
-        ctx.midiPipe.selectDevice(kPreviewMidiChannel, static_cast<uint8_t>(bank.voicePatchType),
-                                   static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog));
-        ctx.midiPipe.sendHwPatchOverride(kPreviewMidiChannel, buildHwPatchOverrideJson(*patch).dump());
-        ctx.midiPipe.noteOn(kPreviewMidiChannel, static_cast<uint8_t>(kb.pressedNote), 100);
+        ctx.previewOutput.selectDevice(previewChannel, static_cast<uint8_t>(bank.voicePatchType),
+                                        static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog));
+        ctx.previewOutput.sendHwPatchOverride(previewChannel, buildHwPatchOverrideJson(*patch).dump());
+        ctx.previewOutput.noteOn(previewChannel, static_cast<uint8_t>(kb.pressedNote), 100);
         editor.heldNote = kb.pressedNote;
     }
     if (kb.releasedNote >= 0 && editor.heldNote == kb.releasedNote) {
-        if (connected) ctx.midiPipe.noteOff(kPreviewMidiChannel, static_cast<uint8_t>(kb.releasedNote), 0);
+        if (connected) ctx.previewOutput.noteOff(previewChannel, static_cast<uint8_t>(kb.releasedNote), 0);
         editor.heldNote = -1;
     }
 }
@@ -1361,6 +1686,15 @@ int main(int argc, char** argv) {
 
     AppContext ctx;
 
+    // Preferences are loaded before anything else so both the RtMidi port
+    // and the auto-load decision below can use them. A CLI-given profile
+    // path (argv[1]) overrides preferences.autoLoadProfilePath for this run
+    // only - ctx.preferences itself is never written back from argv, so the
+    // saved preference file is untouched regardless of how this run was
+    // launched (see D-018).
+    ctx.preferences = loadPreferences();
+    ctx.previewOutput.configureRtMidiPort(ctx.preferences.midiPortIndex);
+
     // argv[1], if given, is the path to the profile that should already be
     // "open" on startup (see file-level comment above). Loading doesn't
     // touch the GL/ImGui state, so it's safe to do before the render loop
@@ -1369,6 +1703,8 @@ int main(int argc, char** argv) {
     // FileBrowser pick path.
     if (argc > 1) {
         tryLoadProfile(ctx, fs::path(argv[1]));
+    } else if (ctx.preferences.autoLoadEnabled && !ctx.preferences.autoLoadProfilePath.empty()) {
+        tryLoadProfile(ctx, fs::path(ctx.preferences.autoLoadProfilePath));
     }
 
     while (!glfwWindowShouldClose(window)) {
@@ -1397,6 +1733,7 @@ int main(int argc, char** argv) {
         }
         renderPatchEditors(ctx);
         renderNewBankDialog(ctx);
+        renderPreferencesDialog(ctx); // also renders the shared path-picker modal, nested inside its own popup (see D-019)
         renderErrorPopup(ctx);
 
         ImGui::End();

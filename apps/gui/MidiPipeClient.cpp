@@ -9,20 +9,6 @@
 #include <unistd.h>
 #endif
 
-namespace {
-constexpr uint8_t kNoteOn = 0x90;
-constexpr uint8_t kNoteOff = 0x80;
-constexpr uint8_t kCC = 0xB0;
-constexpr uint8_t kProgramChange = 0xC0;
-constexpr uint8_t kSysExStart = 0xF0;
-constexpr uint8_t kSysExEnd = 0xF7;
-// FITOM_X's private SysEx prefix (docs/plugin-midi-pipe.md section 5.2):
-// F0 00 48 01 <sub-cmd> ... F7 - "00 48" is a 3-byte extended MIDI
-// manufacturer ID (00 followed by 2 more bytes), "01" is a fixed byte
-// preceding sub-cmd.
-constexpr uint8_t kFitomSysExPrefix[] = {0x00, 0x48, 0x01};
-} // namespace
-
 MidiPipeClient::~MidiPipeClient() { disconnect(); }
 
 bool MidiPipeClient::isConnected() const {
@@ -88,50 +74,4 @@ bool MidiPipeClient::sendRaw(const std::vector<uint8_t>& bytes) {
     }
     return true;
 #endif
-}
-
-bool MidiPipeClient::selectDevice(uint8_t channel, uint8_t voicePatchTypeCc0, uint8_t hwBank, uint8_t hwProg) {
-    const uint8_t ch = channel & 0x0F;
-    std::vector<uint8_t> msg = {
-        static_cast<uint8_t>(kCC | ch), 0x00, voicePatchTypeCc0, // CC#0: bank select MSB (direct device select)
-        static_cast<uint8_t>(kCC | ch), 0x20, hwBank,            // CC#32: bank select LSB (HwBank index)
-        static_cast<uint8_t>(kProgramChange | ch), hwProg,       // program change
-    };
-    return sendRaw(msg);
-}
-
-bool MidiPipeClient::sendParamOverride(uint8_t subCmd, uint8_t channel, const std::string& json) {
-    std::vector<uint8_t> msg;
-    msg.push_back(kSysExStart);
-    msg.insert(msg.end(), std::begin(kFitomSysExPrefix), std::end(kFitomSysExPrefix));
-    msg.push_back(subCmd);
-    msg.push_back(0x00);            // target-type = 0x00 (channel)
-    msg.push_back(channel & 0x0F);  // target-addr for channel target: 1 byte, MIDI channel
-    msg.push_back(0x00);            // layer = 0 (single-layer preview)
-    msg.insert(msg.end(), json.begin(), json.end());
-    msg.push_back(kSysExEnd);
-    return sendRaw(msg);
-}
-
-bool MidiPipeClient::sendHwPatchOverride(uint8_t channel, const std::string& json) {
-    return sendParamOverride(0x01, channel, json);
-}
-bool MidiPipeClient::sendSwPatchOverride(uint8_t channel, const std::string& json) {
-    return sendParamOverride(0x02, channel, json);
-}
-
-bool MidiPipeClient::noteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
-    return sendRaw({static_cast<uint8_t>(kNoteOn | (channel & 0x0F)), note, velocity});
-}
-bool MidiPipeClient::noteOff(uint8_t channel, uint8_t note, uint8_t velocity) {
-    return sendRaw({static_cast<uint8_t>(kNoteOff | (channel & 0x0F)), note, velocity});
-}
-bool MidiPipeClient::sendControlChange(uint8_t channel, uint8_t ccNumber, uint8_t value) {
-    return sendRaw({static_cast<uint8_t>(kCC | (channel & 0x0F)), ccNumber, value});
-}
-bool MidiPipeClient::allSoundOff(uint8_t channel) {
-    return sendRaw({static_cast<uint8_t>(kCC | (channel & 0x0F)), 0x78, 0x00});
-}
-bool MidiPipeClient::resetAllControllers(uint8_t channel) {
-    return sendRaw({static_cast<uint8_t>(kCC | (channel & 0x0F)), 0x79, 0x00});
 }
