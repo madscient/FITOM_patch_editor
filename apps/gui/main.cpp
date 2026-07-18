@@ -896,21 +896,22 @@ HwOpFieldRanges opnOpRanges() {
 }
 
 // OPL(YM3526)/OPL2(YM3812)/OPL3_2(YMF262 2op residual) family - confirmed
-// against core/src/OPL_new.cpp's actual register-write masks. AR/DR/SR are
-// read via `& 0x1F` but immediately narrowed to 4bit via `ar4()=v>>1`
-// before reaching the hardware register (same pattern TL uses via
-// `tl6()=v>>1`) - the effective, actually-distinguishable range editors
-// should expose is the post-shift 4bit (0-15) width, not the wider
-// pre-shift mask (D-023 correction to D-021, which had wrongly used the
-// pre-shift 5bit/7bit widths). RR is read as a plain 4bit value with no
-// shift (`& 0xF` directly onto the register), so it was already correct
-// at 0-15. KSL is a 2bit field packed into TL's register, MUL&0xF.
-// docs/voice-parameter-reference.md's OPL section documents the SR/RR/EGT
-// conversion table (DT1/DT2/EGT explicitly called out as "無関係" for
-// this family - SR/RR cover the same ground EGT would - and REV/EGS/DT3
-// are OPZ-only). WS differs per chip: OPL has no waveform register at all
-// (always sine), OPL2 is 2bit (0-3), OPL3_2 (the real OPL3 chip's 2op
-// mode) is 3bit (0-7) - see D-021.
+// against core/src/OPL_new.cpp's actual register-write masks (FB&7,
+// ALG&1, AR/DR&0x1F, SL&0xF, RR read as a plain 4bit value, SR&0x1F
+// (shifted into the same 4bit RR register when >0 - see
+// docs/voice-parameter-reference.md's OPL section for the SR/RR/EGT
+// conversion table), KSL as a 2bit field packed into TL's register,
+// MUL&0xF, TL&0x7F) and docs/hwpatch-reference.md (now explicit that
+// OPL/OPLL only take the field's upper bits on the wire - AR/DR/SR/TL
+// keep the same on-disk/editable width as every other chip (5bit/0-31,
+// 7bit/0-127); it's the chip driver, not the schema, that discards the
+// low bit(s) - D-023 briefly narrowed these to the post-shift width,
+// which the user corrected back per the updated FITOM_X doc, D-024).
+// DT1/DT2/EGT are explicitly called out as "無関係" for this family
+// (SR/RR cover the same ground EGT would) and REV/EGS/DT3 are OPZ-only.
+// WS differs per chip: OPL has no waveform register at all (always
+// sine), OPL2 is 2bit (0-3), OPL3_2 (the real OPL3 chip's 2op mode) is
+// 3bit (0-7) - see D-021.
 HwVoiceFieldRanges oplVoiceRanges() {
     HwVoiceFieldRanges r;
     r.FB = {0, 7, true};
@@ -923,12 +924,12 @@ HwVoiceFieldRanges oplVoiceRanges() {
 }
 HwOpFieldRanges oplOpRanges(int wsMax) {
     HwOpFieldRanges r;
-    r.AR = {0, 15, true};
-    r.DR = {0, 15, true};
+    r.AR = {0, 31, true};
+    r.DR = {0, 31, true};
     r.SL = {0, 15, true};
-    r.SR = {0, 15, true};
+    r.SR = {0, 31, true};
     r.RR = {0, 15, true};
-    r.TL = {0, 63, true};
+    r.TL = {0, 127, true};
     r.KSR = {0, 1, true};
     r.KSL = {0, 3, true};
     r.MUL = {0, 15, true};
@@ -1172,33 +1173,43 @@ nlohmann::json buildHwPatchOverrideJson(const fpe::HwPatch& patch) {
 // chip's envelope generator (that's FITOM_X's job at runtime). Assumptions,
 // since none of these are pinned down by an explicit range/direction in
 // FmHwOp's own field comments: higher AR/DR/RR = faster (shorter visual
-// ramp); TL is an attenuation (0 = loudest, 99 = silent - common Yamaha FM
-// convention), so peak height = 99-TL; SL is an absolute sustain height on
-// the same 0-99 scale (taller = louder), not a further attenuation of the
-// peak. If SR ("Sustain Rate (0 = sustain/ADSR mode, >0 = percussive
-// mode)" per FmHwOp's own comment) is nonzero, the envelope doesn't hold a
-// flat sustain - it keeps decaying toward 0 at a rate derived from SR
-// instead, same as a real percussive (non-looping) voice would.
-void renderEnvelopeCurve(const fpe::FmHwOp& op) {
+// ramp); TL is an attenuation (0 = loudest, max = silent - common Yamaha
+// FM convention), so peak height scales from TL's own confirmed range
+// (`ranges.TL.maxV`, not a hardcoded constant - D-024 fix: this used to
+// normalize every chip against a fixed /99, so a chip whose real range is
+// narrower than 0-99 (e.g. OPN/OPL/OPLL's 0-31 AR/DR/SR) could never
+// visually reach "full speed" even at its own maximum value); SL is an
+// absolute sustain height on the same scale (taller = louder, normalized
+// against `ranges.SL.maxV`), not a further attenuation of the peak. If SR
+// ("Sustain Rate (0 = sustain/ADSR mode, >0 = percussive mode)" per
+// FmHwOp's own comment) is nonzero, the envelope doesn't hold a flat
+// sustain - it keeps decaying toward 0 at a rate derived from SR instead,
+// same as a real percussive (non-looping) voice would.
+void renderEnvelopeCurve(const fpe::FmHwOp& op, const HwOpFieldRanges& ranges) {
     const ImVec2 size(200.0f, 70.0f);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(p0, ImVec2(p0.x + size.x, p0.y + size.y), IM_COL32(20, 20, 20, 255));
     draw->AddRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), IM_COL32(120, 120, 120, 255));
 
-    auto rateToSegWidth = [](uint8_t rate, float weight) {
-        const float norm = 1.0f - std::min<float>(rate, 99) / 99.0f; // slower rate -> wider (longer) segment
+    auto rateToSegWidth = [](uint8_t rate, int maxRate, float weight) {
+        const float denom = static_cast<float>(std::max(maxRate, 1));
+        const float norm = 1.0f - std::min<float>(rate, maxRate) / denom; // slower rate -> wider (longer) segment
         return std::max(0.03f, norm) * weight;
     };
+    auto levelToNorm = [](uint8_t level, int maxLevel) {
+        const float denom = static_cast<float>(std::max(maxLevel, 1));
+        return std::min<float>(level, maxLevel) / denom;
+    };
 
-    const float peak = 1.0f - std::min<float>(op.TL, 99) / 99.0f;
-    const float sustain = std::min<float>(op.SL, 99) / 99.0f;
+    const float peak = 1.0f - levelToNorm(op.TL, ranges.TL.maxV);
+    const float sustain = levelToNorm(op.SL, ranges.SL.maxV);
     const bool percussive = op.SR > 0;
 
-    const float attackW = rateToSegWidth(op.AR, size.x * 0.30f);
-    const float decayW = rateToSegWidth(op.DR, size.x * 0.25f);
-    const float sustainW = percussive ? rateToSegWidth(op.SR, size.x * 0.20f) : size.x * 0.20f;
-    const float releaseW = rateToSegWidth(op.RR, size.x * 0.25f);
+    const float attackW = rateToSegWidth(op.AR, ranges.AR.maxV, size.x * 0.30f);
+    const float decayW = rateToSegWidth(op.DR, ranges.DR.maxV, size.x * 0.25f);
+    const float sustainW = percussive ? rateToSegWidth(op.SR, ranges.SR.maxV, size.x * 0.20f) : size.x * 0.20f;
+    const float releaseW = rateToSegWidth(op.RR, ranges.RR.maxV, size.x * 0.25f);
 
     const float baseY = p0.y + size.y - 2.0f;
     const float topY = p0.y + 2.0f;
@@ -1385,7 +1396,7 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges,
     ImGui::BeginChild("op", ImVec2(230, 330), true);
     ImGui::Text("OP %d", index + 1);
     ImGui::Separator();
-    renderEnvelopeCurve(op);
+    renderEnvelopeCurve(op, ranges);
     sliderU8Ranged("AR", op.AR, ranges.AR);
     sliderU8Ranged("DR", op.DR, ranges.DR);
     sliderU8Ranged("SL", op.SL, ranges.SL);
