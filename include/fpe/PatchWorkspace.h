@@ -6,6 +6,7 @@
 #include "fpe/DrumKit.h"
 #include "fpe/HwPatch.h"
 #include "fpe/NativePatch.h"
+#include "fpe/PcmBank.h"
 #include "fpe/Profile.h"
 #include "fpe/SampleZone.h"
 #include "fpe/SwPatch.h"
@@ -23,6 +24,10 @@
 //     + デバイスパッチバンク (HwBank)                -> deviceBanks()
 //     |   + デバイスボイスパッチ (HwPatch)
 //     |       + [sw_bank/sw_prog reference into performanceBanks()]
+//     + サンプルゾーンバンク (SampleZoneBank, AWMのみ) -> sampleZoneBanks()
+//     |   + サンプルゾーンパッチ (SampleZonePatch)
+//     + PCM波形バンク (PcmBank, ADPCM-B/A・PCM-D8)     -> pcmBanks()
+//     |   + PCMエントリ (PcmBankEntry, indexがpatch_prog)
 //     + ドラムキットマップ (Profile::drum_banks)      -> drumKits()
 //         + ドラムキット (DrumKit)
 //             + ドラムノート (DrumNote)
@@ -60,12 +65,14 @@ public:
     std::vector<SwBank>& performanceBanks() { return swBanks_; }
     std::vector<HwBank>& deviceBanks() { return hwBanks_; }
     std::vector<SampleZoneBank>& sampleZoneBanks() { return sampleZoneBanks_; }
+    std::vector<PcmBank>& pcmBanks() { return pcmBanks_; }
     std::vector<DrumKit>& drumKits() { return drumKits_; }
 
     PatchBank* findNativePatchBank(int bank);
     SwBank* findPerformanceBank(int bank);
     HwBank* findDeviceBank(VoicePatchType type, int bank);
     SampleZoneBank* findSampleZoneBank(VoicePatchType type, int bank);
+    PcmBank* findPcmBank(VoicePatchType type, int bank);
     DrumKit* findDrumKit(int prog);
 
     // Reference-following helper for the "device voice patch -> performance
@@ -112,6 +119,7 @@ private:
     std::vector<SwBank> swBanks_;
     std::vector<HwBank> hwBanks_;
     std::vector<SampleZoneBank> sampleZoneBanks_;
+    std::vector<PcmBank> pcmBanks_; // browse-only, never written back on save() - see PcmBank.h
     std::vector<DrumKit> drumKits_;
 
     std::vector<std::string> warnings_;

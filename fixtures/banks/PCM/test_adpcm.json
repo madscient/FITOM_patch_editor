@@ -1,0 +1,10 @@
+{
+  "codec": "adpcm-a",
+  "sample_rate": 18500,
+  "boundary": 256,
+  "total_size": 800,
+  "entries": [
+    { "name": "kick", "offset": 0, "size": 400, "padded_size": 512, "root_note": 60 },
+    { "name": "snare", "offset": 512, "size": 260, "padded_size": 288, "root_note": 62 }
+  ]
+}

@@ -38,6 +38,63 @@ void saveJsonFile(const std::filesystem::path& path, const T& value) {
     out << j.dump(2) << '\n';
 }
 
+// Loads a *.pcmbank.json. If it has no entries[] of its own but does name
+// an adpcm_json (the usual case - see PcmBank.h), follows that reference,
+// resolved relative to `path`'s own parent directory (matches FITOM_X's
+// PatchManager::loadPcmBankJson(), core/src/PatchManager.cpp: baseDir =
+// path.parent_path()). A missing/unparseable adpcm_json does NOT fail the
+// whole bank (the pcmbank.json itself is the thing that must exist and
+// parse - D-003 "read loosely"), but unlike other soft-fail cases in this
+// file it's surfaced as a warning via `warnings` rather than silently
+// leaving entries empty, since an unreachable adpcm_json means the bank's
+// entire patch list is missing (see docs/DESIGN.md D-013 - this is exactly
+// the condition hit by real FITOM_staging data at the time of writing).
+PcmBank loadPcmBank(const std::filesystem::path& path, const std::string& contextLabel,
+                     std::vector<std::string>& warnings) {
+    PcmBank bank = loadJsonFile<PcmBank>(path);
+    if (bank.entries.empty() && !bank.adpcm_json.empty()) {
+        std::filesystem::path ajPath(bank.adpcm_json);
+        if (ajPath.is_relative()) ajPath = path.parent_path() / ajPath;
+        std::ifstream aj(ajPath, std::ios::binary);
+        if (!aj) {
+            warnings.push_back(contextLabel + ": adpcm_json not found: " + ajPath.string());
+        } else {
+            try {
+                nlohmann::json ajJson;
+                aj >> ajJson;
+                if (ajJson.contains("entries") && ajJson["entries"].is_array()) {
+                    for (const auto& e : ajJson["entries"]) bank.entries.push_back(e.get<PcmBankEntry>());
+                } else {
+                    warnings.push_back(contextLabel + ": adpcm_json has no entries[]: " + ajPath.string());
+                }
+            } catch (const nlohmann::json::parse_error& e) {
+                warnings.push_back(contextLabel + ": adpcm_json parse error: " + ajPath.string() + ": " + e.what());
+            }
+        }
+    }
+    return bank;
+}
+
+// Copies a PcmBank's sidecar reference (adpcm_json or bin_file, both
+// relative-path fields naming a file alongside the pcmbank.json) from its
+// old location to its new one, when the pcmbank.json itself is being
+// rebased to a new directory (PatchWorkspace::rebaseSourceFiles()). A
+// missing source file is a soft-fail (already reflected as a load warning
+// if it mattered - see loadPcmBank()); an absolute or otherwise-unresolved
+// reference is left untouched (points at a shared external resource that
+// isn't part of the profile tree being relocated).
+void copyPcmBankSidecar(const std::string& relRef, const std::filesystem::path& oldParent,
+                         const std::filesystem::path& newParent) {
+    if (relRef.empty()) return;
+    std::filesystem::path relPath(relRef);
+    std::filesystem::path oldPath = relPath.is_relative() ? oldParent / relPath : relPath;
+    std::filesystem::path newPath = relPath.is_relative() ? newParent / relPath : relPath;
+    if (oldPath == newPath) return;
+    std::error_code ec;
+    std::filesystem::create_directories(newPath.parent_path(), ec);
+    std::filesystem::copy_file(oldPath, newPath, std::filesystem::copy_options::overwrite_existing, ec);
+}
+
 } // namespace
 
 std::filesystem::path PatchWorkspace::resolve(const std::string& relativeFile) const {
@@ -60,6 +117,7 @@ void PatchWorkspace::loadBanks() {
     swBanks_.clear();
     hwBanks_.clear();
     sampleZoneBanks_.clear();
+    pcmBanks_.clear();
     drumKits_.clear();
 
     for (const auto& ref : profile_.patch_banks) {
@@ -97,6 +155,14 @@ void PatchWorkspace::loadBanks() {
                 bank.bankIndex = ref.bank;
                 bank.sourceFile = resolve(ref.file);
                 sampleZoneBanks_.push_back(std::move(bank));
+            } else if (isPcmWaveformVoicePatchType(*typeOpt)) {
+                const std::string label = "hw_banks[group=\"" + ref.group + "\", bank=" +
+                                           std::to_string(ref.bank) + "]";
+                PcmBank bank = loadPcmBank(resolve(ref.file), label, warnings_);
+                bank.voicePatchType = *typeOpt;
+                bank.bankIndex = ref.bank;
+                bank.sourceFile = resolve(ref.file);
+                pcmBanks_.push_back(std::move(bank));
             } else {
                 HwBank bank = loadJsonFile<HwBank>(resolve(ref.file));
                 bank.voicePatchType = *typeOpt;
@@ -108,6 +174,23 @@ void PatchWorkspace::loadBanks() {
         } catch (const std::exception& e) {
             warnings_.push_back(std::string("hw_banks[group=\"") + ref.group + "\", bank=" +
                                  std::to_string(ref.bank) + "]: " + e.what());
+        }
+    }
+
+    // banks.pcm_banks[]: an alternate registration path for the same
+    // *.pcmbank.json shape (no `group` tag, so voicePatchType stays None -
+    // see fpe::PcmBankRef). Not currently used by any real profile we've
+    // seen (hw_banks[group=ADPCM*] is used instead - D-013), but the ref
+    // itself has been round-tripped since D-008, so load it the same way.
+    for (const auto& ref : profile_.pcm_banks) {
+        try {
+            const std::string label = "pcm_banks[bank=" + std::to_string(ref.bank) + "]";
+            PcmBank bank = loadPcmBank(resolve(ref.file), label, warnings_);
+            bank.bankIndex = ref.bank;
+            bank.sourceFile = resolve(ref.file);
+            pcmBanks_.push_back(std::move(bank));
+        } catch (const std::exception& e) {
+            warnings_.push_back(std::string("pcm_banks[bank=") + std::to_string(ref.bank) + "]: " + e.what());
         }
     }
 
@@ -133,6 +216,12 @@ void PatchWorkspace::save() {
     for (auto& b : swBanks_) saveJsonFile(b.sourceFile, b);
     for (auto& b : hwBanks_) saveJsonFile(b.sourceFile, b);
     for (auto& b : sampleZoneBanks_) saveJsonFile(b.sourceFile, b);
+    // Re-serializes each pcmbank.json's own top-level fields; entries[]
+    // read from a separate adpcm_json are NOT duplicated in here (PcmBank's
+    // to_json omits them whenever adpcm_json is set) - copying that sidecar
+    // file itself alongside is rebaseSourceFiles()'s job (saveAs() calls it
+    // before save()), since it needs both the old and new sourceFile.
+    for (auto& b : pcmBanks_) saveJsonFile(b.sourceFile, b);
     for (auto& k : drumKits_) saveJsonFile(k.sourceFile, k);
 }
 
@@ -148,6 +237,13 @@ void PatchWorkspace::rebaseSourceFiles(const std::filesystem::path& newRoot) {
     for (auto& b : swBanks_) rebase(b.sourceFile);
     for (auto& b : hwBanks_) rebase(b.sourceFile);
     for (auto& b : sampleZoneBanks_) rebase(b.sourceFile);
+    for (auto& b : pcmBanks_) {
+        const std::filesystem::path oldSourceFile = b.sourceFile;
+        rebase(b.sourceFile);
+        if (oldSourceFile.empty() || oldSourceFile == b.sourceFile) continue;
+        copyPcmBankSidecar(b.adpcm_json, oldSourceFile.parent_path(), b.sourceFile.parent_path());
+        copyPcmBankSidecar(b.bin_file, oldSourceFile.parent_path(), b.sourceFile.parent_path());
+    }
     for (auto& k : drumKits_) rebase(k.sourceFile);
 }
 
@@ -168,6 +264,7 @@ void PatchWorkspace::createNew(const std::filesystem::path& dir, const std::stri
     swBanks_.clear();
     hwBanks_.clear();
     sampleZoneBanks_.clear();
+    pcmBanks_.clear();
     drumKits_.clear();
     warnings_.clear();
 }
@@ -186,6 +283,10 @@ HwBank* PatchWorkspace::findDeviceBank(VoicePatchType type, int bank) {
 }
 SampleZoneBank* PatchWorkspace::findSampleZoneBank(VoicePatchType type, int bank) {
     for (auto& b : sampleZoneBanks_) if (b.voicePatchType == type && b.bankIndex == bank) return &b;
+    return nullptr;
+}
+PcmBank* PatchWorkspace::findPcmBank(VoicePatchType type, int bank) {
+    for (auto& b : pcmBanks_) if (b.voicePatchType == type && b.bankIndex == bank) return &b;
     return nullptr;
 }
 DrumKit* PatchWorkspace::findDrumKit(int prog) {
