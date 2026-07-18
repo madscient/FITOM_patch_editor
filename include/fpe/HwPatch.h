@@ -44,7 +44,7 @@ struct FmHwOp {
     uint8_t MUL = 0;  // Multiple / frequency ratio
     uint8_t DT1 = 0;  // Detune 1
     uint8_t DT2 = 0;  // Detune 2 (OPM: 2 bits)
-    int16_t FXV = 0;  // OPN FX-mode / OPL3 pseudo-detune offset (100/64 cent units, or 0.1Hz in OPN fixed-freq mode)
+    int16_t PDT = 0;  // Pseudo DeTune: OPN FX-mode / OPL3 4op pseudo-detune offset (100/64 cent units, or 0.1Hz in OPN fixed-freq mode). JSON key "PDT" per FITOM_X's config_schema/hwbank.schema.json (D-028 - was serialized as "FXV" before, silently losing real non-zero data on every load of a file using this feature)
     uint8_t AM  = 0;  // AM enable
     uint8_t VIB = 0;  // Vibrato enable (hardware LFO routing)
     uint8_t EGT = 0;  // Envelope type / SSG-EG type, meaning is chip-specific
@@ -58,7 +58,7 @@ struct FmHwOp {
 // shape. Most fields apply to exactly one chip family; see
 // docs/hwpatch-reference.md for which.
 struct FmChipExt {
-    uint8_t  DM0 = 0;      // OPN FX-mode select: 0=off/1=pseudo-detune/2=non-integer ratio/3=fixed freq
+    uint8_t  FIX = 0;      // OPN FX-mode select: 0=off/1=pseudo-detune/2=non-integer ratio/3=fixed freq. JSON key "FIX" per FITOM_X's config_schema/hwbank.schema.json (D-028 - was serialized as "DM0" before, a stale internal name that never matched the schema)
     uint8_t  ALG_EXT = 0;  // Meaning varies: OPM noise enable(bit0) / OPL3 4-op link / OPLL preset flag(bit0)
     uint16_t HWEP = 0;     // Hardware envelope period (SSG/EPSG), or SAA1099 HW envelope bit-packed fields
     uint8_t  rhythm_ch = 255;                          // 255 = unset. Target channel for OPL_RHY (docs/terminology.md).

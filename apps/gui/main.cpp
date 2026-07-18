@@ -78,6 +78,12 @@
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX // windows.h's min/max macros would break every std::min/std::max/std::clamp call below
+#include <windows.h> // MessageBoxW()/MultiByteToWideChar() only - see showFatalErrorBox(), D-029
+#endif
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -289,6 +295,25 @@ struct PatchEditorWindow {
     int heldNote = -1;    // preview keyboard note currently held down, -1 if none
     int ccMod = 0;        // CC#1 lever position (0-127), local to this editor's preview channel
     int ccVolume = 100;   // CC#7 lever position (0-127), GM default volume
+
+    // D-027: realtime diff-only SysEx streaming + explicit "登録" (save)
+    // semantics. `lastSent` tracks whatever HwPatch state FITOM_X was last
+    // actually told about (via a live diff or the full send on close), so
+    // each frame's diff only needs to describe what changed since then -
+    // not the whole patch (docs/manuals/midi-message-reference.md 8.1
+    // confirms the wire protocol only needs "the parameters you want to
+    // override"). `registered` tracks the last-known-persisted-to-disk
+    // state (set at open time and again whenever "登録" is pressed) - used
+    // to resend the FULL patch on close, so any live-only edits that were
+    // never registered don't leave FITOM_X's active preview diverged from
+    // what's actually on disk. Both start uninitialized (`initialized`
+    // false) since they need the real loaded patch, not a
+    // default-constructed one - renderPatchEditor() populates them from
+    // the patch the first time it actually renders this editor.
+    fpe::HwPatch lastSent;
+    fpe::HwPatch registered;
+    bool initialized = false;
+    bool deviceSelected = false; // selectDevice() sent at least once this editor's lifetime
 };
 
 // Editable working copy shown by renderPreferencesDialog() - only written
@@ -890,14 +915,14 @@ struct HwVoiceFieldRanges {
     FieldRange FB, ALG, AMS, PMS, NFQ, FB2;
 };
 struct HwOpFieldRanges {
-    FieldRange AR, DR, SL, SR, RR, TL, KSR, KSL, MUL, DT1, DT2, FXV, AM, VIB, EGT, WS, REV, EGS, DT3;
+    FieldRange AR, DR, SL, SR, RR, TL, KSR, KSL, MUL, DT1, DT2, PDT, AM, VIB, EGT, WS, REV, EGS, DT3;
 };
 
 // OPN(YM2203)/OPN2 family register widths, confirmed against FITOM_X's
 // actual register-write masks in core/src/OPN_new.cpp (FB&7, ALG&7,
 // DT1&7, MUL&0xF, TL&0x7F, AR/DR/SR&0x1F, KSR&3, SL/RR&0xF, EGT&0xF) and
 // docs/voice-parameter-reference.md's OPN section (fields not listed
-// there - DT2/KSL/FXV/AM/VIB/WS/REV/EGS/DT3/AMS/PMS/NFQ/FB2 - are unused
+// there - DT2/KSL/PDT/AM/VIB/WS/REV/EGS/DT3/AMS/PMS/NFQ/FB2 - are unused
 // by OPN and marked used=false).
 HwVoiceFieldRanges opnVoiceRanges() {
     HwVoiceFieldRanges r;
@@ -922,7 +947,7 @@ HwOpFieldRanges opnOpRanges() {
     r.MUL = {0, 15, true};
     r.DT1 = {0, 7, true};
     r.DT2 = {0, 0, false};
-    r.FXV = {0, 0, false};
+    r.PDT = {0, 0, false};
     r.AM = {0, 0, false};
     r.VIB = {0, 0, false};
     r.EGT = {0, 15, true};
@@ -973,7 +998,7 @@ HwOpFieldRanges oplOpRanges(int wsMax) {
     r.MUL = {0, 15, true};
     r.DT1 = {0, 0, false};
     r.DT2 = {0, 0, false};
-    r.FXV = {0, 0, false};
+    r.PDT = {0, 0, false};
     r.AM = {0, 1, true};
     r.VIB = {0, 1, true};
     r.EGT = {0, 0, false};
@@ -1024,7 +1049,7 @@ HwOpFieldRanges opllOpRanges() {
 // Generic wide-open fallback for chip families whose exact register widths
 // haven't been confirmed against FITOM_X's source yet (D-016 tracks which
 // ones still need this) - every field shown and editable, 0-99 (or the
-// FXV field's full int16 range), so nothing is artificially blocked before
+// PDT field's full int16 range), so nothing is artificially blocked before
 // its real range is known.
 HwVoiceFieldRanges genericVoiceRanges() {
     HwVoiceFieldRanges r;
@@ -1050,7 +1075,7 @@ HwOpFieldRanges genericOpRanges() {
     r.MUL = w;
     r.DT1 = w;
     r.DT2 = w;
-    r.FXV = {-32768, 32767, true};
+    r.PDT = {-32768, 32767, true};
     r.AM = w;
     r.VIB = w;
     r.EGT = w;
@@ -1205,6 +1230,52 @@ nlohmann::json buildHwPatchOverrideJson(const fpe::HwPatch& patch) {
     j["ops"] = patch.ops;
     j["ext"] = patch.ext;
     return j;
+}
+
+// Shallow (one level) diff between two JSON objects: returns only the keys
+// of `curr` whose value differs from `prev`'s same key (or is entirely
+// absent from `prev`). Used by buildHwPatchDiffJson() below - fine for
+// FmHwVoice/FmHwOp's flat uint8_t/int16_t fields, no nested-object diffing
+// needed.
+nlohmann::json shallowJsonDiff(const nlohmann::json& prev, const nlohmann::json& curr) {
+    nlohmann::json diff = nlohmann::json::object();
+    for (auto it = curr.begin(); it != curr.end(); ++it) {
+        auto prevIt = prev.find(it.key());
+        if (prevIt == prev.end() || *prevIt != it.value()) {
+            diff[it.key()] = it.value();
+        }
+    }
+    return diff;
+}
+
+// Builds a partial ("diff-only") HwPatch override - only the top-level
+// hw.* keys and per-operator fields that actually changed between `prev`
+// and `curr` (D-027). Per docs/manuals/midi-message-reference.md 8.1,
+// this is exactly what the wire protocol expects for incremental updates
+// ("オーバーライドしたいパラメータのみを含むJSONオブジェクト" - omitted
+// keys mean "unchanged"); `ops[]` entries are `null` when that operator
+// didn't change at all, or a partial object when only some of its fields
+// did. Returns an empty object if nothing changed at all (caller should
+// skip sending in that case - an empty top-level object is NOT the same
+// as `{}` sent for target-type=0x00, which the doc defines as "clear the
+// override entirely", so this must never be sent literally as-is).
+nlohmann::json buildHwPatchDiffJson(const fpe::HwPatch& prev, const fpe::HwPatch& curr) {
+    nlohmann::json diff = shallowJsonDiff(nlohmann::json(prev.hw), nlohmann::json(curr.hw));
+
+    nlohmann::json opsArr = nlohmann::json::array();
+    bool anyOpChanged = false;
+    for (size_t i = 0; i < curr.ops.size(); ++i) {
+        const nlohmann::json prevOpJson = (i < prev.ops.size()) ? nlohmann::json(prev.ops[i]) : nlohmann::json(fpe::FmHwOp{});
+        const nlohmann::json opDiff = shallowJsonDiff(prevOpJson, nlohmann::json(curr.ops[i]));
+        if (opDiff.empty()) {
+            opsArr.push_back(nullptr); // unchanged - see the doc's null/{} convention above
+        } else {
+            opsArr.push_back(opDiff);
+            anyOpChanged = true;
+        }
+    }
+    if (anyOpChanged) diff["ops"] = opsArr;
+    return diff;
 }
 
 // Live visual aid only - NOT a sample-accurate emulation of any specific
@@ -1464,7 +1535,7 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges,
         inputU8Ranged("MUL", op.MUL, ranges.MUL);
         inputU8Ranged("DT1", op.DT1, ranges.DT1);
         inputU8Ranged("DT2", op.DT2, ranges.DT2);
-        inputI16Ranged("FXV", op.FXV, ranges.FXV);
+        inputI16Ranged("PDT", op.PDT, ranges.PDT);
         inputU8Ranged("AM", op.AM, ranges.AM);
         inputU8Ranged("VIB", op.VIB, ranges.VIB);
         inputU8Ranged("EGT", op.EGT, ranges.EGT);
@@ -1475,6 +1546,26 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges,
     }
     ImGui::EndChild();
     ImGui::PopID();
+}
+
+// Called once when a patch editor closes (D-027): resends the FULL
+// last-registered (i.e. actually-persisted-to-disk) HwPatch, so any
+// live-only edits made after the last "登録" - which were already heard
+// via the realtime diff stream while the editor was open - don't leave
+// FITOM_X's active preview permanently diverged from what's on disk once
+// the editor showing them is gone. A no-op if this editor never actually
+// rendered (editor.initialized false - e.g. its bank/prog vanished before
+// the first frame) or no preview backend is available.
+void sendFullRegisteredOverride(AppContext& ctx, PatchEditorWindow& editor) {
+    if (!editor.initialized) return;
+    auto& banks = ctx.workspace.deviceBanks();
+    if (editor.bankIndex >= banks.size()) return;
+    const auto& bank = banks[editor.bankIndex];
+    if (ctx.previewOutput.ensureReady() == PreviewOutput::ActiveBackend::None) return;
+    const uint8_t ch = static_cast<uint8_t>(std::clamp(ctx.preferences.midiChannel, 0, 15));
+    ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(bank.voicePatchType), static_cast<uint8_t>(bank.bankIndex),
+                                    static_cast<uint8_t>(editor.registered.prog));
+    ctx.previewOutput.sendHwPatchOverride(ch, buildHwPatchOverrideJson(editor.registered).dump());
 }
 
 // Renders one modeless patch-editor window's content (called from within
@@ -1495,17 +1586,49 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     }
 
     const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+    const bool builtin = patch->isBuiltinRef();
+
     ImGui::Text("[%s bank %d prog %d]", groupStr.c_str(), bank.bankIndex, patch->prog);
+    if (!builtin) {
+        // Top-right per the project owner's placement request (D-027).
+        // "登録" persists the whole workspace (matching the existing
+        // tryCreateBank()-after-create precedent - HwBank has no
+        // narrower single-bank save API) and snapshots the just-saved
+        // state into editor.registered, which is what gets resent in
+        // full when this editor closes (see sendFullRegisteredOverride()).
+        ImGui::SameLine();
+        const float buttonW = 90.0f;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
+        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+            try {
+                ctx.workspace.save();
+                editor.registered = *patch;
+            } catch (const std::exception& e) {
+                ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
+            }
+        }
+    }
 
     char nameBuf[256];
     std::snprintf(nameBuf, sizeof(nameBuf), "%s", patch->name.c_str());
     if (ImGui::InputText("名前", nameBuf, sizeof(nameBuf))) patch->name = nameBuf;
 
-    if (patch->isBuiltinRef()) {
+    if (builtin) {
         ImGui::TextWrapped(
             "内蔵ROM音色への参照(builtin)のため、ops[]による編集はできません(patch_type=%s, patch_no=%d)。",
             patch->builtin->patch_type.c_str(), patch->builtin->patch_no);
         return;
+    }
+
+    // Lazily captures the patch's state the first time this editor
+    // actually renders it (not at construction time, since
+    // openPatchEditor()/kiosk setup in main() don't have easy access to
+    // the resolved HwPatch& itself) - see PatchEditorWindow's comment.
+    if (!editor.initialized) {
+        editor.lastSent = *patch;
+        editor.registered = *patch;
+        editor.initialized = true;
     }
 
     int swBank = patch->sw_bank, swProg = patch->sw_prog;
@@ -1583,6 +1706,26 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
                         statusText);
     const uint8_t previewChannel = static_cast<uint8_t>(std::clamp(ctx.preferences.midiChannel, 0, 15));
 
+    // Realtime diff-only SysEx streaming (D-027): every frame, compare the
+    // live in-memory patch against whatever FITOM_X was last actually told
+    // (editor.lastSent) and send only what changed - not the whole patch -
+    // per docs/manuals/midi-message-reference.md 8.1's "parameters you
+    // want to override only" wire format. This is independent of "登録"
+    // (which persists to disk); dragging a slider is heard immediately but
+    // isn't saved until 登録 is pressed.
+    if (connected) {
+        const nlohmann::json diff = buildHwPatchDiffJson(editor.lastSent, *patch);
+        if (!diff.empty()) {
+            if (!editor.deviceSelected) {
+                ctx.previewOutput.selectDevice(previewChannel, static_cast<uint8_t>(bank.voicePatchType),
+                                                static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog));
+                editor.deviceSelected = true;
+            }
+            ctx.previewOutput.sendHwPatchOverride(previewChannel, diff.dump());
+            editor.lastSent = *patch;
+        }
+    }
+
     // CC#1 (modulation) / CC#7 (volume) levers to the left of the preview
     // keyboard, matching the reference editors' "pitch/mod" lever layout.
     // The slider is the FIRST thing in each group (label goes below, not
@@ -1645,6 +1788,10 @@ void renderPatchEditors(AppContext& ctx) {
             renderPatchEditor(ctx, editor);
         }
         ImGui::End();
+        if (!editor.open) {
+            // Just closed this frame (title-bar X) - see D-027.
+            sendFullRegisteredOverride(ctx, editor);
+        }
     }
     ctx.openEditors.erase(
         std::remove_if(ctx.openEditors.begin(), ctx.openEditors.end(), [](const PatchEditorWindow& e) {
@@ -1886,6 +2033,33 @@ void renderErrorPopup(AppContext& ctx) {
     if (!open) ctx.errorMessage.clear();
 }
 
+// Shows a native OS error dialog in addition to the existing stderr
+// message, then the caller should exit. Necessary because FITOM_X spawns
+// this editor (both kiosk mode, D-026, and the plain `<profile.json>`
+// launch, D-010) as a concurrent, non-waited child process - it never
+// observes this process's exit code, so a bare `return 1` is invisible to
+// everyone (D-029, per the project owner: FITOM_X runs concurrently and
+// can't block waiting for this process's return value). A message box is
+// the only way a human actually sees a startup failure that happens
+// before any ImGui window exists to show renderErrorPopup() in.
+// Windows-only for now (consistent with this project's other native-API
+// code, e.g. Preferences.cpp's exeDir() - POSIX untested).
+void showFatalErrorBox(const std::string& message) {
+    std::fprintf(stderr, "%s\n", message.c_str());
+#ifdef _WIN32
+    // MessageBoxA takes an ANSI (system codepage) string, not UTF-8 - this
+    // project's source (and therefore `message`, built from Japanese
+    // string literals) is UTF-8 throughout (see CMakeLists.txt's /utf-8
+    // comment), so passing it to MessageBoxA directly renders as mojibake
+    // on a Shift-JIS-locale Windows install. Convert to UTF-16 and use
+    // MessageBoxW instead.
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, message.c_str(), -1, nullptr, 0);
+    std::wstring wmessage(static_cast<size_t>(std::max(wlen, 0)), L'\0');
+    if (wlen > 0) MultiByteToWideChar(CP_UTF8, 0, message.c_str(), -1, wmessage.data(), wlen);
+    MessageBoxW(nullptr, wmessage.c_str(), L"FITOM_X Patch Editor", MB_OK | MB_ICONERROR);
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1897,9 +2071,9 @@ int main(int argc, char** argv) {
     // patch" child process. The plain `<profile.json>` form (argc==2,
     // D-010) is unchanged and still opens the normal windowed UI at
     // Outline. Resolved and validated before glfwInit()/any window
-    // creation, so a bad kiosk invocation fails fast via stderr + a
-    // nonzero exit code rather than as an in-GUI error popup - there is
-    // no interactive fallback to show one in.
+    // creation, so a bad kiosk invocation fails fast - via
+    // showFatalErrorBox() (D-029), not just stderr + a nonzero exit code,
+    // since FITOM_X never waits for or observes this process's exit code.
     fpe::PatchWorkspace kioskWorkspace;
     std::optional<size_t> kioskBankIndex;
     int kioskProg = 0;
@@ -1910,28 +2084,29 @@ int main(int argc, char** argv) {
         try {
             kioskProg = std::stoi(argv[3]);
         } catch (const std::exception&) {
-            std::fprintf(stderr, "kiosk mode: invalid prog number '%s'\n", argv[3]);
+            showFatalErrorBox(std::string("キオスクモード: prog番号 '") + argv[3] + "' を解釈できません。");
             return 1;
         }
         try {
             kioskWorkspace.load(profilePath);
         } catch (const std::exception& e) {
-            std::fprintf(stderr, "kiosk mode: failed to load profile '%s': %s\n", profilePath.string().c_str(),
-                         e.what());
+            showFatalErrorBox("キオスクモード: プロファイルの読み込みに失敗しました:\n" + profilePath.string() +
+                               "\n\n" + e.what());
             return 1;
         }
         kioskBankIndex = findDeviceBankIndexByFile(kioskWorkspace, hwbankFile);
         if (!kioskBankIndex || !kioskWorkspace.deviceBanks()[*kioskBankIndex].findByProg(kioskProg)) {
-            std::fprintf(stderr,
-                         "kiosk mode: no device patch bank/prog matching '%s' prog %d found in profile '%s'\n",
-                         hwbankFile.string().c_str(), kioskProg, profilePath.string().c_str());
+            showFatalErrorBox("キオスクモード: 指定されたhwbankファイル/progに一致するデバイスパッチが"
+                               "プロファイル内に見つかりません:\n" +
+                               hwbankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
+                               profilePath.string());
             return 1;
         }
     }
 
     glfwSetErrorCallback(glfwErrorCallback);
     if (!glfwInit()) {
-        std::fprintf(stderr, "glfwInit() failed\n");
+        showFatalErrorBox("glfwInit() に失敗しました。");
         return 1;
     }
 
@@ -1943,7 +2118,7 @@ int main(int argc, char** argv) {
 
     GLFWwindow* window = glfwCreateWindow(1280, 800, "FITOM_X Patch Editor", nullptr, nullptr);
     if (!window) {
-        std::fprintf(stderr, "glfwCreateWindow() failed\n");
+        showFatalErrorBox("glfwCreateWindow() に失敗しました。");
         glfwTerminate();
         return 1;
     }
@@ -1952,7 +2127,7 @@ int main(int argc, char** argv) {
 
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
-        std::fprintf(stderr, "glewInit() failed\n");
+        showFatalErrorBox("glewInit() に失敗しました。");
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -2023,8 +2198,10 @@ int main(int argc, char** argv) {
             ImGui::Begin("パッチ編集", &ctx.kioskEditor.open,
                          ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
             renderPatchEditor(ctx, ctx.kioskEditor);
+            renderErrorPopup(ctx); // e.g. "登録" save failures - kiosk mode has no menu to show them elsewhere
             ImGui::End();
             if (!ctx.kioskEditor.open) {
+                sendFullRegisteredOverride(ctx, ctx.kioskEditor); // D-027, same as the normal editor windows' close handling
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
         } else {
