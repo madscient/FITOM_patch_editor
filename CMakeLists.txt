@@ -85,7 +85,7 @@ if(FPE_BUILD_GUI)
   find_package(OpenGL REQUIRED)
   find_package(imgui CONFIG REQUIRED)
 
-  add_executable(fitom_patch_editor_gui apps/gui/main.cpp)
+  add_executable(fitom_patch_editor_gui apps/gui/main.cpp apps/gui/MidiPipeClient.cpp apps/gui/BmpLoader.cpp)
   target_link_libraries(fitom_patch_editor_gui PRIVATE
     fpe_data
     imgui::imgui
@@ -95,4 +95,17 @@ if(FPE_BUILD_GUI)
   )
   target_compile_definitions(fitom_patch_editor_gui PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
   target_compile_features(fitom_patch_editor_gui PRIVATE cxx_std_17)
+
+  # assets/ (e.g. ALG connection-diagram .bmp files) is located the same way
+  # fixtures/ is for the tests - upward search from the process's current
+  # working directory for an assets/ marker file - so it's copied next to
+  # the executable rather than baked in as a compile-time absolute path
+  # (which wouldn't survive moving the build to another machine). Explorer
+  # sets CWD to the exe's own directory on double-click, so this Just Works
+  # for a normal launch; running from a different CWD still finds it via
+  # the upward search as long as it's somewhere above the exe.
+  add_custom_command(TARGET fitom_patch_editor_gui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+            "$<TARGET_FILE_DIR:fitom_patch_editor_gui>/assets")
 endif()
