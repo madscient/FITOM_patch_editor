@@ -84,14 +84,23 @@ if(FPE_BUILD_GUI)
   find_package(GLEW REQUIRED)
   find_package(OpenGL REQUIRED)
   find_package(imgui CONFIG REQUIRED)
+  find_package(rtmidi CONFIG REQUIRED)
 
-  add_executable(fitom_patch_editor_gui apps/gui/main.cpp apps/gui/MidiPipeClient.cpp apps/gui/BmpLoader.cpp)
+  add_executable(fitom_patch_editor_gui
+    apps/gui/main.cpp
+    apps/gui/MidiPipeClient.cpp
+    apps/gui/BmpLoader.cpp
+    apps/gui/RtMidiOutput.cpp
+    apps/gui/PreviewOutput.cpp
+    apps/gui/Preferences.cpp
+  )
   target_link_libraries(fitom_patch_editor_gui PRIVATE
     fpe_data
     imgui::imgui
     glfw
     GLEW::GLEW
     OpenGL::GL
+    RtMidi::rtmidi
   )
   target_compile_definitions(fitom_patch_editor_gui PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
   target_compile_features(fitom_patch_editor_gui PRIVATE cxx_std_17)
