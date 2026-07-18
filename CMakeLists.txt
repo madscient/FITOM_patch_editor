@@ -85,15 +85,17 @@ if(FPE_BUILD_GUI)
   find_package(OpenGL REQUIRED)
   find_package(imgui CONFIG REQUIRED)
   find_package(rtmidi CONFIG REQUIRED)
+  find_package(Stb REQUIRED) # header-only (stb_image.h) - see apps/gui/ImageLoader.cpp, D-022
 
   add_executable(fitom_patch_editor_gui
     apps/gui/main.cpp
     apps/gui/MidiPipeClient.cpp
-    apps/gui/BmpLoader.cpp
+    apps/gui/ImageLoader.cpp
     apps/gui/RtMidiOutput.cpp
     apps/gui/PreviewOutput.cpp
     apps/gui/Preferences.cpp
   )
+  target_include_directories(fitom_patch_editor_gui PRIVATE ${Stb_INCLUDE_DIR})
   target_link_libraries(fitom_patch_editor_gui PRIVATE
     fpe_data
     imgui::imgui
@@ -105,7 +107,7 @@ if(FPE_BUILD_GUI)
   target_compile_definitions(fitom_patch_editor_gui PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
   target_compile_features(fitom_patch_editor_gui PRIVATE cxx_std_17)
 
-  # assets/ (e.g. ALG connection-diagram .bmp files) is located the same way
+  # assets/ (e.g. ALG connection-diagram/WS waveform .png files) is located the same way
   # fixtures/ is for the tests - upward search from the process's current
   # working directory for an assets/ marker file - so it's copied next to
   # the executable rather than baked in as a compile-time absolute path

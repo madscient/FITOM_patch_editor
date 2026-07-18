@@ -33,10 +33,10 @@
 | `apps/gui/RtMidiOutput.h` / `.cpp` | ✅(Windows実機、ポート列挙・実音出力とも確認済み) | RtMidi(vcpkgポート、v6.0.0)の薄いラッパー。ポート列挙/オープン/`sendRaw()`(D-018) |
 | `apps/gui/PreviewOutput.h` / `.cpp` | ✅(Windows実機確認済み、FITOM_X未接続時のRtMidiフォールバック経路含む) | `MidiPipeClient`(内部パイプ)と`RtMidiOutput`を束ね、パイプ優先・未接続時はRtMidiへフォールバックするセマンティックなAPI(`selectDevice`/`noteOn`等)を提供(D-018) |
 | `apps/gui/Preferences.h` / `.cpp` | ✅(Windows実機確認済み、保存・次回起動時の自動読み込み復元とも) | 優先プロファイルフォルダ・自動読み込み設定・出力MIDIポート/CHを実行ファイルと同じディレクトリの固定ファイル名`FITOM_patch_editor.preference.json`へ永続化(D-018、保存先はD-020で`%APPDATA%`から変更) |
-| `apps/gui/BmpLoader.h` / `.cpp` | ✅ | 24bit非圧縮BMPの最小限ローダー。ALG接続図・WS波形画像表示に使用(D-016/D-021) |
-| `assets/alg_diagrams/opn_al{0-7}.bmp` | ✅ | OPN系ALG接続図(8種)。実行ファイルの隣にpost-buildでコピーされる(D-016) |
-| `assets/alg_diagrams/opl_alg{0-1}.bmp` | ✅ | OPL/OPL2/OPL3_2系ALG接続図(2種、ALG0=直列FM/ALG1=並列)。実機画像のトポロジーを確認の上で新規生成(D-021) |
-| `assets/waveforms/ws{0-7}.bmp` | ✅ | OPL系WS(波形選択)の8波形。`waveform.xlsx`のキャッシュ済み計算値から生成(D-021) |
+| `apps/gui/ImageLoader.h` / `.cpp` | ✅ | stb_image(vcpkgポート`stb`)ベースのPNGローダー。ALG接続図・WS波形画像表示に使用(D-016/D-021、D-022でBMP専用の自前デコーダ`BmpLoader`から置き換え) |
+| `assets/alg_diagrams/opn_al{0-7}.png` | ✅ | OPN系ALG接続図(8種)。実行ファイルの隣にpost-buildでコピーされる(D-016、D-022でPNG化) |
+| `assets/alg_diagrams/opl_alg{0-1}.png` | ✅ | OPL/OPL2/OPL3_2系ALG接続図(2種、ALG0=直列FM/ALG1=並列)。実機画像のトポロジーを確認の上で新規生成(D-021、D-022でPNG化) |
+| `assets/waveforms/ws{0-7}.png` | ✅ | OPL系WS(波形選択)の8波形。`waveform.xlsx`のキャッシュ済み計算値から生成(D-021、D-022でPNG化) |
 
 ### ビルド・依存関係設定
 
@@ -62,7 +62,7 @@
   0-99フォールバックのまま)で、`docs/voice-parameter-reference.md`+
   FITOM_X実ソースのレジスタマスクを突き合わせて`getVoiceFieldRanges()`/
   `getOpFieldRanges()`(`apps/gui/main.cpp`)に追加していく必要がある。
-  ALG接続図もOPN系の`opn_al{0-7}.bmp`・OPL系の`opl_alg{0-1}.bmp`のみで、
+  ALG接続図もOPN系の`opn_al{0-7}.png`・OPL系の`opl_alg{0-1}.png`のみで、
   他チップ用の画像は未取り込み。WS(波形選択)の画像+スピンボタンUIも
   OPL系のみ対応(D-021)、OPZ(独自3bit波形)は今後の課題。
   ネイティブパッチ/パフォーマンス
@@ -764,3 +764,39 @@
   来たら、同様にレジスタ幅を確認して対応する。その後、ネイティブ/
   パフォーマンス/ドラムノートの編集フォーム、またはバンク/パッチの
   複製・削除UIに進む。
+
+### 2026-07-18 (同マシン、ALG/WS画像アセットをBMPからPNGへ変更 + OPLL builtinの扱いを確認)
+- やったこと: 利用者から2点の指摘・確認を受けた。(1)「OPLLの場合、
+  builtinロールが付与されているバンクといない場合でパッチ編集画面が
+  大きく変わる。共通レイアウトになるのは付与されていない場合のみ。
+  builtinの編集画面はpending」という確認 - 調査の結果、
+  `fpe::HwPatch::isBuiltinRef()`(D-015時点から存在)が既にこの区別を
+  正しく扱っており(`builtin`設定時はops[]エディタを描画せず簡易
+  メッセージのみ表示して早期return)、D-021のOPL共通レイアウト変更は
+  この早期returnより後にしか効かないため、コード変更は不要と判断した
+  (詳細はD-021追記参照)。builtin専用の編集画面は利用者の指示通り
+  今回もスコープ外のまま。(2)「画像アセットがbmpになってますがpngに
+  できませんか?」という要望を受け、vcpkgの`stb`ポート(header-only
+  `stb_image.h`)を新規依存として追加し、自前の24bit BMP専用デコーダ
+  (`apps/gui/BmpLoader.h`/`.cpp`)を`apps/gui/ImageLoader.h`/`.cpp`
+  (`stbi_load_from_memory()`ベース)に置き換えた(詳細はD-022参照)。
+  既存の全画像アセット(`opn_al{0-7}`・`opl_alg{0-1}`・`ws{0-7}`)を
+  BMPからPNGに変換し直し、BMP版は削除。`CMakeLists.txt`に
+  `find_package(Stb REQUIRED)`を追加。
+  実機では`cmake --preset vcpkg-windows-vs2026`の再configureで`stb`が
+  解決されること、`cmake --build`・`ctest`(117項目)全通過を確認した
+  後、`unified_preset.profile.json`の`OPL3_2 bank 0``Tubular Bells`を
+  開き、ALG接続図・WS画像(PNG化後)がD-021時点と変わらず正しく表示
+  されることをスクリーンショットで確認した。
+- 未完了・既知の問題: OPLLのbuiltin専用編集画面(利用者の指示通り
+  pending)。OPLLの非builtinバンクでのWS/ALG実機再確認は前回セッション
+  から引き続き持ち越し。OPM/OPZ/OPL_RHY/OPL3(4opモード)/PSG系の
+  パラメータ範囲・接続図・波形画像も引き続き未対応。ネイティブ/
+  パフォーマンス/ドラムノートの編集フォーム、バンク/パッチの複製・
+  削除UIも引き続き未着手。
+- 次にやること: 次回このマシンで作業する際は、まずOPLLの非builtin
+  パッチでWS 0-1クランプ・ALG数値スピナー(接続図なし)を実機確認する。
+  利用者からOPLLのbuiltin専用編集画面の要件が来たら、`BuiltinRef`
+  (`patch_type`/`patch_no`)を使った専用UIを設計する。その後、他の
+  チップ種別への対応、またはネイティブ/パフォーマンス/ドラムノートの
+  編集フォーム・バンク/パッチの複製・削除UIに進む。
