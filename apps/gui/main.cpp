@@ -16,10 +16,17 @@
 // editor. On load failure, falls back to the normal MainMenu + error
 // popup (see main()).
 //
+// Outline also has a "新規バンク作成" button (renderNewBankDialog()) that
+// creates a new native/device/performance bank or drum kit - bank
+// index/prog is auto-assigned (one past the current max), and the file's
+// directory+suffix are auto-derived from the chosen bank type
+// (buildRelativeBankFile()). Saves immediately via PatchWorkspace::save()
+// so a real skeleton file appears on disk right away.
+//
 // "新規プロファイル作成"/"プロファイル削除" are shown in the main menu
-// but intentionally left disabled - not implemented yet. Patch editing
-// forms, CRUD UI, and the virtual MIDI controller are also still future
-// work (see docs/STATUS.md).
+// but intentionally left disabled - not implemented yet. Per-parameter
+// patch editing forms and the virtual MIDI controller are also still
+// future work (see docs/STATUS.md).
 //
 // Backend: GLFW (window/input) + OpenGL3 (rendering) + GLEW (GL function
 // loading). All three, plus Dear ImGui itself and nlohmann/json, are
@@ -131,11 +138,51 @@ struct FileBrowserState {
     }
 };
 
+// Chip families selectable when creating a new Device (HwBank) bank.
+// Deliberately excludes AWM/ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/PCM-D8 (those
+// need a SampleZoneBank/PcmBank instead - see fpe::isSampleBasedVoicePatchType
+// / fpe::isPcmWaveformVoicePatchType, D-013) and SD1/MA3/MA5/MA7 (recognized
+// by FITOM_X but no implemented chip driver, per VoicePatchType.h) - none of
+// those are what "create a new hardware bank" should produce.
+struct DeviceGroupOption {
+    fpe::VoicePatchType type;
+    const char* label;
+};
+constexpr DeviceGroupOption kCreatableDeviceGroups[] = {
+    {fpe::VoicePatchType::OPN, "OPN"},         {fpe::VoicePatchType::OPN2, "OPN2"},
+    {fpe::VoicePatchType::OPM, "OPM"},         {fpe::VoicePatchType::OPZ, "OPZ"},
+    {fpe::VoicePatchType::OPZ2, "OPZ2"},       {fpe::VoicePatchType::OPL, "OPL"},
+    {fpe::VoicePatchType::OPL2, "OPL2"},       {fpe::VoicePatchType::OPL3_2, "OPL3_2"},
+    {fpe::VoicePatchType::OPL_RHY, "OPL_RHY"}, {fpe::VoicePatchType::OPLL, "OPLL"},
+    {fpe::VoicePatchType::OPLLP, "OPLLP"},     {fpe::VoicePatchType::OPLLX, "OPLLX"},
+    {fpe::VoicePatchType::VRC7, "VRC7"},       {fpe::VoicePatchType::OPL3, "OPL3"},
+    {fpe::VoicePatchType::SSG, "SSG"},         {fpe::VoicePatchType::EPSG, "EPSG"},
+    {fpe::VoicePatchType::DCSG, "DCSG"},       {fpe::VoicePatchType::SAA, "SAA"},
+    {fpe::VoicePatchType::SCC, "SCC"},
+};
+
+// The four bank types the "新規バンク作成" dialog can produce (matches
+// PatchWorkspace's createNativePatchBank/createDeviceBank/
+// createPerformanceBank/createDrumKit). SampleZoneBank/PcmBank are
+// deliberately not offered here - see kCreatableDeviceGroups above.
+enum class NewBankType { Native, Device, Performance, Drum };
+
+struct NewBankDialogState {
+    bool open = false;
+    NewBankType type = NewBankType::Native;
+    char name[128] = {};
+    char fileStem[128] = {}; // just the base name - postfix/extension are auto-generated (see buildRelativeBankFile())
+    int deviceGroupIndex = 0; // index into kCreatableDeviceGroups, only used when type == Device
+    int drumKitTypeIndex = 0; // 0 = routed, 1 = direct; only used when type == Drum
+    std::string errorMessage; // validation/creation failure, shown inline in the dialog
+};
+
 struct AppContext {
     fpe::PatchWorkspace workspace;
     AppState state = AppState::MainMenu;
     FileBrowserState browser;
     std::string errorMessage; // non-empty => error popup is showing
+    NewBankDialogState newBankDialog;
 
     // Selection driving the BankDetail screen - which category/index into
     // the corresponding PatchWorkspace vector. Only meaningful while
@@ -162,6 +209,152 @@ void selectBank(AppContext& ctx, BankCategory category, size_t index) {
     ctx.selectedCategory = category;
     ctx.selectedIndex = index;
     ctx.state = AppState::BankDetail;
+}
+
+// Auto-assigns a new bank's index/prog as one past the highest already in
+// use (0 if the vector is empty), so the "新規バンク作成" dialog doesn't
+// need to ask for it separately.
+template <typename BankT>
+int nextBankIndex(const std::vector<BankT>& banks) {
+    int maxIdx = -1;
+    for (const auto& b : banks) maxIdx = std::max(maxIdx, b.bankIndex);
+    return maxIdx + 1;
+}
+
+int nextDeviceBankIndex(fpe::PatchWorkspace& ws, fpe::VoicePatchType group) {
+    int maxIdx = -1;
+    for (const auto& b : ws.deviceBanks()) {
+        if (b.voicePatchType == group) maxIdx = std::max(maxIdx, b.bankIndex);
+    }
+    return maxIdx + 1;
+}
+
+int nextDrumProg(const std::vector<fpe::DrumKit>& kits) {
+    int maxProg = -1;
+    for (const auto& k : kits) maxProg = std::max(maxProg, k.prog);
+    return maxProg + 1;
+}
+
+// Builds the relative `file` path a new bank will be saved to: a fixed
+// per-type directory + the user-entered stem + the on-disk suffix that
+// PatchWorkspace/FITOM_X expect for that bank type (matches the layout
+// already used by fixtures/ and real FITOM_staging profiles).
+std::string buildRelativeBankFile(const NewBankDialogState& d) {
+    const std::string stem = d.fileStem;
+    switch (d.type) {
+        case NewBankType::Native:
+            return "patches/" + stem + ".patchbank.json";
+        case NewBankType::Performance:
+            return "sw/" + stem + ".swbank.json";
+        case NewBankType::Device:
+            return std::string("banks/") + kCreatableDeviceGroups[d.deviceGroupIndex].label + "/" + stem +
+                   ".hwbank.json";
+        case NewBankType::Drum:
+            return "drums/" + stem + ".drumkit.json";
+    }
+    return stem;
+}
+
+// Creates the bank via PatchWorkspace's existing CRUD API, then saves
+// immediately so a real skeleton file actually appears on disk (matching
+// "作成し...表示" - not left dangling in memory until some future,
+// not-yet-implemented explicit Save button). On failure, leaves the
+// dialog's fields untouched and sets d.errorMessage for inline display.
+bool tryCreateBank(AppContext& ctx) {
+    NewBankDialogState& d = ctx.newBankDialog;
+    fpe::PatchWorkspace& ws = ctx.workspace;
+
+    const std::string name = d.name;
+    const std::string stem = d.fileStem;
+    if (name.empty() || stem.empty()) {
+        d.errorMessage = "バンク名とファイル名を入力してください。";
+        return false;
+    }
+
+    const std::string relFile = buildRelativeBankFile(d);
+    try {
+        switch (d.type) {
+            case NewBankType::Native:
+                ws.createNativePatchBank(nextBankIndex(ws.nativePatchBanks()), name, relFile);
+                break;
+            case NewBankType::Performance:
+                ws.createPerformanceBank(nextBankIndex(ws.performanceBanks()), name, relFile);
+                break;
+            case NewBankType::Device: {
+                const fpe::VoicePatchType group = kCreatableDeviceGroups[d.deviceGroupIndex].type;
+                ws.createDeviceBank(group, nextDeviceBankIndex(ws, group), name, relFile);
+                break;
+            }
+            case NewBankType::Drum: {
+                const auto kitType = d.drumKitTypeIndex == 0 ? fpe::DrumKitType::Routed : fpe::DrumKitType::Direct;
+                ws.createDrumKit(nextDrumProg(ws.drumKits()), name, relFile, kitType);
+                break;
+            }
+        }
+        ws.save();
+    } catch (const std::exception& e) {
+        d.errorMessage = std::string("作成に失敗しました: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
+void renderNewBankDialog(AppContext& ctx) {
+    NewBankDialogState& d = ctx.newBankDialog;
+    if (!d.open) return;
+
+    ImGui::OpenPopup("新規バンク作成");
+    bool stayOpen = true;
+    if (ImGui::BeginPopupModal("新規バンク作成", &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        static const char* kTypeLabels[] = {"ネイティブパッチ", "デバイスパッチ", "パフォーマンスパッチ", "ドラムキット"};
+        int typeIdx = static_cast<int>(d.type);
+        if (ImGui::Combo("バンク種別", &typeIdx, kTypeLabels, IM_ARRAYSIZE(kTypeLabels))) {
+            d.type = static_cast<NewBankType>(typeIdx);
+        }
+
+        ImGui::InputText("バンク名", d.name, sizeof(d.name));
+        ImGui::InputText("ファイル名", d.fileStem, sizeof(d.fileStem));
+
+        if (d.type == NewBankType::Device) {
+            if (ImGui::BeginCombo("チップ系統", kCreatableDeviceGroups[d.deviceGroupIndex].label)) {
+                for (int i = 0; i < static_cast<int>(IM_ARRAYSIZE(kCreatableDeviceGroups)); ++i) {
+                    const bool selected = (i == d.deviceGroupIndex);
+                    if (ImGui::Selectable(kCreatableDeviceGroups[i].label, selected)) d.deviceGroupIndex = i;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        if (d.type == NewBankType::Drum) {
+            ImGui::RadioButton("routed", &d.drumKitTypeIndex, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton("direct", &d.drumKitTypeIndex, 1);
+        }
+
+        if (d.fileStem[0] != '\0') {
+            ImGui::TextDisabled("-> %s", buildRelativeBankFile(d).c_str());
+        }
+
+        if (!d.errorMessage.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", d.errorMessage.c_str());
+        }
+
+        ImGui::Separator();
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            if (tryCreateBank(ctx)) {
+                d.open = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
+            d.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!stayOpen) d.open = false;
 }
 
 void renderMainMenu(AppContext& ctx) {
@@ -271,6 +464,11 @@ void renderOutline(AppContext& ctx) {
         ctx.workspace = fpe::PatchWorkspace{};
         ctx.state = AppState::MainMenu;
         return;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("新規バンク作成")) {
+        ctx.newBankDialog = NewBankDialogState{};
+        ctx.newBankDialog.open = true;
     }
     ImGui::Separator();
 
@@ -566,6 +764,7 @@ int main(int argc, char** argv) {
                 renderBankDetail(ctx);
                 break;
         }
+        renderNewBankDialog(ctx);
         renderErrorPopup(ctx);
 
         ImGui::End();

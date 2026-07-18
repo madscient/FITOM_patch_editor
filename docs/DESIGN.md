@@ -431,6 +431,64 @@ FITOM_X側の意図かを断定できないため)。`FITOM_staging`側のデー
 修正、または`config_schema/pcmbank.schema.json`のサンプル修正が
 必要かどうか、利用者側での確認を推奨する。
 
+### D-014: Outlineに「新規バンク作成」ダイアログを追加(ネイティブ/ハードウェア/パフォーマンス/ドラムキット)
+
+利用者の要望(2026-07-18)に基づき、`apps/gui/main.cpp`のOutline画面に
+「新規バンク作成」ボタンを追加した。押すと以下を入力するモーダル
+ダイアログ(`renderNewBankDialog()`)が開く。
+
+- バンク種別(ネイティブ/ハードウェア/パフォーマンス/ドラムキット の
+  4択、`NewBankType` enum)
+- バンク名(自由テキスト)
+- ファイル名(拡張子・接尾辞なしの語幹のみ入力させ、種別選択に応じて
+  ディレクトリ+接尾辞を自動生成 - `buildRelativeBankFile()`。例:
+  ネイティブなら`patches/<stem>.patchbank.json`、ハードウェアなら
+  `banks/<チップ系統>/<stem>.hwbank.json`)
+- (ハードウェアのみ)チップ系統選択。`kCreatableDeviceGroups`という
+  固定リストから選ぶ形にし、**AWM・ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/
+  PCM-D8(サンプルベース系、D-011/D-013)とSD1/MA3/MA5/MA7(未実装チップ、
+  `stringToVoicePatchType`は認識するがschemaのenumには含まれない
+  `VoicePatchType.h`参照)は選択肢から除外**した。理由: これらを
+  `createDeviceBank()`(通常のHwBank専用)で作ってしまうと、次回
+  ロード時に`PatchWorkspace::loadBanks()`のhw_banks分類ロジック
+  (`isSampleBasedVoicePatchType`/`isPcmWaveformVoicePatchType`)に
+  よって`SampleZoneBank`/`PcmBank`として再解釈され、`{"patches":[]}`
+  という空のHwBank形状データが期待される`{"patches":[...]}`
+  (SampleZoneBank)や`{"entries":[...]}`(PcmBank)のどちらの形状にも
+  一致しない不整合なファイルになってしまう。
+- (ドラムキットのみ)routed/direct選択(ラジオボタン、`DrumKitType`)。
+
+バンク番号(ネイティブ/パフォーマンス/ハードウェアの`bank`、
+ドラムキットの`prog`)は利用者に入力させず、既存バンクの最大値+1を
+自動採番する(`nextBankIndex()`/`nextDeviceBankIndex()`/
+`nextDrumProg()`)。利用者の依頼文面が「バンク種別選択・バンク名・
+ファイル名」の3項目のみを明示していたため、それ以外(番号・チップ系統・
+routed/direct)は「入力させず妥当な扱いにする」(番号は自動採番)か
+「種別選択に連動して追加フィールドを出す」(チップ系統・kit種別)かの
+いずれかで対応し、ユーザーに追加確認は取らなかった(ファイル名接尾辞が
+種別に連動して自動生成されるという要望の書きぶり自体が「種別選択で
+ダイアログの中身が変わる」という設計を既に示唆していたため)。
+
+OK押下時点で、既存のCRUD API
+(`createNativePatchBank`/`createDeviceBank`/`createPerformanceBank`/
+`createDrumKit`)でメモリ上にバンクを追加した直後に
+`PatchWorkspace::save()`を呼び、実際にスケルトンファイルをディスクに
+書き出す(「バンクファイルを作成」という依頼文言に合わせ、将来实装予定の
+明示的な保存ボタンを待たずに即座に永続化する設計とした)。作成後は
+Outlineの一覧に(次フレームから)自動的に反映される(`ws.xxxBanks()`を
+毎フレーム参照して描画しているため、追加の通知処理は不要)。
+
+実機で以下を確認済み: (1) GUIをビルドし、Outline画面に「新規バンク
+作成」ボタンが表示されることをスクリーンショットで確認。(2)
+ダイアログ自体のクリック操作(種別選択・テキスト入力・OK押下)の
+実機確認は、本セッションでもウィンドウのフォーカス/最前面化の不安定さ
+(前回セッション参照)を理由に見送り、代わりに`tryCreateBank()`と
+同じ`PatchWorkspace`呼び出し列(各`createXxxBank()`+`save()`)を
+`fixtures/profile.json`に対して実行する一時的な検証用実行ファイル
+(検証後削除)で、(a)4種類とも期待通りのパスにスケルトンファイルが
+実際に作成されること、(b)作成後に`saveAs()`していた別ディレクトリから
+再読み込みしてもwarning無しで新規バンクが見つかること、の両方を確認した。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
