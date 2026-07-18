@@ -910,9 +910,15 @@ void renderToneLayer(int index, const fpe::ToneLayer& layer) {
 
 // Per-field valid range for a given chip family, used to size sliders and
 // grey out fields the chip doesn't actually read (D-016). `used=false`
-// fields are still shown (disabled) rather than hidden, so the form's
-// layout doesn't jump around when switching between patches of different
-// chip families.
+// fields stay visible-but-disabled for the always-shown controls (the
+// main AR/DR/SL/SR/RR/TL sliders and the WS band), so the form's layout
+// doesn't jump around when switching between patches of different chip
+// families - but are hidden entirely inside the OP panel's "詳細"
+// fold-out (D-031), since that section doesn't have this layout-jump
+// concern (one already-open editor is bound to one bank's fixed chip
+// family) and showing every rarely-used field disabled for every chip
+// family there was mostly clutter once OPM/OPZ added several more of
+// them.
 struct FieldRange {
     int minV = 0;
     int maxV = 99;
@@ -1053,6 +1059,89 @@ HwOpFieldRanges opllOpRanges() {
     return r;
 }
 
+// OPM (YM2151) - confirmed against FITOM_X's docs/voice-parameter-
+// reference.md OPM section and the actual register-write masks in
+// core/src/OPM_new.cpp's COPM::updateVoice() (FB&7/ALG&7 in reg 0x20+ch;
+// DT1&7/MUL&0xF in reg 0x40+op*8+ch; TL written unmasked - 7bit per the
+// real YM2151 register, matching every other chip's TL width; KSR&3/AR
+// (5bit, no mask loss - a 2026年7月 bugfix removed an erroneous extra
+// shift that had been discarding AR/DR/SR's low 2 bits) in reg
+// 0x80+op*8+ch; AM&1/DR(5bit) in reg 0xA0+...; DT2&3/SR(5bit) in reg
+// 0xC0+...; SL(4bit)/RR(4bit) in reg 0xE0+...; AMS&3/PMS&7 via
+// enableAM()/enablePM()'s reg 0x38+ch writes).
+// NOTE ON CONFIDENCE: NFQ (noise frequency, reg 0x0F) isn't explicitly
+// masked in the driver (`0x80 | p.hw.NFQ`), but the real YM2151's NFRQ
+// register is a well-documented 5bit field - values above 31 would
+// corrupt the adjacent noise-enable bit the driver ORs in, so 5bit is
+// used here as the safe editable range rather than confirmed via an
+// explicit source mask.
+// KSL/PDT/VIB/EGT/WS/REV/EGS/DT3/FB2 aren't referenced anywhere in
+// COPM::updateVoice() - marked unused=false (WS/REV/EGS/DT3 are OPZ-only,
+// see opzOpRanges() below).
+HwVoiceFieldRanges opmVoiceRanges() {
+    HwVoiceFieldRanges r;
+    r.FB = {0, 7, true};
+    r.ALG = {0, 7, true};
+    r.AMS = {0, 3, true};
+    r.PMS = {0, 7, true};
+    r.NFQ = {0, 31, true};
+    r.FB2 = {0, 0, false};
+    return r;
+}
+HwOpFieldRanges opmOpRanges() {
+    HwOpFieldRanges r;
+    r.AR = {0, 31, true};
+    r.DR = {0, 31, true};
+    r.SL = {0, 15, true};
+    r.SR = {0, 31, true};
+    r.RR = {0, 15, true};
+    r.TL = {0, 127, true};
+    r.KSR = {0, 3, true};
+    r.KSL = {0, 0, false};
+    r.MUL = {0, 15, true};
+    r.DT1 = {0, 7, true};
+    r.DT2 = {0, 3, true};
+    r.PDT = {0, 0, false};
+    r.AM = {0, 1, true};
+    r.VIB = {0, 0, false};
+    r.EGT = {0, 0, false};
+    r.WS = {0, 0, false}; // OPM has no waveform-select register at all (OPZ-only)
+    r.REV = {0, 0, false};
+    r.EGS = {0, 0, false};
+    r.DT3 = {0, 0, false};
+    return r;
+}
+
+// OPZ (YM2414)/OPZ2 (YM2424, shares the COPZ driver - FITOM_X's
+// docs/chip-driver-architecture.md lists both under "COPZ（共用）") -
+// COPZ derives from COPM and doesn't override hw-level field handling, so
+// opzVoiceRanges() is just opmVoiceRanges() (see getVoiceFieldRanges()).
+// Adds REV/EGS/WS/DT3 on the op level - core/src/OPM_new.cpp's
+// COPZ::updateVoice(): `(o.WS & 7) << 4` / `(o.DT3 & 0xF)` in reg
+// 0x40+op*8+ch, `(o.EGS & 0x3) << 6` / `(o.REV & 0x1F)` in reg
+// 0xC0+op*8+ch.
+//
+// NOTE ON CONFIDENCE: docs/manuals/hwpatch-reference.md declares REV as
+// 0-15(4bit)/EGS as 0-127(7bit)/DT3 as 0-15(4bit) - used below, following
+// this project's established D-024 precedent (schema's declared width is
+// the editable range even where a driver's actual register write masks
+// away some bits). REV's driver mask (`&0x1F`, 5bit) is actually *wider*
+// than the declared 4bit range, so no truncation happens there - but
+// EGS's driver mask (`&0x3`, 2bit) captures only 2 of the declared 7
+// bits. Whether that's a genuine FITOM_X driver bug (like the AR/DR/SR
+// shift bug OPM_new.cpp's comments mention having just been fixed) or an
+// intentional real YM2414 hardware limit hasn't been confirmed here -
+// that's FITOM_X's own scope to resolve, not this editor's; the
+// documented schema width is used as usual pending that.
+HwOpFieldRanges opzOpRanges() {
+    HwOpFieldRanges r = opmOpRanges();
+    r.WS = {0, 7, true};
+    r.REV = {0, 15, true};
+    r.EGS = {0, 127, true};
+    r.DT3 = {0, 15, true};
+    return r;
+}
+
 // Generic wide-open fallback for chip families whose exact register widths
 // haven't been confirmed against FITOM_X's source yet (D-016 tracks which
 // ones still need this) - every field shown and editable, 0-99 (or the
@@ -1101,8 +1190,16 @@ bool isOpllFamily(fpe::VoicePatchType t) {
            t == fpe::VoicePatchType::OPLLX || t == fpe::VoicePatchType::VRC7;
 }
 
+// OPZ2 (YM2424) shares the COPZ driver with OPZ (YM2414) - FITOM_X's
+// docs/chip-driver-architecture.md lists them as "共用" (shared) - so they
+// take identical field ranges (opzOpRanges()).
+bool isOpzFamily(fpe::VoicePatchType t) {
+    return t == fpe::VoicePatchType::OPZ || t == fpe::VoicePatchType::OPZ2;
+}
+
 HwVoiceFieldRanges getVoiceFieldRanges(fpe::VoicePatchType t) {
     if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnVoiceRanges();
+    if (t == fpe::VoicePatchType::OPM || isOpzFamily(t)) return opmVoiceRanges();
     if (t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
         t == fpe::VoicePatchType::OPL3_2) {
         return oplVoiceRanges();
@@ -1112,6 +1209,8 @@ HwVoiceFieldRanges getVoiceFieldRanges(fpe::VoicePatchType t) {
 }
 HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t) {
     if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnOpRanges();
+    if (t == fpe::VoicePatchType::OPM) return opmOpRanges();
+    if (isOpzFamily(t)) return opzOpRanges();
     if (t == fpe::VoicePatchType::OPL) return oplOpRanges(0);        // no WS register at all - always sine
     if (t == fpe::VoicePatchType::OPL2) return oplOpRanges(3);       // 2bit WS (0-3)
     if (t == fpe::VoicePatchType::OPL3_2) return oplOpRanges(7);     // 3bit WS (0-7)
@@ -1209,6 +1308,35 @@ GLuint getWsTexture(int ws, int& outWidth, int& outHeight) {
     auto it = cache.find(ws);
     if (it == cache.end()) {
         it = cache.emplace(ws, loadTexture(assetsDir() / "waveforms" / ("ws" + std::to_string(ws) + ".png"))).first;
+    }
+    outWidth = it->second.width;
+    outHeight = it->second.height;
+    return it->second.id;
+}
+
+// Same idea as getWsTexture() but for OPM/OPZ/OPZ2's WS field
+// (assets/waveforms/opz_ws<0-7>.png, D-031) - a *different* 8-waveform
+// set from the OPL family's, sharing only some shapes (see opzOpRanges()'
+// callers): WS0/2/4/6 are byte-identical reuses of the OPL family's
+// ws0/ws1/ws2/ws4.png respectively (same shape, different index - hence
+// separate files rather than sharing getWsTexture()'s cache/filenames),
+// WS1 is E:\...\material\waveform.xlsx Sheet1's rightmost column (the
+// OPZ-specific waveform); WS3/5/7 are derived from WS1 (the source
+// spreadsheet has no dedicated columns for these - explicit direction
+// from the project owner, see D-031): WS3 = WS1 at 2x frequency with the
+// 2nd period zeroed (pulse - one cycle then silence for the rest of the
+// window), WS5 = WS1 half-wave rectified (negative half clipped to 0, no
+// frequency change), WS7 = WS3 full-wave rectified (abs value, so both
+// of WS3's excursions become positive humps). Used for OPM too (see
+// isOplWsImageFamily()'s caller in renderHwOpEditor()) since OPM's WS is
+// unused=false (opmOpRanges()) - always shows the WS0 (sine) image,
+// disabled/greyed via FieldRange.used, rather than a separate blank case.
+GLuint getOpzWsTexture(int ws, int& outWidth, int& outHeight) {
+    static std::unordered_map<int, CachedTex> cache;
+    auto it = cache.find(ws);
+    if (it == cache.end()) {
+        it = cache.emplace(ws, loadTexture(assetsDir() / "waveforms" / ("opz_ws" + std::to_string(ws) + ".png")))
+                 .first;
     }
     outWidth = it->second.width;
     outHeight = it->second.height;
@@ -1534,27 +1662,48 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges,
     // WS (waveform select) is elevated out of the "詳細" fold-out into its
     // own visible image+spinner control (like ALG's channel-band control -
     // D-017), rather than a plain number buried in the details tree, per
-    // the explicit "OPパネルにWS設定を追加する" request (D-021).
-    if (isOplWsImageFamily(groupType)) {
+    // the explicit "OPパネルにWS設定を追加する" request (D-021). OPM/OPZ/
+    // OPZ2 use their own waveform-image set (getOpzWsTexture(), D-031) -
+    // OPM has no real WS register (opmOpRanges().WS is unused=false), but
+    // still gets the same image+spinner layout, just disabled/greyed via
+    // FieldRange.used (per the explicit "WS表示をOPL系と同じレイアウトで
+    // 配置。ただしOPMの場合は非活性" request) rather than a separate blank
+    // case.
+    if (groupType == fpe::VoicePatchType::OPM || isOpzFamily(groupType)) {
+        renderImageSpinner("ws", "WS", op.WS, ranges.WS, 100.0f,
+                            [](int v, int& w, int& h) { return getOpzWsTexture(v, w, h); });
+    } else if (isOplWsImageFamily(groupType)) {
         renderImageSpinner("ws", "WS", op.WS, ranges.WS, 100.0f,
                             [](int v, int& w, int& h) { return getWsTexture(v, w, h); });
     } else {
         inputU8Ranged("WS", op.WS, ranges.WS);
     }
 
+    // Fields unused by the current chip family are hidden entirely here
+    // (unlike the sliders/WS band above, which stay visible-but-disabled
+    // per FieldRange's usual convention) - per the explicit "OPパネルの
+    // 詳細バンドから...未使用のフィールドを非表示にする" request: now that
+    // OPM/OPZ added several more of these (KSL/PDT/VIB/EGT are unused for
+    // both, REV/EGS/DT3/WS are OPZ-only), showing every field disabled
+    // for every chip family made this section mostly clutter. Each patch
+    // editor window is bound to one bank's fixed chip family for its
+    // whole lifetime, so this doesn't cause the "layout jumps around"
+    // problem FieldRange's doc comment originally warned about (that
+    // concern was about switching between different chip families, which
+    // doesn't happen within one already-open editor).
     if (ImGui::TreeNode("詳細")) {
-        inputU8Ranged("KSR", op.KSR, ranges.KSR);
-        inputU8Ranged("KSL", op.KSL, ranges.KSL);
-        inputU8Ranged("MUL", op.MUL, ranges.MUL);
-        inputU8Ranged("DT1", op.DT1, ranges.DT1);
-        inputU8Ranged("DT2", op.DT2, ranges.DT2);
-        inputI16Ranged("PDT", op.PDT, ranges.PDT);
-        inputU8Ranged("AM", op.AM, ranges.AM);
-        inputU8Ranged("VIB", op.VIB, ranges.VIB);
-        inputU8Ranged("EGT", op.EGT, ranges.EGT);
-        inputU8Ranged("REV", op.REV, ranges.REV);
-        inputU8Ranged("EGS", op.EGS, ranges.EGS);
-        inputU8Ranged("DT3", op.DT3, ranges.DT3);
+        if (ranges.KSR.used) inputU8Ranged("KSR", op.KSR, ranges.KSR);
+        if (ranges.KSL.used) inputU8Ranged("KSL", op.KSL, ranges.KSL);
+        if (ranges.MUL.used) inputU8Ranged("MUL", op.MUL, ranges.MUL);
+        if (ranges.DT1.used) inputU8Ranged("DT1", op.DT1, ranges.DT1);
+        if (ranges.DT2.used) inputU8Ranged("DT2", op.DT2, ranges.DT2);
+        if (ranges.PDT.used) inputI16Ranged("PDT", op.PDT, ranges.PDT);
+        if (ranges.AM.used) inputU8Ranged("AM", op.AM, ranges.AM);
+        if (ranges.VIB.used) inputU8Ranged("VIB", op.VIB, ranges.VIB);
+        if (ranges.EGT.used) inputU8Ranged("EGT", op.EGT, ranges.EGT);
+        if (ranges.REV.used) inputU8Ranged("REV", op.REV, ranges.REV);
+        if (ranges.EGS.used) inputU8Ranged("EGS", op.EGS, ranges.EGS);
+        if (ranges.DT3.used) inputU8Ranged("DT3", op.DT3, ranges.DT3);
         ImGui::TreePop();
     }
     ImGui::EndChild();
@@ -1658,20 +1807,23 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::Text("チャンネルパラメータ");
 
     // ALG is shown as its own input here - the connection-diagram image
-    // (OPN/OPN2: assets/alg_diagrams/opn_al<0-7>.png, D-016/D-017; OPL/
-    // OPL2/OPL3_2: opl_alg<0-1>.png, D-021 - OPLL is excluded, see
+    // (OPN/OPN2/OPM/OPZ/OPZ2: assets/alg_diagrams/opn_al<0-7>.png,
+    // D-016/D-017, extended to OPM/OPZ/OPZ2 in D-031 since they share the
+    // same 3bit 0-7 ALG semantics per docs/voice-parameter-reference.md;
+    // OPL/OPL2/OPL3_2: opl_alg<0-1>.png, D-021 - OPLL is excluded, see
     // isOplAlgFamily()) has the current ALG value burned into its own
     // top-left corner (so the image itself represents the setting, not a
     // separate "ALG n" text widget), flanked left/right by spin buttons -
     // at the left edge of this band, rather than a slider elsewhere.
     ImGui::BeginGroup();
     {
-        const bool isOpnFamily =
-            bank.voicePatchType == fpe::VoicePatchType::OPN || bank.voicePatchType == fpe::VoicePatchType::OPN2;
+        const bool isOpnAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPN ||
+                                     bank.voicePatchType == fpe::VoicePatchType::OPN2 ||
+                                     bank.voicePatchType == fpe::VoicePatchType::OPM || isOpzFamily(bank.voicePatchType);
         const bool isOplAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPL ||
                                      bank.voicePatchType == fpe::VoicePatchType::OPL2 ||
                                      bank.voicePatchType == fpe::VoicePatchType::OPL3_2;
-        if (isOpnFamily) {
+        if (isOpnAlgFamily) {
             renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
                                 [](int v, int& w, int& h) { return getOpnAlgTexture(v, w, h); });
         } else if (isOplAlgFamily) {
