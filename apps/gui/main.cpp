@@ -76,7 +76,11 @@ void loadFonts(ImGuiIO& io) {
     std::fprintf(stderr, "warning: no CJK-capable font found; Japanese UI text will render as tofu boxes\n");
 }
 
-enum class AppState { MainMenu, FileBrowser, Outline };
+enum class AppState { MainMenu, FileBrowser, Outline, BankDetail };
+
+// Which of PatchWorkspace's five browse-tree vectors a BankDetail screen is
+// currently showing (see AppContext::selectedIndex).
+enum class BankCategory { Native, Performance, Device, SampleZone, Pcm, Drum };
 
 // Lists *.profile.json files (and subdirectories, for navigation) in one
 // directory. Re-scanned via refresh() whenever the current directory
@@ -132,6 +136,14 @@ struct AppContext {
     AppState state = AppState::MainMenu;
     FileBrowserState browser;
     std::string errorMessage; // non-empty => error popup is showing
+
+    // Selection driving the BankDetail screen - which category/index into
+    // the corresponding PatchWorkspace vector. Only meaningful while
+    // state == BankDetail; set together with the state transition, and
+    // never touched by workspace-mutating code, so it can't go stale
+    // within a single load (this GUI is still read-only, see file header).
+    BankCategory selectedCategory = BankCategory::Native;
+    size_t selectedIndex = 0;
 };
 
 void tryLoadProfile(AppContext& ctx, const fs::path& file) {
@@ -144,6 +156,12 @@ void tryLoadProfile(AppContext& ctx, const fs::path& file) {
     }
     ctx.workspace = std::move(newWorkspace);
     ctx.state = AppState::Outline;
+}
+
+void selectBank(AppContext& ctx, BankCategory category, size_t index) {
+    ctx.selectedCategory = category;
+    ctx.selectedIndex = index;
+    ctx.state = AppState::BankDetail;
 }
 
 void renderMainMenu(AppContext& ctx) {
@@ -241,6 +259,9 @@ void renderToneLayer(int index, const fpe::ToneLayer& layer) {
                        layer.enabled ? "" : " (disabled)");
 }
 
+// Outline only lists banks/kits (name, index, patch/note count) - drilling
+// into individual patches happens on a separate BankDetail screen, reached
+// by clicking a bank/kit here (see selectBank()/renderBankDetail()).
 void renderOutline(AppContext& ctx) {
     fpe::PatchWorkspace& ws = ctx.workspace;
 
@@ -264,104 +285,186 @@ void renderOutline(AppContext& ctx) {
     ImGui::BeginChild("outline", ImVec2(0, 0), true);
 
     if (ImGui::TreeNode("native", "ネイティブパッチバンク (%zu)", ws.nativePatchBanks().size())) {
-        for (auto& bank : ws.nativePatchBanks()) {
-            ImGui::PushID(&bank);
-            if (ImGui::TreeNode("bank", "[bank %d] %s (%zu patches)", bank.bankIndex, bank.name.c_str(),
-                                 bank.patches.size())) {
-                for (auto& patch : bank.patches) {
-                    ImGui::PushID(&patch);
-                    if (ImGui::TreeNode("patch", "[prog %d] %s (%zu layers)", patch.prog, patch.name.c_str(),
-                                         patch.layers.size())) {
-                        for (size_t i = 0; i < patch.layers.size(); ++i) {
-                            renderToneLayer(static_cast<int>(i), patch.layers[i]);
-                        }
-                        ImGui::TreePop();
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
+        auto& banks = ws.nativePatchBanks();
+        for (size_t i = 0; i < banks.size(); ++i) {
+            const auto& bank = banks[i];
+            std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
+                                 " (" + std::to_string(bank.patches.size()) + " patches)";
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Native, i);
         }
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNode("perf", "パフォーマンスバンク (%zu)", ws.performanceBanks().size())) {
-        for (auto& bank : ws.performanceBanks()) {
-            ImGui::PushID(&bank);
-            if (ImGui::TreeNode("bank", "[bank %d] %s (%zu patches)", bank.bankIndex, bank.name.c_str(),
-                                 bank.patches.size())) {
-                for (auto& patch : bank.patches) {
-                    ImGui::BulletText("[prog %d] %s", patch.prog, patch.name.c_str());
-                }
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
+        auto& banks = ws.performanceBanks();
+        for (size_t i = 0; i < banks.size(); ++i) {
+            const auto& bank = banks[i];
+            std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
+                                 " (" + std::to_string(bank.patches.size()) + " patches)";
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Performance, i);
         }
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNode("device", "デバイスパッチバンク (%zu)", ws.deviceBanks().size())) {
-        for (auto& bank : ws.deviceBanks()) {
-            ImGui::PushID(&bank);
+        auto& banks = ws.deviceBanks();
+        for (size_t i = 0; i < banks.size(); ++i) {
+            const auto& bank = banks[i];
             const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-            if (ImGui::TreeNode("bank", "[%s bank %d] %s (%zu patches)", groupStr.c_str(), bank.bankIndex,
-                                 bank.name.c_str(), bank.patches.size())) {
-                for (auto& patch : bank.patches) {
-                    std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
-                    if (patch.sw_bank >= 0 && patch.sw_prog >= 0) {
-                        label += " (sw_bank=" + std::to_string(patch.sw_bank) +
-                                 " sw_prog=" + std::to_string(patch.sw_prog);
-                        auto* sw = ws.resolvePerformancePatch(patch.sw_bank, patch.sw_prog);
-                        label += sw ? (" -> " + sw->name + ")") : std::string(" -> ?)");
-                    }
-                    ImGui::BulletText("%s", label.c_str());
-                }
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
+            std::string label = "[" + groupStr + " bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
+                                 " (" + std::to_string(bank.patches.size()) + " patches)";
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Device, i);
         }
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNode("samplezone", "サンプルゾーンバンク (%zu)", ws.sampleZoneBanks().size())) {
-        for (auto& bank : ws.sampleZoneBanks()) {
-            ImGui::PushID(&bank);
+        auto& banks = ws.sampleZoneBanks();
+        for (size_t i = 0; i < banks.size(); ++i) {
+            const auto& bank = banks[i];
             const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-            if (ImGui::TreeNode("bank", "[%s bank %d] %s (%zu patches)", groupStr.c_str(), bank.bankIndex,
-                                 bank.name.c_str(), bank.patches.size())) {
-                for (auto& patch : bank.patches) {
-                    ImGui::BulletText("[prog %d] %s (%zu zones)", patch.prog, patch.name.c_str(),
-                                       patch.zones.size());
-                }
-                ImGui::TreePop();
-            }
-            ImGui::PopID();
+            std::string label = "[" + groupStr + " bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
+                                 " (" + std::to_string(bank.patches.size()) + " patches)";
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::SampleZone, i);
+        }
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("pcm", "PCM波形バンク (%zu)", ws.pcmBanks().size())) {
+        auto& banks = ws.pcmBanks();
+        for (size_t i = 0; i < banks.size(); ++i) {
+            const auto& bank = banks[i];
+            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+            std::string label = "[" + groupStr + " bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
+                                 " (" + std::to_string(bank.entries.size()) + " patches)";
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Pcm, i);
         }
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNode("drum", "ドラムキットマップ (%zu)", ws.drumKits().size())) {
-        for (auto& kit : ws.drumKits()) {
-            ImGui::PushID(&kit);
+        auto& kits = ws.drumKits();
+        for (size_t i = 0; i < kits.size(); ++i) {
+            const auto& kit = kits[i];
             const char* typeStr = (kit.type == fpe::DrumKitType::Routed) ? "routed" : "direct";
-            if (kit.type == fpe::DrumKitType::Routed) {
-                if (ImGui::TreeNode("kit", "[prog %d] %s (%s, %zu notes)", kit.prog, kit.name.c_str(), typeStr,
-                                     kit.notes.size())) {
-                    for (auto& note : kit.notes) {
-                        ImGui::BulletText("note %d: %s -> play_note %d", note.note, note.name.c_str(),
-                                           note.play_note);
+            std::string label = "[prog " + std::to_string(kit.prog) + "] " + kit.name + " (" + typeStr + ", " +
+                                 std::to_string(kit.notes.size()) + " notes)";
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Drum, i);
+        }
+        ImGui::TreePop();
+    }
+
+    ImGui::EndChild();
+}
+
+// The patch/note list for the single bank or drum kit selected in
+// renderOutline(). Deliberately shallow (name/prog/basic refs only, plus
+// ToneLayer for native patches since that's the bank's own on-disk shape) -
+// per-parameter editing is future work (see docs/STATUS.md).
+void renderBankDetail(AppContext& ctx) {
+    fpe::PatchWorkspace& ws = ctx.workspace;
+
+    if (ImGui::Button("戻る (アウトライン)")) {
+        ctx.state = AppState::Outline;
+        return;
+    }
+    ImGui::Separator();
+
+    ImGui::BeginChild("bankdetail", ImVec2(0, 0), true);
+
+    switch (ctx.selectedCategory) {
+        case BankCategory::Native: {
+            auto& banks = ws.nativePatchBanks();
+            if (ctx.selectedIndex >= banks.size()) break;
+            auto& bank = banks[ctx.selectedIndex];
+            ImGui::Text("ネイティブパッチバンク [bank %d] %s", bank.bankIndex, bank.name.c_str());
+            ImGui::Separator();
+            for (auto& patch : bank.patches) {
+                ImGui::PushID(&patch);
+                if (ImGui::TreeNode("patch", "[prog %d] %s (%zu layers)", patch.prog, patch.name.c_str(),
+                                     patch.layers.size())) {
+                    for (size_t i = 0; i < patch.layers.size(); ++i) {
+                        renderToneLayer(static_cast<int>(i), patch.layers[i]);
                     }
                     ImGui::TreePop();
                 }
-            } else {
-                ImGui::BulletText("[prog %d] %s (%s, note %d-%d -> patch_bank=%d patch_prog=%d)", kit.prog,
-                                   kit.name.c_str(), typeStr, kit.note_min, kit.note_max, kit.patch_bank,
-                                   kit.patch_prog);
+                ImGui::PopID();
             }
-            ImGui::PopID();
+            break;
         }
-        ImGui::TreePop();
+        case BankCategory::Performance: {
+            auto& banks = ws.performanceBanks();
+            if (ctx.selectedIndex >= banks.size()) break;
+            auto& bank = banks[ctx.selectedIndex];
+            ImGui::Text("パフォーマンスバンク [bank %d] %s", bank.bankIndex, bank.name.c_str());
+            ImGui::Separator();
+            for (auto& patch : bank.patches) {
+                ImGui::BulletText("[prog %d] %s", patch.prog, patch.name.c_str());
+            }
+            break;
+        }
+        case BankCategory::Device: {
+            auto& banks = ws.deviceBanks();
+            if (ctx.selectedIndex >= banks.size()) break;
+            auto& bank = banks[ctx.selectedIndex];
+            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+            ImGui::Text("デバイスパッチバンク [%s bank %d] %s", groupStr.c_str(), bank.bankIndex, bank.name.c_str());
+            ImGui::Separator();
+            for (auto& patch : bank.patches) {
+                std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
+                if (patch.sw_bank >= 0 && patch.sw_prog >= 0) {
+                    label += " (sw_bank=" + std::to_string(patch.sw_bank) +
+                             " sw_prog=" + std::to_string(patch.sw_prog);
+                    auto* sw = ws.resolvePerformancePatch(patch.sw_bank, patch.sw_prog);
+                    label += sw ? (" -> " + sw->name + ")") : std::string(" -> ?)");
+                }
+                ImGui::BulletText("%s", label.c_str());
+            }
+            break;
+        }
+        case BankCategory::SampleZone: {
+            auto& banks = ws.sampleZoneBanks();
+            if (ctx.selectedIndex >= banks.size()) break;
+            auto& bank = banks[ctx.selectedIndex];
+            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+            ImGui::Text("サンプルゾーンバンク [%s bank %d] %s", groupStr.c_str(), bank.bankIndex, bank.name.c_str());
+            ImGui::Separator();
+            for (auto& patch : bank.patches) {
+                ImGui::BulletText("[prog %d] %s (%zu zones)", patch.prog, patch.name.c_str(), patch.zones.size());
+            }
+            break;
+        }
+        case BankCategory::Pcm: {
+            auto& banks = ws.pcmBanks();
+            if (ctx.selectedIndex >= banks.size()) break;
+            auto& bank = banks[ctx.selectedIndex];
+            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+            ImGui::Text("PCM波形バンク [%s bank %d] %s", groupStr.c_str(), bank.bankIndex, bank.name.c_str());
+            ImGui::Separator();
+            for (size_t i = 0; i < bank.entries.size(); ++i) {
+                const auto& e = bank.entries[i];
+                ImGui::BulletText("[prog %zu] %s (root_note=%d, size=%u bytes)", i, e.name.c_str(), e.root_note,
+                                   e.size);
+            }
+            break;
+        }
+        case BankCategory::Drum: {
+            auto& kits = ws.drumKits();
+            if (ctx.selectedIndex >= kits.size()) break;
+            auto& kit = kits[ctx.selectedIndex];
+            const char* typeStr = (kit.type == fpe::DrumKitType::Routed) ? "routed" : "direct";
+            ImGui::Text("ドラムキット [prog %d] %s (%s)", kit.prog, kit.name.c_str(), typeStr);
+            ImGui::Separator();
+            if (kit.type == fpe::DrumKitType::Routed) {
+                for (auto& note : kit.notes) {
+                    ImGui::BulletText("note %d: %s -> play_note %d", note.note, note.name.c_str(), note.play_note);
+                }
+            } else {
+                ImGui::BulletText("note %d-%d -> patch_bank=%d patch_prog=%d", kit.note_min, kit.note_max,
+                                   kit.patch_bank, kit.patch_prog);
+            }
+            break;
+        }
     }
 
     ImGui::EndChild();
@@ -458,6 +561,9 @@ int main(int argc, char** argv) {
                 break;
             case AppState::Outline:
                 renderOutline(ctx);
+                break;
+            case AppState::BankDetail:
+                renderBankDetail(ctx);
                 break;
         }
         renderErrorPopup(ctx);

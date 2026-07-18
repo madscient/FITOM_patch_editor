@@ -1,0 +1,8 @@
+{
+  "name": "Test PCM Bank",
+  "codec": "adpcm-a",
+  "sample_rate": 18500,
+  "boundary": 256,
+  "bin_file": "test.bin",
+  "adpcm_json": "test_adpcm.json"
+}

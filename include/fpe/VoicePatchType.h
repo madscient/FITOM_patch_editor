@@ -54,10 +54,24 @@ enum class VoicePatchType : uint8_t {
     Gm2MelodyChannelSelect    = 0x79,
 };
 
-// True for the sample-based (SampleZonePatch) families: ADPCM-B/A, PCM-D8, AWM.
-// These use a completely different on-disk patch shape (see SampleZone.h)
-// instead of the FM-operator shaped HwPatch.
+// True only for AWM - the *.samplezonebank.json / SampleZonePatch shape
+// (zones[] keyzone mapping, docs/hwpatch-reference.md section 15) is
+// specific to AWM. ADPCM-B/A and PCM-D8 (section 14) are a *different*
+// third shape - see isPcmWaveformVoicePatchType() below, not this
+// function (D-011/D-013, docs/DESIGN.md - D-011 originally lumped ADPCM-B/A
+// and PCM-D8 in with ordinary HwPatch/ops[] banks based on FITOM_X's
+// current hw_banks loader dispatch in core/src/Config.cpp; D-013 corrected
+// this once it became clear their actual "patches" come from a
+// *.pcmbank.json's entries[], not an ops[]-shaped patches[] array).
 bool isSampleBasedVoicePatchType(VoicePatchType t);
+
+// True for the PCM/ADPCM waveform-table families whose "patches" are the
+// entries[] of a *.pcmbank.json (+ referenced adpcm_json, an
+// adpcm_packer-output file) rather than either an HwPatch or a
+// SampleZonePatch - ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/PCM-D8. See
+// fpe::PcmBank (PcmBank.h) and docs/DESIGN.md D-013. Distinct from
+// isSampleBasedVoicePatchType() above, which is AWM-only.
+bool isPcmWaveformVoicePatchType(VoicePatchType t);
 
 // True for values that can legitimately tag a HwBank (i.e. excludes None
 // and the CC#0-only special values 0x70/0x78/0x79 and reserved gaps).

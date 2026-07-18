@@ -8,7 +8,8 @@
       { "bank": 0, "file": "sw/default_gm.swbank.json", "name": "Default GM" }
     ],
     "hw_banks": [
-      { "group": "OPM", "bank": 0, "file": "banks/OPM/dx27_dx100/00_default.hwbank.json" }
+      { "group": "OPM", "bank": 0, "file": "banks/OPM/dx27_dx100/00_default.hwbank.json" },
+      { "group": "ADPCMA", "bank": 1, "file": "banks/PCM/test.pcmbank.json" }
     ],
     "drum_banks": [
       { "prog": 0, "name": "Standard Kit", "file": "drums/std_kit.drumkit.json" },

@@ -56,8 +56,23 @@ static void testVoicePatchType() {
     CHECK(!fpe::stringToVoicePatchType("NOT_A_CHIP").has_value());
     CHECK(fpe::voicePatchTypeToString(VoicePatchType::OPZ2) == "OPZ2");
     CHECK(fpe::isSampleBasedVoicePatchType(VoicePatchType::AWM));
-    CHECK(fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB_Y8950));
+    // ADPCM-B/A and PCM-D8 select a PCM waveform-bank entry via the
+    // ordinary HwPatch field ops[0].WS, and are loaded as a plain HwBank
+    // by FITOM_X (see docs/DESIGN.md D-011) - only AWM uses the dedicated
+    // SampleZonePatch shape.
+    CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB_Y8950));
+    CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB));
+    CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMA));
+    CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::PCMD8));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::OPM));
+    // ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/PCM-D8 instead get their "patches"
+    // from a *.pcmbank.json's entries[] - fpe::PcmBank (D-013).
+    CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::ADPCMB_Y8950));
+    CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::ADPCMB));
+    CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::ADPCMA));
+    CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::PCMD8));
+    CHECK(!fpe::isPcmWaveformVoicePatchType(VoicePatchType::AWM));
+    CHECK(!fpe::isPcmWaveformVoicePatchType(VoicePatchType::OPM));
     CHECK(!fpe::isValidHwBankTag(VoicePatchType::None));
     CHECK(fpe::isValidHwBankTag(VoicePatchType::SSG));
 }
@@ -75,6 +90,7 @@ static void testLoad(fpe::PatchWorkspace& ws) {
     CHECK(ws.nativePatchBanks().size() == 1);
     CHECK(ws.performanceBanks().size() == 1);
     CHECK(ws.deviceBanks().size() == 1);
+    CHECK(ws.pcmBanks().size() == 1);
     CHECK(ws.drumKits().size() == 2);
 
     // Bank registries live nested under profile.json's "banks" object on
@@ -114,6 +130,26 @@ static void testLoad(fpe::PatchWorkspace& ws) {
             CHECK(hwPatch->sw_bank == 0);
             CHECK(hwPatch->sw_prog == 0);
         }
+    }
+
+    // PcmBank (ADPCM-A/B, PCM-D8): entries[] come from a separate
+    // adpcm_json file (an adpcm_packer output), resolved relative to the
+    // pcmbank.json's own directory - see D-013.
+    auto* pcmBank = ws.findPcmBank(fpe::VoicePatchType::ADPCMA, 1);
+    CHECK(pcmBank != nullptr);
+    if (pcmBank) {
+        CHECK(pcmBank->name == "Test PCM Bank");
+        CHECK(pcmBank->entries.size() == 2);
+        auto* entry0 = pcmBank->findByIndex(0);
+        CHECK(entry0 != nullptr);
+        if (entry0) {
+            CHECK(entry0->name == "kick");
+            CHECK(entry0->root_note == 60);
+        }
+        auto* entry1 = pcmBank->findByIndex(1);
+        CHECK(entry1 != nullptr);
+        if (entry1) CHECK(entry1->name == "snare");
+        CHECK(pcmBank->findByIndex(2) == nullptr);
     }
 
     // Reference-following: HwPatch.sw_bank/sw_prog -> SwPatch

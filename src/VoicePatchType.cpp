@@ -41,9 +41,19 @@ constexpr std::pair<VoicePatchType, const char*> kTable[] = {
 } // namespace
 
 bool isSampleBasedVoicePatchType(VoicePatchType t) {
-    const auto v = static_cast<uint8_t>(t);
-    return v >= static_cast<uint8_t>(VoicePatchType::ADPCMB_Y8950) &&
-           v <= static_cast<uint8_t>(VoicePatchType::AWM);
+    return t == VoicePatchType::AWM;
+}
+
+bool isPcmWaveformVoicePatchType(VoicePatchType t) {
+    switch (t) {
+        case VoicePatchType::ADPCMB_Y8950:
+        case VoicePatchType::ADPCMB:
+        case VoicePatchType::ADPCMA:
+        case VoicePatchType::PCMD8:
+            return true;
+        default:
+            return false;
+    }
 }
 
 bool isValidHwBankTag(VoicePatchType t) {
