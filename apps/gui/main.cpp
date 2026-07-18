@@ -1507,7 +1507,13 @@ void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value,
 
 void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges, fpe::VoicePatchType groupType) {
     ImGui::PushID(index);
-    ImGui::BeginChild("op", ImVec2(230, 330), true);
+    // Height picked so the collapsed-by-default "詳細" state (title + 6
+    // ADSR/TL sliders + envelope curve + WS band) fits with no internal
+    // scrollbar - grew since this was first sized in D-015/D-016, mainly
+    // from the WS image+spinner band D-021 added. Expanding "詳細" itself
+    // still scrolls, which is fine (that's an explicit user action, not
+    // the initial state the user asked to fit without scrolling).
+    ImGui::BeginChild("op", ImVec2(230, 420), true);
     ImGui::Text("OP %d", index + 1);
     ImGui::Separator();
     renderEnvelopeCurve(op, ranges);
