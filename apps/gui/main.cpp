@@ -72,7 +72,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "BmpLoader.h"
+#include "ImageLoader.h"
 #include "Preferences.h"
 #include "PreviewOutput.h"
 #include "fpe/PatchWorkspace.h"
@@ -1040,7 +1040,7 @@ HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t) {
     return genericOpRanges();
 }
 
-// Locates assets/ (currently just alg_diagrams/*.bmp) by searching upward
+// Locates assets/ (alg_diagrams/*.png, waveforms/*.png) by searching upward
 // from the process's current working directory for a known marker file -
 // same approach tests/smoke_test.cpp uses for fixtures/, so a normal
 // double-click launch (CWD = the exe's own directory, where CMakeLists.txt
@@ -1052,7 +1052,7 @@ fs::path assetsDir() {
     resolved = true;
     fs::path p = fs::current_path();
     for (;;) {
-        if (fs::exists(p / "assets" / "alg_diagrams" / "opn_al0.bmp")) {
+        if (fs::exists(p / "assets" / "alg_diagrams" / "opn_al0.png")) {
             cached = p / "assets";
             return cached;
         }
@@ -1063,18 +1063,18 @@ fs::path assetsDir() {
     return cached;
 }
 
-// Shared by every get*Texture() cache below: loads path as a 24bit BMP and
-// uploads it as a GL texture. Returns id=0 (still cached, so a missing/bad
-// asset only fails once per run, not every frame) if the file is missing
-// or fails to parse.
+// Shared by every get*Texture() cache below: loads path (PNG, via
+// ImageLoader.h/stb_image - D-022) and uploads it as a GL texture. Returns
+// id=0 (still cached, so a missing/bad asset only fails once per run, not
+// every frame) if the file is missing or fails to parse.
 struct CachedTex {
     GLuint id = 0;
     int width = 0, height = 0;
 };
 CachedTex loadTexture(const fs::path& path) {
     CachedTex entry;
-    BmpImage img;
-    if (loadBmp24(path.string(), img)) {
+    ImageRGBA img;
+    if (loadImageRgba(path.string(), img)) {
         glGenTextures(1, &entry.id);
         glBindTexture(GL_TEXTURE_2D, entry.id);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1086,7 +1086,7 @@ CachedTex loadTexture(const fs::path& path) {
     return entry;
 }
 
-// Lazily loads+uploads assets/alg_diagrams/opn_al<alg>.bmp as a GL texture,
+// Lazily loads+uploads assets/alg_diagrams/opn_al<alg>.png as a GL texture,
 // caching by ALG value (0-7) so repeated frames don't re-read the file.
 // Returns 0 (and caches that too, to avoid retrying every frame) if the
 // asset is missing or fails to parse.
@@ -1094,7 +1094,7 @@ GLuint getOpnAlgTexture(int alg, int& outWidth, int& outHeight) {
     static std::unordered_map<int, CachedTex> cache;
     auto it = cache.find(alg);
     if (it == cache.end()) {
-        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opn_al" + std::to_string(alg) + ".bmp")))
+        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opn_al" + std::to_string(alg) + ".png")))
                  .first;
     }
     outWidth = it->second.width;
@@ -1103,14 +1103,14 @@ GLuint getOpnAlgTexture(int alg, int& outWidth, int& outHeight) {
 }
 
 // Same idea as getOpnAlgTexture() but for OPL/OPL2/OPL3_2's 1bit ALG
-// (0=series FM, 1=parallel/AM - assets/alg_diagrams/opl_alg<0-1>.bmp,
+// (0=series FM, 1=parallel/AM - assets/alg_diagrams/opl_alg<0-1>.png,
 // regenerated from the real opl_al0.bmp/opl_al1.bmp reference images'
 // topology, D-021). OPLL doesn't use this - see isOplAlgFamily().
 GLuint getOplAlgTexture(int alg, int& outWidth, int& outHeight) {
     static std::unordered_map<int, CachedTex> cache;
     auto it = cache.find(alg);
     if (it == cache.end()) {
-        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opl_alg" + std::to_string(alg) + ".bmp")))
+        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opl_alg" + std::to_string(alg) + ".png")))
                  .first;
     }
     outWidth = it->second.width;
@@ -1118,7 +1118,7 @@ GLuint getOplAlgTexture(int alg, int& outWidth, int& outHeight) {
     return it->second.id;
 }
 
-// Lazily loads+uploads assets/waveforms/ws<n>.bmp (n=0-7) as a GL texture -
+// Lazily loads+uploads assets/waveforms/ws<n>.png (n=0-7) as a GL texture -
 // the OPL family's WS (waveform select) field, shown the same way ALG is
 // (image + flanking spin buttons, the value burned into the image's own
 // top-left corner) rather than a plain number, per D-021. Curves were
@@ -1129,7 +1129,7 @@ GLuint getWsTexture(int ws, int& outWidth, int& outHeight) {
     static std::unordered_map<int, CachedTex> cache;
     auto it = cache.find(ws);
     if (it == cache.end()) {
-        it = cache.emplace(ws, loadTexture(assetsDir() / "waveforms" / ("ws" + std::to_string(ws) + ".bmp"))).first;
+        it = cache.emplace(ws, loadTexture(assetsDir() / "waveforms" / ("ws" + std::to_string(ws) + ".png"))).first;
     }
     outWidth = it->second.width;
     outHeight = it->second.height;
@@ -1312,7 +1312,7 @@ void inputI16Ranged(const char* label, int16_t& field, const FieldRange& range) 
 }
 
 // Chip families whose WS field has a real waveform-select image
-// (assets/waveforms/ws<0-7>.bmp, D-021) to show instead of a plain number -
+// (assets/waveforms/ws<0-7>.png, D-021) to show instead of a plain number -
 // OPL/OPL2/OPL3_2 (2/3bit WS) and the OPLL family (1bit WS, confirmed from
 // core/src/OPLL_new.cpp - see opllOpRanges()). Deliberately broader than
 // isOplAlgFamily() below (which excludes OPLL, since OPLL's ALG isn't a
@@ -1330,7 +1330,7 @@ bool isOplWsImageFamily(fpe::VoicePatchType t) {
 // available (chip family not in scope yet, or the asset failed to load).
 // Shared by ALG's channel-parameter band and WS's per-operator band
 // (D-021) - `getTexture` abstracts over which asset folder/filename
-// pattern to use (opl_alg<n>.bmp vs ws<n>.bmp).
+// pattern to use (opl_alg<n>.png vs ws<n>.png).
 void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value, const FieldRange& range,
                          float displayW, const std::function<GLuint(int, int&, int&)>& getTexture) {
     if (!range.used) ImGui::BeginDisabled();
@@ -1460,8 +1460,8 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::Text("チャンネルパラメータ");
 
     // ALG is shown as its own input here - the connection-diagram image
-    // (OPN/OPN2: assets/alg_diagrams/opn_al<0-7>.bmp, D-016/D-017; OPL/
-    // OPL2/OPL3_2: opl_alg<0-1>.bmp, D-021 - OPLL is excluded, see
+    // (OPN/OPN2: assets/alg_diagrams/opn_al<0-7>.png, D-016/D-017; OPL/
+    // OPL2/OPL3_2: opl_alg<0-1>.png, D-021 - OPLL is excluded, see
     // isOplAlgFamily()) has the current ALG value burned into its own
     // top-left corner (so the image itself represents the setting, not a
     // separate "ALG n" text widget), flanked left/right by spin buttons -
