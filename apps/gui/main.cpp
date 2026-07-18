@@ -55,6 +55,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -894,6 +895,85 @@ HwOpFieldRanges opnOpRanges() {
     return r;
 }
 
+// OPL(YM3526)/OPL2(YM3812)/OPL3_2(YMF262 2op residual) family - confirmed
+// against core/src/OPL_new.cpp's actual register-write masks (FB&7,
+// ALG&1, AR/DR&0x1F, SL&0xF, RR read as a plain 4bit value, SR&0x1F
+// (shifted into the same 4bit RR register when >0 - see
+// docs/voice-parameter-reference.md's OPL section for the SR/RR/EGT
+// conversion table), KSL as a 2bit field packed into TL's register,
+// MUL&0xF, TL truncated to 6bit on the wire via tl6()=v>>1 but the field
+// itself stays the usual 7bit/0-127 range like every other chip) and
+// docs/voice-parameter-reference.md (DT1/DT2/EGT explicitly called out as
+// "無関係" for this family - SR/RR cover the same ground EGT would - and
+// REV/EGS/DT3 are OPZ-only). WS differs per chip: OPL has no waveform
+// register at all (always sine), OPL2 is 2bit (0-3), OPL3_2 (the real
+// OPL3 chip's 2op mode) is 3bit (0-7) - see D-021.
+HwVoiceFieldRanges oplVoiceRanges() {
+    HwVoiceFieldRanges r;
+    r.FB = {0, 7, true};
+    r.ALG = {0, 1, true};
+    r.AMS = {0, 0, false};
+    r.PMS = {0, 0, false};
+    r.NFQ = {0, 0, false};
+    r.FB2 = {0, 0, false};
+    return r;
+}
+HwOpFieldRanges oplOpRanges(int wsMax) {
+    HwOpFieldRanges r;
+    r.AR = {0, 31, true};
+    r.DR = {0, 31, true};
+    r.SL = {0, 15, true};
+    r.SR = {0, 31, true};
+    r.RR = {0, 15, true};
+    r.TL = {0, 127, true};
+    r.KSR = {0, 1, true};
+    r.KSL = {0, 3, true};
+    r.MUL = {0, 15, true};
+    r.DT1 = {0, 0, false};
+    r.DT2 = {0, 0, false};
+    r.FXV = {0, 0, false};
+    r.AM = {0, 1, true};
+    r.VIB = {0, 1, true};
+    r.EGT = {0, 0, false};
+    r.WS = (wsMax > 0) ? FieldRange{0, wsMax, true} : FieldRange{0, 0, false};
+    r.REV = {0, 0, false};
+    r.EGS = {0, 0, false};
+    r.DT3 = {0, 0, false};
+    return r;
+}
+
+// OPLL family (YM2413/YM2420/YMF281B/YM2423-X and the OPLLP/OPLLX/VRC7
+// variants - docs/voice-parameter-reference.md groups these as sharing
+// identical field semantics, confirmed here by core/src/OPLL_new.cpp:
+// COPLLP/COPLLX/CVRC7/COPLL2 all derive from COPLL without overriding
+// updateVoice, so they share the same register masks). Same 2op envelope
+// widths as OPL/OPL2/OPL3_2 (AR/DR/SL/SR/RR/KSR/KSL/MUL/AM/VIB/TL - the
+// doc's "ops[1].TL only" note describes the carrier's perceived loudness,
+// but op[0]'s TL is still written to hardware (register 0x02) and affects
+// modulation depth, so both stay used=true here). ALG is NOT a connection
+// selector for OPLL like it is for OPL/OPL2/OPL3_2 - hw.ALG is instead a
+// 4bit ROM preset instrument number (only meaningful when
+// ext.ALG_EXT bit0=1; ignored/0 for user tones), so it's plain-edited
+// here (no connection-diagram image - see isOplAlgFamily()). WS is a
+// genuine but narrower field than the rest of the OPL family: 1 bit per
+// operator (core/src/OPLL_new.cpp: `(WS&1)<<3`/`(WS&1)<<4`), not
+// mentioned in the doc's OPLL field table at all - confirmed by reading
+// the actual register-write code since the doc has a gap here.
+HwVoiceFieldRanges opllVoiceRanges() {
+    HwVoiceFieldRanges r;
+    r.FB = {0, 7, true};
+    r.ALG = {0, 15, true};
+    r.AMS = {0, 0, false};
+    r.PMS = {0, 0, false};
+    r.NFQ = {0, 0, false};
+    r.FB2 = {0, 0, false};
+    return r;
+}
+HwOpFieldRanges opllOpRanges() {
+    HwOpFieldRanges r = oplOpRanges(1); // same envelope widths as OPL family, WS is 1bit (0-1)
+    return r;
+}
+
 // Generic wide-open fallback for chip families whose exact register widths
 // haven't been confirmed against FITOM_X's source yet (D-016 tracks which
 // ones still need this) - every field shown and editable, 0-99 (or the
@@ -934,12 +1014,29 @@ HwOpFieldRanges genericOpRanges() {
     return r;
 }
 
+// OPLL and its ROM-preset-table siblings (OPLLP/OPLLX/VRC7) share identical
+// register semantics from FITOM_X's perspective - see opllVoiceRanges()/
+// opllOpRanges() above.
+bool isOpllFamily(fpe::VoicePatchType t) {
+    return t == fpe::VoicePatchType::OPLL || t == fpe::VoicePatchType::OPLLP ||
+           t == fpe::VoicePatchType::OPLLX || t == fpe::VoicePatchType::VRC7;
+}
+
 HwVoiceFieldRanges getVoiceFieldRanges(fpe::VoicePatchType t) {
     if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnVoiceRanges();
+    if (t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
+        t == fpe::VoicePatchType::OPL3_2) {
+        return oplVoiceRanges();
+    }
+    if (isOpllFamily(t)) return opllVoiceRanges();
     return genericVoiceRanges();
 }
 HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t) {
     if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnOpRanges();
+    if (t == fpe::VoicePatchType::OPL) return oplOpRanges(0);        // no WS register at all - always sine
+    if (t == fpe::VoicePatchType::OPL2) return oplOpRanges(3);       // 2bit WS (0-3)
+    if (t == fpe::VoicePatchType::OPL3_2) return oplOpRanges(7);     // 3bit WS (0-7)
+    if (isOpllFamily(t)) return opllOpRanges();
     return genericOpRanges();
 }
 
@@ -966,26 +1063,17 @@ fs::path assetsDir() {
     return cached;
 }
 
-// Lazily loads+uploads assets/alg_diagrams/opn_al<alg>.bmp as a GL texture,
-// caching by ALG value (0-7) so repeated frames don't re-read the file.
-// Returns 0 (and caches that too, to avoid retrying every frame) if the
-// asset is missing or fails to parse.
-GLuint getOpnAlgTexture(int alg, int& outWidth, int& outHeight) {
-    struct CachedTex {
-        GLuint id;
-        int width, height;
-    };
-    static std::unordered_map<int, CachedTex> cache;
-    auto it = cache.find(alg);
-    if (it != cache.end()) {
-        outWidth = it->second.width;
-        outHeight = it->second.height;
-        return it->second.id;
-    }
-
-    CachedTex entry{0, 0, 0};
+// Shared by every get*Texture() cache below: loads path as a 24bit BMP and
+// uploads it as a GL texture. Returns id=0 (still cached, so a missing/bad
+// asset only fails once per run, not every frame) if the file is missing
+// or fails to parse.
+struct CachedTex {
+    GLuint id = 0;
+    int width = 0, height = 0;
+};
+CachedTex loadTexture(const fs::path& path) {
+    CachedTex entry;
     BmpImage img;
-    const fs::path path = assetsDir() / "alg_diagrams" / ("opn_al" + std::to_string(alg) + ".bmp");
     if (loadBmp24(path.string(), img)) {
         glGenTextures(1, &entry.id);
         glBindTexture(GL_TEXTURE_2D, entry.id);
@@ -995,10 +1083,57 @@ GLuint getOpnAlgTexture(int alg, int& outWidth, int& outHeight) {
         entry.width = img.width;
         entry.height = img.height;
     }
-    cache[alg] = entry;
-    outWidth = entry.width;
-    outHeight = entry.height;
-    return entry.id;
+    return entry;
+}
+
+// Lazily loads+uploads assets/alg_diagrams/opn_al<alg>.bmp as a GL texture,
+// caching by ALG value (0-7) so repeated frames don't re-read the file.
+// Returns 0 (and caches that too, to avoid retrying every frame) if the
+// asset is missing or fails to parse.
+GLuint getOpnAlgTexture(int alg, int& outWidth, int& outHeight) {
+    static std::unordered_map<int, CachedTex> cache;
+    auto it = cache.find(alg);
+    if (it == cache.end()) {
+        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opn_al" + std::to_string(alg) + ".bmp")))
+                 .first;
+    }
+    outWidth = it->second.width;
+    outHeight = it->second.height;
+    return it->second.id;
+}
+
+// Same idea as getOpnAlgTexture() but for OPL/OPL2/OPL3_2's 1bit ALG
+// (0=series FM, 1=parallel/AM - assets/alg_diagrams/opl_alg<0-1>.bmp,
+// regenerated from the real opl_al0.bmp/opl_al1.bmp reference images'
+// topology, D-021). OPLL doesn't use this - see isOplAlgFamily().
+GLuint getOplAlgTexture(int alg, int& outWidth, int& outHeight) {
+    static std::unordered_map<int, CachedTex> cache;
+    auto it = cache.find(alg);
+    if (it == cache.end()) {
+        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opl_alg" + std::to_string(alg) + ".bmp")))
+                 .first;
+    }
+    outWidth = it->second.width;
+    outHeight = it->second.height;
+    return it->second.id;
+}
+
+// Lazily loads+uploads assets/waveforms/ws<n>.bmp (n=0-7) as a GL texture -
+// the OPL family's WS (waveform select) field, shown the same way ALG is
+// (image + flanking spin buttons, the value burned into the image's own
+// top-left corner) rather than a plain number, per D-021. Curves were
+// plotted from real cached values in the reference spreadsheet
+// (E:\...\material\waveform.xlsx Sheet1, columns B-I = WS0-WS7 vs.
+// degree 0-359), not hand-drawn approximations.
+GLuint getWsTexture(int ws, int& outWidth, int& outHeight) {
+    static std::unordered_map<int, CachedTex> cache;
+    auto it = cache.find(ws);
+    if (it == cache.end()) {
+        it = cache.emplace(ws, loadTexture(assetsDir() / "waveforms" / ("ws" + std::to_string(ws) + ".bmp"))).first;
+    }
+    outWidth = it->second.width;
+    outHeight = it->second.height;
+    return it->second.id;
 }
 
 // Builds the JSON payload for docs/plugin-midi-pipe.md section 5.2's
@@ -1176,7 +1311,68 @@ void inputI16Ranged(const char* label, int16_t& field, const FieldRange& range) 
     if (!range.used) ImGui::EndDisabled();
 }
 
-void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges) {
+// Chip families whose WS field has a real waveform-select image
+// (assets/waveforms/ws<0-7>.bmp, D-021) to show instead of a plain number -
+// OPL/OPL2/OPL3_2 (2/3bit WS) and the OPLL family (1bit WS, confirmed from
+// core/src/OPLL_new.cpp - see opllOpRanges()). Deliberately broader than
+// isOplAlgFamily() below (which excludes OPLL, since OPLL's ALG isn't a
+// connection selector) - WS's meaning (waveform shape) is consistent across
+// all of these, only its bit width differs (already reflected in
+// ranges.WS via getOpFieldRanges()).
+bool isOplWsImageFamily(fpe::VoicePatchType t) {
+    return t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
+           t == fpe::VoicePatchType::OPL3_2 || isOpllFamily(t);
+}
+
+// Renders a value as an image (with the value burned into its own
+// top-left corner, per D-017's ALG convention) flanked by spin buttons,
+// falling back to a plain "◀ label n ▶" spinner when no texture is
+// available (chip family not in scope yet, or the asset failed to load).
+// Shared by ALG's channel-parameter band and WS's per-operator band
+// (D-021) - `getTexture` abstracts over which asset folder/filename
+// pattern to use (opl_alg<n>.bmp vs ws<n>.bmp).
+void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value, const FieldRange& range,
+                         float displayW, const std::function<GLuint(int, int&, int&)>& getTexture) {
+    if (!range.used) ImGui::BeginDisabled();
+    int v = value;
+    int texW = 0, texH = 0;
+    const GLuint tex = getTexture(std::clamp(v, range.minV, range.maxV), texW, texH);
+    ImGui::PushButtonRepeat(true);
+
+    if (tex != 0 && texW > 0 && texH > 0) {
+        const float displayH = displayW * static_cast<float>(texH) / static_cast<float>(texW);
+        const float rowTopY = ImGui::GetCursorPosY();
+        const float buttonCenterY = rowTopY + (displayH - ImGui::GetFrameHeight()) * 0.5f;
+
+        ImGui::SetCursorPosY(buttonCenterY);
+        ImGui::PushID((std::string("minus") + idSuffix).c_str());
+        if (ImGui::ArrowButton("##minus", ImGuiDir_Left) && v > range.minV) value = static_cast<uint8_t>(v - 1);
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(rowTopY);
+        ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(displayW, displayH));
+        ImGui::SameLine();
+        ImGui::SetCursorPosY(buttonCenterY);
+        ImGui::PushID((std::string("plus") + idSuffix).c_str());
+        if (ImGui::ArrowButton("##plus", ImGuiDir_Right) && v < range.maxV) value = static_cast<uint8_t>(v + 1);
+        ImGui::PopID();
+    } else {
+        ImGui::PushID((std::string("minus") + idSuffix).c_str());
+        if (ImGui::ArrowButton("##minus", ImGuiDir_Left) && v > range.minV) value = static_cast<uint8_t>(v - 1);
+        ImGui::PopID();
+        ImGui::SameLine();
+        ImGui::Text("%s %d", label, v);
+        ImGui::SameLine();
+        ImGui::PushID((std::string("plus") + idSuffix).c_str());
+        if (ImGui::ArrowButton("##plus", ImGuiDir_Right) && v < range.maxV) value = static_cast<uint8_t>(v + 1);
+        ImGui::PopID();
+    }
+
+    ImGui::PopButtonRepeat();
+    if (!range.used) ImGui::EndDisabled();
+}
+
+void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges, fpe::VoicePatchType groupType) {
     ImGui::PushID(index);
     ImGui::BeginChild("op", ImVec2(230, 330), true);
     ImGui::Text("OP %d", index + 1);
@@ -1188,6 +1384,18 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges)
     sliderU8Ranged("SR", op.SR, ranges.SR);
     sliderU8Ranged("RR", op.RR, ranges.RR);
     sliderU8Ranged("TL", op.TL, ranges.TL);
+
+    // WS (waveform select) is elevated out of the "詳細" fold-out into its
+    // own visible image+spinner control (like ALG's channel-band control -
+    // D-017), rather than a plain number buried in the details tree, per
+    // the explicit "OPパネルにWS設定を追加する" request (D-021).
+    if (isOplWsImageFamily(groupType)) {
+        renderImageSpinner("ws", "WS", op.WS, ranges.WS, 100.0f,
+                            [](int v, int& w, int& h) { return getWsTexture(v, w, h); });
+    } else {
+        inputU8Ranged("WS", op.WS, ranges.WS);
+    }
+
     if (ImGui::TreeNode("詳細")) {
         inputU8Ranged("KSR", op.KSR, ranges.KSR);
         inputU8Ranged("KSL", op.KSL, ranges.KSL);
@@ -1198,7 +1406,6 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges)
         inputU8Ranged("AM", op.AM, ranges.AM);
         inputU8Ranged("VIB", op.VIB, ranges.VIB);
         inputU8Ranged("EGT", op.EGT, ranges.EGT);
-        inputU8Ranged("WS", op.WS, ranges.WS);
         inputU8Ranged("REV", op.REV, ranges.REV);
         inputU8Ranged("EGS", op.EGS, ranges.EGS);
         inputU8Ranged("DT3", op.DT3, ranges.DT3);
@@ -1253,56 +1460,32 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::Text("チャンネルパラメータ");
 
     // ALG is shown as its own input here - the connection-diagram image
-    // (OPN/OPN2 only so far, assets/alg_diagrams/opn_al<0-7>.bmp, D-016/
-    // D-017) has the current ALG value burned into its own top-left
-    // corner (so the image itself represents the setting, not a separate
-    // "ALG n" text widget), flanked left/right by spin buttons - at the
-    // left edge of this band, rather than a slider elsewhere.
+    // (OPN/OPN2: assets/alg_diagrams/opn_al<0-7>.bmp, D-016/D-017; OPL/
+    // OPL2/OPL3_2: opl_alg<0-1>.bmp, D-021 - OPLL is excluded, see
+    // isOplAlgFamily()) has the current ALG value burned into its own
+    // top-left corner (so the image itself represents the setting, not a
+    // separate "ALG n" text widget), flanked left/right by spin buttons -
+    // at the left edge of this band, rather than a slider elsewhere.
     ImGui::BeginGroup();
     {
         const bool isOpnFamily =
             bank.voicePatchType == fpe::VoicePatchType::OPN || bank.voicePatchType == fpe::VoicePatchType::OPN2;
-        int texW = 0, texH = 0;
-        const GLuint tex = isOpnFamily ? getOpnAlgTexture(std::clamp<int>(patch->hw.ALG, 0, 7), texW, texH) : 0;
-
-        if (!voiceRanges.ALG.used) ImGui::BeginDisabled();
-        int algVal = patch->hw.ALG;
-        ImGui::PushButtonRepeat(true);
-
-        if (tex != 0 && texW > 0 && texH > 0) {
-            const float displayW = 150.0f;
-            const float displayH = displayW * static_cast<float>(texH) / static_cast<float>(texW);
-            const float rowTopY = ImGui::GetCursorPosY();
-            const float buttonCenterY = rowTopY + (displayH - ImGui::GetFrameHeight()) * 0.5f;
-
-            ImGui::SetCursorPosY(buttonCenterY);
-            if (ImGui::ArrowButton("##algminus", ImGuiDir_Left) && algVal > voiceRanges.ALG.minV) {
-                patch->hw.ALG = static_cast<uint8_t>(algVal - 1);
-            }
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(rowTopY);
-            ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(displayW, displayH));
-            ImGui::SameLine();
-            ImGui::SetCursorPosY(buttonCenterY);
-            if (ImGui::ArrowButton("##algplus", ImGuiDir_Right) && algVal < voiceRanges.ALG.maxV) {
-                patch->hw.ALG = static_cast<uint8_t>(algVal + 1);
-            }
+        const bool isOplAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPL ||
+                                     bank.voicePatchType == fpe::VoicePatchType::OPL2 ||
+                                     bank.voicePatchType == fpe::VoicePatchType::OPL3_2;
+        if (isOpnFamily) {
+            renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
+                                [](int v, int& w, int& h) { return getOpnAlgTexture(v, w, h); });
+        } else if (isOplAlgFamily) {
+            renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
+                                [](int v, int& w, int& h) { return getOplAlgTexture(v, w, h); });
         } else {
-            // No diagram for this chip family (or the asset failed to
-            // load) - plain spin control with the value as text instead.
-            if (ImGui::ArrowButton("##algminus", ImGuiDir_Left) && algVal > voiceRanges.ALG.minV) {
-                patch->hw.ALG = static_cast<uint8_t>(algVal - 1);
-            }
-            ImGui::SameLine();
-            ImGui::Text("ALG %d", algVal);
-            ImGui::SameLine();
-            if (ImGui::ArrowButton("##algplus", ImGuiDir_Right) && algVal < voiceRanges.ALG.maxV) {
-                patch->hw.ALG = static_cast<uint8_t>(algVal + 1);
-            }
+            renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
+                                [](int, int& w, int& h) {
+                                    w = h = 0;
+                                    return static_cast<GLuint>(0);
+                                });
         }
-
-        ImGui::PopButtonRepeat();
-        if (!voiceRanges.ALG.used) ImGui::EndDisabled();
     }
     ImGui::EndGroup();
     ImGui::SameLine();
@@ -1324,7 +1507,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
 
     ImGui::Separator();
     for (size_t i = 0; i < patch->ops.size(); ++i) {
-        renderHwOpEditor(static_cast<int>(i), patch->ops[i], opRanges);
+        renderHwOpEditor(static_cast<int>(i), patch->ops[i], opRanges, bank.voicePatchType);
         if (i + 1 < patch->ops.size()) ImGui::SameLine();
     }
 
