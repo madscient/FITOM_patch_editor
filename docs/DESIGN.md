@@ -2093,6 +2093,110 @@ ALG接続図・WS波形画像とも修正前なら空表示になっていたは
 続き)で確認した。**利用者自身も実機(元の報告環境、
 `..\FITOM_staging`からの相対パス起動)で再現の上「OK」と確認済み。**
 
+### D-036: ネイティブパッチ編集画面を新規実装、ToneLayerのhw_bank/hw_prog参照はHWパッチピッカー、参照先の編集は既存Device編集画面を再利用
+
+利用者から「ネイティブパッチ編集画面を実装してほしい。ToneLayer内の
+hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwのみ)による
+ピック選択式にする。各hwpatch表示行の末尾に「編集」ボタンを配置し、
+クリックで対象のhwpatch編集画面をモーダル(オーバーレイでも良い)で
+開く」という依頼を受けた。
+
+**前提**: ネイティブパッチ(`fpe::Patch`/`ToneLayer`)の編集フォームは
+これまで存在せず、BankDetailの表示は`renderToneLayer()`による読み取り
+専用の`ImGui::BulletText`一行(`hw_bank=%d hw_prog=%d`等、生の数値の
+まま)だけだった。今回が最初の編集フォーム実装になる。
+
+**設計方針**: D-015(Device/HwPatch編集画面)・D-034(sw_bank/sw_prog
+参照ピッカー)で確立済みのパターンをそのまま踏襲した。
+
+- `NativePatchEditorWindow`(`AppContext::openNativeEditors`)は
+  `PatchEditorWindow`と同じ「`{bankIndex, prog}`のインデックスのみを
+  保持し、実体(`fpe::Patch&`)は毎フレーム`ws.nativePatchBanks()
+  [bankIndex].findByProg(prog)`で引き直す」設計(D-012/D-015)。複数
+  同時に開ける。BankDetailのネイティブパッチバンク行は、Deviceケースと
+  同じ`ImGui::Selectable`+`openNativePatchEditor()`に変更した(以前の
+  `ImGui::TreeNode`によるインライン展開は廃止)。
+- ToneLayerのhw_bank/hw_prog参照ピッカーは、`SwPatchPickerState`
+  (D-034)と対になる新規`HwPatchPickerState`
+  (`{nativeBankIndex, nativePatchProg, layerIndex}`のインデックス3つを
+  保持、同じく毎フレーム再解決)+`renderHwPatchPicker()`として実装。
+  `ws.deviceBanks()`(全チップ系統のHwBankを横断)を`[group bank] name`
+  でグループ化してツリー表示する点もSW版とほぼ同型だが、**選択時に
+  書き込むフィールドが3つ(`voice_patch_type`/`hw_bank`/`hw_prog`)**
+  という違いがある。ToneLayerの`voice_patch_type`はそのレイヤーが
+  どのチップ系統のHwBankを参照するかのタグであり、ピックしたHwBank
+  自身の`voicePatchType`と食い違ってはいけない(「バンクの中の1パッチを
+  選ぶ」操作は、本質的に「そのバンクのチップ系統ごと選ぶ」操作でもある
+  ため)。SW版のsw_bank/sw_progにはこの対応するタグ概念が無いため、
+  SwPatchPickerStateをそのまま拡張するのではなく別の新規picker state
+  にした(コード上の重複はあるが、書き込み先フィールド数が違う時点で
+  「同じものの再利用」ではなく「同じパターンの2つ目の適用」と判断)。
+- 「編集」ボタン: ToneLayerの`hw_bank`は`HwBank::bankIndex`
+  (profile.json `hw_banks[].bank`)であって`ws.deviceBanks()`の
+  ベクタ添字ではないため、対象HwPatchを引くには`voice_patch_type`+
+  `hw_bank`のペアでのリニアサーチが要る。既存の`findDeviceBankIndexByFile()`
+  (ファイルパスというキーでのリニアサーチ)と同じ「安定したキーで
+  探す、ベクタ位置に依存しない」考え方を踏襲した新規
+  `findDeviceBankVectorIndex(ws, type, bankIndex)`ヘルパーで
+  `ws.deviceBanks()`上のベクタ添字を得てから、既存の
+  `openPatchEditor(ctx, deviceIdx, hw_prog)`をそのまま呼ぶ。**独立した
+  モーダルウィンドウは新設していない** - 依頼文面の「モーダルに開く
+  (オーバーレイでも良い)」を文字通り採用し、D-015で確立済みの
+  モードレスDevice編集ウィンドウをそのまま「編集」ボタンの遷移先とした
+  (Device編集画面自体を複製・改変する理由がないため)。
+
+**意図的にスコープを絞った点**:
+
+1. ~~`fpe::Patch`自身の`sw_bank`/`sw_prog`は生の`ImGui::InputInt`2個の
+   まま~~ (→同日、利用者から「swbank/swprogはhwパッチ編集画面と同様の
+   ピッカー動作としてください」と追加依頼を受け、対応済み。下記
+   「追記」参照)。
+2. ToneLayer自体の追加・削除UI(Patchの`layers`ベクタの要素数を
+   変える操作)は依頼に含まれていなかったため未実装。既存レイヤーの
+   フィールド編集のみ。
+3. Device編集画面(D-015/D-027)が持つリアルタイム差分SysEx送信・
+   試聴鍵盤・「登録」時のFITOM_X再送信は、ネイティブパッチ編集画面には
+   実装していない。ネイティブパッチ自体は合成パラメータを一切持たない
+   参照の束でしかなく、試聴自体は「編集」ボタンから開くDevice編集画面が
+   従来通り担うため、ここで重複して実装する理由がないと判断した
+   (「登録」ボタンは`ctx.workspace.save()`のみ呼ぶ、ディスクへの保存
+   という意味では他のCRUD操作(D-014の新規バンク作成等)と同じ扱い)。
+
+**実機確認**: ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、
+データモデル層に変更なしのため回帰なし)は確認したが、**クリック操作の
+実機確認はしていない**。`CLAUDE.md`「GUIの動作確認について」の方針
+(利用者の明示的な指示が無い限り自動クリック操作をしない)に加え、
+今回の変更点(Native BankDetailの行クリック→エディタ起動→ToneLayerの
+ラベルクリック→ピッカー→選択→「編集」ボタン→Device編集画面起動、という
+一連の遷移)はクリックそのものを経ないと露出しないため、キオスクモード
+起動によるビルド後の受動的スクリーンショット確認(D-035等で行っていた
+もの)も今回は意味を持たず見送った。利用者自身の目視確認を待つ。
+
+**追記(同日): `fpe::Patch`自身のsw_bank/sw_prog参照もHWピッカーと
+同様のラベル+ピッカー方式に変更**。利用者から「swbank/swprogはhwパッチ
+編集画面と同様のピッカー動作としてください」という追加依頼を受け、
+上記スコープ外事項1を解消した。既存の`SwPatchPickerState`
+(D-034、HwPatchの`{deviceBankIndex, devicePatchProg}`前提で組まれて
+いた)を、`SwPatchPickerTarget`(`Device`/`Native`)で参照先を切り替える
+形に一般化した。Device/Native いずれの場合も最終的には
+「書き換えたい`sw_bank`/`sw_prog`という`int`2つへのポインタ」に解決
+してから同じツリー一覧・選択・「参照解除」ロジックを通す設計にしたため、
+一覧描画コード自体は重複させていない(D-036本文で「HwPatchPickerState
+はSwPatchPickerStateを拡張せず別の新規stateにした」と書いたのとは
+対照的な判断 - ToneLayerのHWピッカーは選択時に書き込むフィールド数が
+3つ(`voice_patch_type`込み)で構造が違ったため別stateにしたが、今回の
+Patch自身のsw_bank/sw_prog参照はHwPatchのsw_bank/sw_prog参照と全く
+同じ`{bank, prog}`という形なので、一般化する方が自然だった)。
+`openSwPatchPicker(ctx, deviceBankIndex, devicePatchProg)`(既存、
+Device向け)に加え、新規`openNativeSwPatchPicker(ctx, nativeBankIndex,
+nativePatchProg)`(Native向け)を追加し、`renderNativePatchEditor()`の
+sw_bank/sw_prog表示を、`renderPatchEditor()`のsw_bank/sw_prog表示
+(D-034)と全く同じ「パフォーマンス: {bank}/{prog} : バンク名 / パッチ名
+(未解決時は(N/A))」ラベル+クリックでピッカーを開く形に変更した(生の
+`ImGui::InputInt`2個は廃止)。ビルド・`ctest`(既存項目、データモデル層に
+変更なしのため回帰なし)を再確認した。クリック操作自体の実機確認は
+上記と同様、引き続き利用者の目視確認待ち。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
