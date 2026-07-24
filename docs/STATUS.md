@@ -72,16 +72,20 @@
   エンベロープ波形、試聴鍵盤、モードレス複数ウィンドウ)も実装済み
   (D-015)。パラメータ範囲・ウィンドウ幅・鍵盤3オクターブ+CC#1/CC#7
   レバー・ALG接続図はOPN/OPN2系(D-016)・OPL/OPL2/OPL3_2/OPLL系
-  (D-021、2026-07-18)・OPM/OPZ/OPZ2系(D-031、2026-07-19)が実チップの
-  レジスタ幅で確認済み。ALG接続図はOPN/OPN2に加えOPM/OPZ/OPZ2も
-  `opn_al{0-7}.png`を共用(同じ3bit 0-7のALGセマンティクス、D-031)、
-  OPL系は`opl_alg{0-1}.png`。WS(波形選択)の画像+スピンボタンUIも
-  OPL系(D-021)に加えOPM(非活性)/OPZ/OPZ2(`opz_ws{0-7}.png`、D-031)に
-  対応。**OPL_RHY/OPL3(4opモード)/PSG系等、残りのチップ種別のパラメータ
-  範囲はまだ未確認**(`genericVoiceRanges()`/`genericOpRanges()`の
-  0-99フォールバックのまま)で、`docs/voice-parameter-reference.md`+
-  FITOM_X実ソースのレジスタマスクを突き合わせて`getVoiceFieldRanges()`/
-  `getOpFieldRanges()`(`apps/gui/main.cpp`)に追加していく必要がある。
+  (D-021、2026-07-18)・OPM/OPZ/OPZ2系(D-031、2026-07-19)・OPL3(4OP
+  モード)系(D-032、2026-07-24)が実チップのレジスタ幅で確認済み。
+  ALG接続図はOPN/OPN2に加えOPM/OPZ/OPZ2も`opn_al{0-7}.png`を共用
+  (同じ3bit 0-7のALGセマンティクス、D-031)、OPL/OPL2/OPL3_2は
+  `opl_alg{0-1}.png`、OPL3(4OPモード)は専用の`opl3_al{0-7}.png`
+  (3bitパック値=CON1/CON2/ConnectionSEL、D-032)。WS(波形選択)の
+  画像+スピンボタンUIもOPL系(D-021)に加えOPM(非活性)/OPZ/OPZ2
+  (`opz_ws{0-7}.png`、D-031)・OPL3(4OPモード、OPL3_2と同じ
+  `ws{0-7}.png`を共用、D-032)に対応。**OPL_RHY/PSG系等、残りのチップ
+  種別のパラメータ範囲はまだ未確認**(`genericVoiceRanges()`/
+  `genericOpRanges()`の0-99フォールバックのまま)で、`docs/
+  voice-parameter-reference.md`+FITOM_X実ソースのレジスタマスクを
+  突き合わせて`getVoiceFieldRanges()`/`getOpFieldRanges()`(`apps/gui/
+  main.cpp`)に追加していく必要がある。
   OPパネルの「詳細」フォールドアウトは、対象チップ種別で未使用の
   フィールドを非表示にするよう変更(D-031、以前は無効化した状態で
   表示していた)。
@@ -1200,3 +1204,44 @@
   SampleZoneの`name`フィールド追加、OPL_RHY/OPL3(4opモード)/PSG系への
   対応、またはネイティブ/パフォーマンス/ドラムノートの編集フォーム・
   バンク/パッチの複製・削除UIに進む。
+
+### 2026-07-24 (同マシン、OPL3(4OPモード)パッチ編集画面を追加)
+- やったこと: 利用者から「OPL3(2OP)パッチ編集画面を元にOPL3(4OP)用の
+  hwパッチ編集画面を作成してほしい。アルゴリズム図はassets配下に
+  用意してあるものを使ってください」と依頼された(`assets/
+  alg_diagrams/opl3_al{0-7}.png`8種は依頼直前のコミットで利用者自身が
+  追加済み、詳細はD-032参照)。`VoicePatchType::OPL3`(0x30)は
+  `OPL3_2`(0x22、2OP残余)とは別チップモードで、`docs/
+  voice-parameter-reference.md`「OPL3 (YMF262) 4OPモード」節と
+  `core/src/OPL_new.cpp`の`COPL3::updateVoice()`等の実ソースを
+  突き合わせ、独自仕様(ALGは3bitパック値=CON1/CON2/ConnectionSEL、
+  FB/FB2が前半/後半ペアそれぞれ独立、PDTは`ops[0]`/`ops[2]`のみ有効)を
+  確認した。`apps/gui/main.cpp`に`opl3FourOpVoiceRanges()`・
+  `getOpl3AlgTexture()`(`opl3_al<0-7>.png`用)を新設し、ALGファミリー
+  判定を2分岐(OPN系/OPL系)から3分岐(+OPL3 4OP系)に拡張、WS画像は
+  OPL3_2と同じ3bit`ws<0-7>.png`セットを共用するよう
+  `isOplWsImageFamily()`に追加。PDTがオペレータ位置(0/2のみ)に
+  依存する初めてのケースだったため、`getOpFieldRanges()`に`opIndex`
+  引数を追加し(他チップは無視)、`renderPatchEditor()`のオペレータ
+  描画ループ内でインデックスごとに引き直すよう変更した。オペレータ数
+  自体は既存の`ops.size()`駆動の描画ループがそのまま機能するため、
+  4OP専用の新しいループは不要だった。
+  ビルド・`ctest`全通過を確認後、実データ(`FITOM_staging/config/
+  profiles/emulator_opl3.profile.json`経由、`banks/OPL3/alsa/
+  std_opl3.hwbank.json`の`bank 0 prog 0`"Acoustic Grand"、`ALG:6`)を
+  キオスクモードで直接開き、ALG接続図(`opl3_al6.png`)・FB2の非
+  グレーアウト表示・4オペレータ全ての表示(WS画像・エンベロープ波形が
+  実データと一致)をスクリーンショットで確認した。
+- 未完了・既知の問題: 「詳細」フォールドアウトでPDTがOP1/OP3のみに
+  表示されOP2/OP4では非表示になることは、コードパス上は保証されている
+  (`getOpFieldRanges(OPL3, opIndex)`の分岐)が、DPIスケーリング環境
+  でのクリック自動化較正(D-015)に今回は時間を割かず、目視でのクリック
+  確認は未実施(詳細はD-032参照)。OPL_RHY/PSG系等、残りのチップ種別の
+  パラメータ範囲・接続図・波形画像は引き続き未対応。SampleZoneの
+  `name`フィールド追加、ネイティブ/パフォーマンス/ドラムノートの
+  編集フォーム、バンク/パッチの複製・削除UIも引き続き未着手。
+- 次にやること: 次回このマシンで作業する際は、クリック自動化較正の
+  上でOPL3(4OP)の「詳細」フォールドアウト(PDTのOP1/OP3限定表示)を
+  実機クリック確認する。それ以外はOPL_RHY/PSG系への対応、または
+  ネイティブ/パフォーマンス/ドラムノートの編集フォーム・バンク/パッチ
+  の複製・削除UIに進む。
