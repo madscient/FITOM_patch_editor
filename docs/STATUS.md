@@ -1296,3 +1296,43 @@
   または`buildHwPatchDiffJson()`の`ext`差分対応(必要になれば)、
   ネイティブ/パフォーマンス/ドラムノートの編集フォーム・バンク/パッチ
   の複製・削除UIに進む。
+  (→2026-07-24、下記セッションでsw_bank/sw_prog参照のUI改善に対応。)
+
+### 2026-07-24 (同マシン、パッチ編集画面のsw_bank/sw_prog参照をラベル+ピッカーに変更)
+- やったこと: 利用者から「パッチ編集画面全般、sw_bank/sw_prog参照を、
+  数値入力ではなくバンク名・パッチ名表示として、表示ラベルをクリック
+  するとパッチピッカー(swのみ)からピックする」と依頼された(詳細は
+  D-034参照)。`renderPatchEditor()`の`sw_bank`/`sw_prog`用
+  `ImGui::InputInt`2個を、既存の`ws.findPerformanceBank()`/
+  `ws.resolvePerformancePatch()`(BankDetail画面の一覧表示で既に使われて
+  いたAPI)で組み立てた「SW: バンク名 / パッチ名」ラベル
+  (`ImGui::Selectable`)に置き換えた。クリックすると新設の
+  `renderSwPatchPicker()`モーダルが開き、全SWバンク・全パッチを
+  ツリー表示から選択できる(「参照解除」で未設定(-1/-1)にも戻せる)。
+  利用者の指示通りSW限定とし、ネイティブパッチ等の参照ピッカーは
+  対象外とした。ピッカーの状態(`SwPatchPickerState`)は既存の
+  `PathPickerState`(D-019)と同じ設計方針(1インスタンスのみ、モーダル
+  はモードレスウィンドウの外側からトップレベルで毎フレームOpenPopup
+  する)を踏襲しつつ、対象HwPatchは生ポインタではなく
+  `{deviceBankIndex, devicePatchProg}`のインデックスの組で保持し
+  毎フレーム引き直す設計にした(`PatchEditorWindow`自身の既存の設計、
+  D-012/D-015と統一)。
+  ビルド・`ctest`全通過を確認後、実データ(`emulator_opl3.profile.json`
+  の`std_opl3.hwbank.json` bank0 prog0 "Acoustic Grand")をキオスク
+  モードで開き、「SW: Performance SwPatch Presets / VelScale Mid
+  (Carr...」という解決済みラベルが表示されることを確認した。この際、
+  原因不明のフォーカス奪取競合で対象ウィンドウを最前面化できない問題に
+  遭遇し、`PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)`でフォーカスに
+  依存せず直接キャプチャする方式に切り替えて確認した(次回同様の問題が
+  起きた場合の代替手段としてD-034に記録)。
+- 未完了・既知の問題: ラベルを実際にクリックしてピッカーを開き選択し
+  直す操作自体の目視確認は、方針通り利用者に委ねる(未実施)。OPL_RHYの
+  「Inst.」ドロップダウンのクリック確認も引き続き利用者の目視確認待ち。
+  PSG系等、残りのチップ種別のパラメータ範囲・接続図・波形画像は引き続き
+  未対応。SampleZoneの`name`フィールド追加、ネイティブ/パフォーマンス/
+  ドラムノートの編集フォーム、バンク/パッチの複製・削除UIも引き続き
+  未着手。
+- 次にやること: 利用者からsw_bank/sw_progピッカーおよびOPL_RHYの
+  クリック確認結果のフィードバックがあれば対応する。それ以外はPSG系への
+  対応、ネイティブ/パフォーマンス/ドラムノートの編集フォーム・バンク/
+  パッチの複製・削除UIに進む。
