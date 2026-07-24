@@ -1373,17 +1373,44 @@ HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t, int opIndex = -1) {
     return genericOpRanges();
 }
 
+// The directory the running executable itself lives in - not the current
+// working directory. Same helper/precedent as Preferences.cpp's exeDir()
+// (D-020); duplicated here rather than exported from Preferences.h since
+// it's a small, self-contained platform shim and Preferences.h has no
+// reason to expose it as part of its own interface.
+fs::path exeDir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return fs::path(buf).parent_path();
+    }
+#endif
+    return fs::path(); // not resolved (POSIX untested, or the API call failed) - caller falls back to CWD
+}
+
 // Locates assets/ (alg_diagrams/*.png, waveforms/*.png) by searching upward
-// from the process's current working directory for a known marker file -
-// same approach tests/smoke_test.cpp uses for fixtures/, so a normal
-// double-click launch (CWD = the exe's own directory, where CMakeLists.txt
-// copies assets/ post-build) finds it with no compile-time path baked in.
+// from the running executable's own directory (NOT the process's current
+// working directory - see below) for a known marker file, same approach
+// tests/smoke_test.cpp uses for fixtures/ (there, CWD is always the build
+// tree's test-run directory, so the distinction doesn't matter). This one
+// matters for the GUI: a plain double-click launch happens to have CWD ==
+// exe dir, but invoking it from a command line with a *different* CWD (e.g.
+// `bin\fitom_patch_editor_gui.exe config\profiles\foo.profile.json` run
+// from one directory up) does not - searching upward from CWD in that case
+// walks the wrong ancestor chain entirely and never finds the assets/
+// CMakeLists.txt actually copied next to the exe, silently breaking every
+// ALG/WS image (D-035, reported by the project owner reproducing exactly
+// this invocation from a FITOM_staging checkout). Anchoring on exeDir()
+// instead (falling back to CWD only if exeDir() itself couldn't be
+// resolved) fixes this regardless of the caller's CWD.
 fs::path assetsDir() {
     static fs::path cached;
     static bool resolved = false;
     if (resolved) return cached;
     resolved = true;
-    fs::path p = fs::current_path();
+    fs::path p = exeDir();
+    if (p.empty()) p = fs::current_path();
     for (;;) {
         if (fs::exists(p / "assets" / "alg_diagrams" / "opn_al0.png")) {
             cached = p / "assets";
