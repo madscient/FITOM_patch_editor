@@ -316,6 +316,28 @@ struct PatchEditorWindow {
     bool deviceSelected = false; // selectDevice() sent at least once this editor's lifetime
 };
 
+// Shared "SW (performance) patch picker" popup for HwPatch's `sw_bank`/
+// `sw_prog` reference - opened from renderPatchEditor() when the user
+// clicks the resolved bank/patch-name label instead of typing raw numbers
+// (per the project owner's request: patch editors in general should show
+// this reference as a name, with a clickable label opening a picker,
+// rather than bare `sw_bank`/`sw_prog` integer fields). Deliberately scoped
+// to SW/performance patches only for now (as instructed) - Native/HwPatch
+// pickers would need their own separate state if added later.
+//
+// Like PathPickerState, only one instance is needed (only one modal can be
+// open at a time) - repointed at whichever HwPatch is being edited via
+// openSwPatchPicker(). Stores `{deviceBankIndex, devicePatchProg}` rather
+// than a raw `HwPatch*`, matching PatchEditorWindow's own "store indices,
+// re-derive the real reference every frame" convention (D-012/D-015) -
+// safer than holding a pointer across frames if the underlying vector were
+// ever reallocated while the picker is open.
+struct SwPatchPickerState {
+    bool open = false;
+    size_t deviceBankIndex = 0; // index into ws.deviceBanks() of the HwPatch being edited
+    int devicePatchProg = 0;    // HwPatch::prog within that bank
+};
+
 // Editable working copy shown by renderPreferencesDialog() - only written
 // back to AppContext::preferences (and disk, via savePreferences()) on OK,
 // so Cancel discards any in-progress edits cleanly. Populated fresh from
@@ -349,6 +371,7 @@ struct AppContext {
     Preferences preferences;
     PreferencesDialogState preferencesDialog;
     PathPickerState pathPicker; // shared browse-button popup, see PathPickerState/openPathPicker()
+    SwPatchPickerState swPatchPicker; // shared SW-patch picker, see SwPatchPickerState/openSwPatchPicker()
 
     // Selection driving the BankDetail screen - which category/index into
     // the corresponding PatchWorkspace vector. Only meaningful while
@@ -667,6 +690,89 @@ void renderPathPicker(AppContext& ctx) {
             }
             ImGui::SameLine();
         }
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!stayOpen) p.open = false;
+}
+
+// Points the shared SwPatchPickerState at the HwPatch identified by
+// {deviceBankIndex, devicePatchProg} and opens the picker. Called from
+// renderPatchEditor() when the user clicks the sw_bank/sw_prog label.
+void openSwPatchPicker(AppContext& ctx, size_t deviceBankIndex, int devicePatchProg) {
+    ctx.swPatchPicker.deviceBankIndex = deviceBankIndex;
+    ctx.swPatchPicker.devicePatchProg = devicePatchProg;
+    ctx.swPatchPicker.open = true;
+}
+
+// Modal listing every performance (SW) bank/patch, grouped by bank -
+// clicking a patch writes its {bank,prog} into the target HwPatch's
+// sw_bank/sw_prog fields. Scoped to SW/performance patches only (per the
+// project owner's explicit request - a Native/HwPatch picker would be a
+// separate future addition, not this one extended). Re-resolves the target
+// HwPatch* every frame from {deviceBankIndex, devicePatchProg} rather than
+// holding a pointer captured at open time (see SwPatchPickerState's
+// comment) - if the target patch has since vanished (bank/patch deleted
+// while the picker was open), the picker just closes itself quietly rather
+// than dereferencing a stale pointer.
+void renderSwPatchPicker(AppContext& ctx) {
+    SwPatchPickerState& p = ctx.swPatchPicker;
+    if (!p.open) return;
+
+    auto& deviceBanks = ctx.workspace.deviceBanks();
+    if (p.deviceBankIndex >= deviceBanks.size()) {
+        p.open = false;
+        return;
+    }
+    fpe::HwPatch* target = deviceBanks[p.deviceBankIndex].findByProg(p.devicePatchProg);
+    if (!target) {
+        p.open = false;
+        return;
+    }
+
+    const char* title = "パッチピッカー (SW)";
+    ImGui::OpenPopup(title);
+    bool stayOpen = true;
+    if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("参照するパフォーマンスパッチ(SW)を選択してください。");
+        ImGui::Separator();
+
+        ImGui::BeginChild("swpatchpickerlist", ImVec2(420, 320), true);
+        auto& swBanks = ctx.workspace.performanceBanks();
+        for (auto& bank : swBanks) {
+            ImGui::PushID(bank.bankIndex);
+            const bool isCurrentBank = bank.bankIndex == target->sw_bank;
+            if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[bank %d] %s", bank.bankIndex,
+                                   bank.name.c_str())) {
+                for (auto& patch : bank.patches) {
+                    const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
+                    const bool selected = isCurrentBank && patch.prog == target->sw_prog;
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        target->sw_bank = bank.bankIndex;
+                        target->sw_prog = patch.prog;
+                        p.open = false;
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+                if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        if (swBanks.empty()) ImGui::TextDisabled("(パフォーマンスバンクがありません)");
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        if (ImGui::Button("参照解除", ImVec2(120, 0))) {
+            target->sw_bank = -1;
+            target->sw_prog = -1;
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
         if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
             p.open = false;
             ImGui::CloseCurrentPopup();
@@ -1921,12 +2027,26 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         editor.initialized = true;
     }
 
-    int swBank = patch->sw_bank, swProg = patch->sw_prog;
-    ImGui::SetNextItemWidth(80);
-    if (ImGui::InputInt("sw_bank", &swBank)) patch->sw_bank = swBank;
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
-    if (ImGui::InputInt("sw_prog", &swProg)) patch->sw_prog = swProg;
+    // sw_bank/sw_prog reference a performance (SW) patch by raw number, but
+    // are shown here as a resolved "bank name / patch name" label rather
+    // than bare integer fields (per the project owner's request). Clicking
+    // it opens renderSwPatchPicker() (SW patches only, as instructed) to
+    // repoint the reference instead of typing numbers directly.
+    {
+        std::string swLabel;
+        if (patch->sw_bank >= 0 && patch->sw_prog >= 0) {
+            const fpe::SwBank* swBank = ws.findPerformanceBank(patch->sw_bank);
+            const fpe::SwPatch* swPatch = ws.resolvePerformancePatch(patch->sw_bank, patch->sw_prog);
+            swLabel = "SW: " + (swBank ? swBank->name : ("bank " + std::to_string(patch->sw_bank))) + " / " +
+                      (swPatch ? swPatch->name : ("prog " + std::to_string(patch->sw_prog) + " (見つかりません)"));
+        } else {
+            swLabel = "SW: (未設定)";
+        }
+        if (ImGui::Selectable(swLabel.c_str(), false, 0, ImVec2(320, 0))) {
+            openSwPatchPicker(ctx, editor.bankIndex, patch->prog);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてSWパッチを選択");
+    }
 
     const HwVoiceFieldRanges voiceRanges = getVoiceFieldRanges(bank.voicePatchType);
 
@@ -2526,6 +2646,7 @@ int main(int argc, char** argv) {
             ImGui::Begin("パッチ編集", &ctx.kioskEditor.open,
                          ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
             renderPatchEditor(ctx, ctx.kioskEditor);
+            renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()
             renderErrorPopup(ctx); // e.g. "登録" save failures - kiosk mode has no menu to show them elsewhere
             ImGui::End();
             if (!ctx.kioskEditor.open) {
@@ -2551,6 +2672,7 @@ int main(int argc, char** argv) {
                     break;
             }
             renderPatchEditors(ctx);
+            renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()
             renderNewBankDialog(ctx);
             renderPreferencesDialog(ctx); // also renders the shared path-picker modal, nested inside its own popup (see D-019)
             renderErrorPopup(ctx);

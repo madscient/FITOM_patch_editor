@@ -1971,6 +1971,75 @@ hwbank.json`)を2つの異なるプロファイル経由で開いて確認した
 切り替える動作・`ops.resize()`が実際に発火することの目視確認は
 利用者に委ねる(未実施)。
 
+### D-034: パッチ編集画面のsw_bank/sw_prog参照を数値入力からクリック可能なラベル+パッチピッカー(SW限定)に変更
+
+利用者から「パッチ編集画面全般、sw_bank/sw_prog参照を、数値入力ではなく
+バンク名・パッチ名表示として、表示ラベルをクリックするとパッチピッカー
+(swのみ)からピックする」という依頼を受けた。
+
+**変更前**: `renderPatchEditor()`は`sw_bank`/`sw_prog`を素の
+`ImGui::InputInt`2個(生の整数)として表示していた。参照先の名前解決は
+BankDetail画面の一覧表示(`renderBankDetail()`のDeviceケース)にのみ
+既に実装済みで(`ws.resolvePerformancePatch(patch.sw_bank,
+patch.sw_prog)`)、パッチ編集画面本体には存在しなかった。
+
+**実装**: 既存の`ws.findPerformanceBank()`/`ws.resolvePerformancePatch()`
+(いずれも`fpe::PatchWorkspace`の既存API、新設不要)で
+`"SW: <バンク名> / <パッチ名>"`形式のラベルを組み立て、
+`ImGui::InputInt`2個の代わりに`ImGui::Selectable()`として表示するよう
+`renderPatchEditor()`を変更した。未設定(`sw_bank<0 || sw_prog<0`)は
+「SW: (未設定)」、参照先が見つからない場合は「bank N」「prog N
+(見つかりません)」とフォールバック表示する。
+
+クリックすると新設の`renderSwPatchPicker()`モーダル(`openSwPatchPicker()`
+で起動)が開き、`ws.performanceBanks()`の全バンク・全パッチを
+`ImGui::TreeNodeEx`+`ImGui::Selectable`のツリーで一覧表示する。選択すると
+対象HwPatchの`sw_bank`/`sw_prog`を書き換えて閉じる。「参照解除」ボタンで
+`-1/-1`(未設定)に戻せる。利用者の指示通り**SW(パフォーマンスパッチ)
+限定**とし、ネイティブパッチ等、他の参照種別のピッカーは対象外とした
+(将来必要になれば別のpicker stateとして追加すること)。
+
+**状態管理**: 既存の`PathPickerState`(D-019)と同じ設計方針を踏襲した。
+
+- 複数の`PatchEditorWindow`が同時に開いていても、ピッカーは
+  `AppContext`上に1つだけ(`SwPatchPickerState`)。同時に複数開く必要は
+  ない(常にモーダルとして1つだけ操作可能なため)。
+- ピッカーが「どのHwPatchを編集中か」は`{deviceBankIndex,
+  devicePatchProg}`という**インデックスの組**で保持し、`HwPatch*`を
+  直接キャプチャしない。これは`PathPickerState::target`(生の`char*`
+  ポインタを保持する設計)とは異なる選択で、`PatchEditorWindow`
+  自体が既に確立している「インデックスを保持し、毎フレーム実体を
+  引き直す」設計(D-012/D-015)に合わせた方が、`ops`ベクタの再配置等に
+  対して安全なため。`renderSwPatchPicker()`は毎フレーム
+  `deviceBanks[index].findByProg(prog)`で実体を引き直し、既に消えていた
+  場合は静かにピッカーを閉じる。
+- モーダルの`OpenPopup()`/`BeginPopupModal()`呼び出しは、既存の
+  `renderNewBankDialog()`/`renderErrorPopup()`と同様、各
+  `PatchEditorWindow`自身の`Begin()/End()`ブロックの**外側**
+  (`main()`のトップレベル、`renderPatchEditors()`の直後)から毎フレーム
+  呼ぶ設計にした。`PathPickerState`のコメントが警告する「モーダルの
+  中からネストしてモーダルを開く場合はBeginPopupModalブロックの内側
+  から呼ぶ必要がある」問題は、あくまで「モーダル→モーダル」のネスト
+  ケースの話であり、「モードレスウィンドウ→モーダル」という今回の
+  ケース(既存の`renderErrorPopup()`がkioskモードの`パッチ編集`
+  ウィンドウの中から呼ばれているのと全く同型)には当てはまらないため、
+  トップレベル呼び出しで問題ない。
+
+**実機確認**: ビルド・`ctest`全通過を確認。実データ
+(`FITOM_staging/config/profiles/emulator_opl3.profile.json`経由、
+`std_opl3.hwbank.json`の`bank 0 prog 0`"Acoustic Grand")をキオスク
+モードで開き、名前欄の下に「SW: Performance SwPatch Presets /
+VelScale Mid (Carr...」という解決済みラベルが数値入力の代わりに
+表示されることを確認した。ウィンドウがフォアグラウンド化に失敗する
+問題(このセッション中、原因不明のフォーカス奪取競合が発生し
+`SetForegroundWindow`/`AttachThreadInput`を使っても対象ウィンドウを
+最前面化できなかった)に遭遇したため、`PrintWindow(hwnd, hdc,
+PW_RENDERFULLCONTENT=2)`でフォーカス・最前面化に依存せず直接ウィンドウ
+内容をキャプチャする方式に切り替えて確認した(今後同様の問題が起きた
+場合の代替手段として記録)。利用者からの方針(`CLAUDE.md`「GUIの動作
+確認について」)に従い、ラベルを実際にクリックしてピッカーを開き
+パッチを選び直す操作自体の目視確認は利用者に委ねる(未実施)。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
