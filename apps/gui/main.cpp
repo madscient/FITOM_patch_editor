@@ -63,10 +63,21 @@
 // modeless editor (reused as-is - no separate "modal" editor was built for
 // this).
 //
+// Selecting a Performance patch from BankDetail opens a third modeless
+// editor (renderPerformancePatchEditors()/renderPerformancePatchEditor())
+// for a fpe::SwPatch's name/fine_transpose, channel vibrato (FmSwVoice), and
+// each operator's velocity-sensitivity/tremolo (FmSwOp x4). LWF/SLW (LFO
+// waveform) are shown as an image+spinner (assets/waveforms/lfo<0-6>.png -
+// placeholders with only the numeric index burned in, a human will draw the
+// actual waveform shapes later), LFM/SLM (LFO mode) as a symbol dropdown,
+// everything else as a plain slider (exact ranges unconfirmed against any
+// FITOM_X doc, unlike HwPatch's FieldRange tables). No realtime preview -
+// a SwPatch has no synthesis parameters of its own to sound.
+//
 // "新規プロファイル作成"/"プロファイル削除" are shown in the main menu
-// but intentionally left disabled - not implemented yet. Per-parameter
-// patch editing forms and the virtual MIDI controller are also still
-// future work (see docs/STATUS.md).
+// but intentionally left disabled - not implemented yet. Drum-note patch
+// editing forms and the virtual MIDI controller are also still future work
+// (see docs/STATUS.md).
 //
 // Backend: GLFW (window/input) + OpenGL3 (rendering) + GLEW (GL function
 // loading). All three, plus Dear ImGui itself and nlohmann/json, are
@@ -373,6 +384,23 @@ struct NativePatchEditorWindow {
     int prog = 0;         // Patch::prog within that bank
 };
 
+// A single modeless "performance patch editor" window
+// (renderPerformancePatchEditor()). Edits a fpe::SwPatch (vibrato/tremolo/
+// velocity-sensitivity/fine-transpose expression parameters, see
+// include/fpe/SwPatch.h) - same "store indices, re-derive the real SwPatch&
+// every frame" convention as PatchEditorWindow/NativePatchEditorWindow
+// (D-012/D-015/D-036). No realtime preview/SysEx streaming (like
+// NativePatchEditorWindow, and for the same reason - a SwPatch has no
+// synthesis parameters of its own to sound; it only ever applies on top of
+// whichever HwPatch references it via sw_bank/sw_prog, and that HwPatch
+// already has its own preview-capable editor).
+struct PerformancePatchEditorWindow {
+    int id = 0;
+    bool open = true;
+    size_t bankIndex = 0; // index into ws.performanceBanks()
+    int prog = 0;         // SwPatch::prog within that bank
+};
+
 // Shared "HW (device voice) patch picker" popup for a ToneLayer's
 // hw_bank/hw_prog reference - opened from renderToneLayerEditor() when the
 // user clicks the resolved bank/patch-name label, mirroring how
@@ -419,6 +447,8 @@ struct AppContext {
     int nextEditorId = 0;
     std::vector<NativePatchEditorWindow> openNativeEditors;
     int nextNativeEditorId = 0;
+    std::vector<PerformancePatchEditorWindow> openPerformanceEditors;
+    int nextPerformanceEditorId = 0;
     // One shared preview output (FITOM_X's internal MIDI pipe, falling
     // back to a regular MIDI port via RtMidi - see PreviewOutput,
     // docs/DESIGN.md D-018), reused by every open patch editor's preview
@@ -521,6 +551,24 @@ void openNativePatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
     ctx.openNativeEditors.push_back(w);
 }
 
+// Opens a modeless editor for the SwPatch at ws.performanceBanks()[bankIndex]'s
+// `prog`, or re-focuses an already-open one for the same patch. Mirrors
+// openPatchEditor()/openNativePatchEditor() for the Performance case.
+void openPerformancePatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
+    for (auto& e : ctx.openPerformanceEditors) {
+        if (e.bankIndex == bankIndex && e.prog == prog) {
+            e.open = true;
+            ImGui::SetWindowFocus((std::string("パフォーマンスパッチ編集##perfeditor") + std::to_string(e.id)).c_str());
+            return;
+        }
+    }
+    PerformancePatchEditorWindow w;
+    w.id = ctx.nextPerformanceEditorId++;
+    w.bankIndex = bankIndex;
+    w.prog = prog;
+    ctx.openPerformanceEditors.push_back(w);
+}
+
 // A ToneLayer's hw_bank is HwBank::bankIndex (profile.json
 // hw_banks[].bank), not a vector index into ws.deviceBanks() - resolving or
 // opening the referenced HwPatch (from the picker or the "編集" button)
@@ -531,6 +579,20 @@ std::optional<size_t> findDeviceBankVectorIndex(fpe::PatchWorkspace& ws, fpe::Vo
     auto& banks = ws.deviceBanks();
     for (size_t i = 0; i < banks.size(); ++i) {
         if (banks[i].voicePatchType == type && banks[i].bankIndex == bankIndex) return i;
+    }
+    return std::nullopt;
+}
+
+// Same idea as findDeviceBankVectorIndex(), but for sw_bank (SwBank::bankIndex,
+// profile.json banks.sw_banks[].bank) - needed to open a
+// PerformancePatchEditorWindow (openPerformancePatchEditor(), which takes a
+// vector index into ws.performanceBanks()) from a resolved sw_bank/sw_prog
+// reference's trailing "編集" button, mirroring ToneLayer's hw_bank "編集"
+// button (renderToneLayerEditor()).
+std::optional<size_t> findPerformanceBankVectorIndex(fpe::PatchWorkspace& ws, int bankIndex) {
+    auto& banks = ws.performanceBanks();
+    for (size_t i = 0; i < banks.size(); ++i) {
+        if (banks[i].bankIndex == bankIndex) return i;
     }
     return std::nullopt;
 }
@@ -1800,6 +1862,29 @@ GLuint getOpzWsTexture(int ws, int& outWidth, int& outHeight) {
     return it->second.id;
 }
 
+// Lazily loads+uploads assets/waveforms/lfo<n>.png (n=0-6) as a GL texture -
+// SwPatch's LFO waveform fields (fpe::FmSwVoice::LWF - channel vibrato - and
+// fpe::FmSwOp::SLW - per-operator tremolo, "same choices as LWF" per its own
+// comment, so both share this one set) shown via the same image+spinner
+// treatment as HwPatch's WS (renderImageSpinner(), D-021), per the project
+// owner's explicit "波形についてはhwパッチのwsと同様にイメージ表示とする"
+// request. Unlike ws<n>.png/opz_ws<n>.png (plotted from a real reference
+// spreadsheet), these 7 images are placeholders with only the numeric index
+// burned in (also per the project owner's explicit instruction - "画像は
+// 数値のみ埋め込んだプレースホルダで良い。あとで人間が調整する") - the
+// actual waveform shapes (up-saw/square/triangle/S&H/down-saw/delta/sine,
+// see FmSwVoice::LWF's comment) are left for a human to draw later.
+GLuint getLfoWaveTexture(int wf, int& outWidth, int& outHeight) {
+    static std::unordered_map<int, CachedTex> cache;
+    auto it = cache.find(wf);
+    if (it == cache.end()) {
+        it = cache.emplace(wf, loadTexture(assetsDir() / "waveforms" / ("lfo" + std::to_string(wf) + ".png"))).first;
+    }
+    outWidth = it->second.width;
+    outHeight = it->second.height;
+    return it->second.id;
+}
+
 // Builds the JSON payload for docs/plugin-midi-pipe.md section 5.2's
 // HwPatch override SysEx. Deliberately NOT the same shape as
 // fpe::to_json(HwPatch) (which nests hw.FB/ALG/etc under an "hw" key, to
@@ -2014,6 +2099,10 @@ void inputU8(const char* label, uint8_t& field, int minV = 0, int maxV = 255) {
 void inputI16(const char* label, int16_t& field, int minV = -32768, int maxV = 32767) {
     int v = field;
     if (ImGui::InputInt(label, &v)) field = static_cast<int16_t>(std::clamp(v, minV, maxV));
+}
+void sliderI16(const char* label, int16_t& field, int minV, int maxV) {
+    int v = field;
+    if (ImGui::SliderInt(label, &v, minV, maxV)) field = static_cast<int16_t>(std::clamp(v, minV, maxV));
 }
 
 // *Ranged wrappers grey out (but still show, to keep the layout stable
@@ -2316,10 +2405,11 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     // repoint the reference instead of typing numbers directly.
     {
         std::string swLabel;
+        const fpe::SwPatch* swPatch = nullptr;
         if (patch->sw_bank >= 0 && patch->sw_prog >= 0) {
             const fpe::SwBank* swBank = ws.findPerformanceBank(patch->sw_bank);
-            const fpe::SwPatch* swPatch = ws.resolvePerformancePatch(patch->sw_bank, patch->sw_prog);
-            swLabel = "パフォーマンス: " + 
+            swPatch = ws.resolvePerformancePatch(patch->sw_bank, patch->sw_prog);
+            swLabel = "パフォーマンス: " +
                       std::to_string(patch->sw_bank) + "/" + std::to_string(patch->sw_prog) + " : " +
                       (swBank ? swBank->name : std::string("(N/A)")) + " / " +
                       (swPatch ? swPatch->name : std::string("(N/A)"));
@@ -2330,6 +2420,16 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
             openSwPatchPicker(ctx, editor.bankIndex, patch->prog);
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてパフォーマンスパッチを選択");
+        ImGui::SameLine();
+        // Trailing "編集" button (opens the referenced SwPatch's own
+        // editor), mirroring ToneLayer's hw_bank/hw_prog row
+        // (renderToneLayerEditor(), D-036).
+        ImGui::BeginDisabled(!swPatch);
+        if (ImGui::Button("編集##swedit")) {
+            auto swIdx = findPerformanceBankVectorIndex(ws, patch->sw_bank);
+            if (swIdx) openPerformancePatchEditor(ctx, *swIdx, patch->sw_prog);
+        }
+        ImGui::EndDisabled();
     }
 
     const HwVoiceFieldRanges voiceRanges = getVoiceFieldRanges(bank.voicePatchType);
@@ -2587,9 +2687,10 @@ void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
     // directly (openNativeSwPatchPicker(), D-036) instead of at a HwPatch.
     {
         std::string swLabel;
+        const fpe::SwPatch* swPatch = nullptr;
         if (patch->sw_bank >= 0 && patch->sw_prog >= 0) {
             const fpe::SwBank* swBank = ws.findPerformanceBank(patch->sw_bank);
-            const fpe::SwPatch* swPatch = ws.resolvePerformancePatch(patch->sw_bank, patch->sw_prog);
+            swPatch = ws.resolvePerformancePatch(patch->sw_bank, patch->sw_prog);
             swLabel = "パフォーマンス: " +
                       std::to_string(patch->sw_bank) + "/" + std::to_string(patch->sw_prog) + " : " +
                       (swBank ? swBank->name : std::string("(N/A)")) + " / " +
@@ -2601,6 +2702,17 @@ void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
             openNativeSwPatchPicker(ctx, editor.bankIndex, patch->prog);
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてパフォーマンスパッチを選択");
+        ImGui::SameLine();
+        // Trailing "編集" button (opens the referenced SwPatch's own
+        // editor), mirroring ToneLayer's hw_bank/hw_prog row
+        // (renderToneLayerEditor(), D-036) and renderPatchEditor()'s own
+        // sw_bank/sw_prog row above.
+        ImGui::BeginDisabled(!swPatch);
+        if (ImGui::Button("編集##swedit")) {
+            auto swIdx = findPerformanceBankVectorIndex(ws, patch->sw_bank);
+            if (swIdx) openPerformancePatchEditor(ctx, *swIdx, patch->sw_prog);
+        }
+        ImGui::EndDisabled();
     }
 
     ImGui::Separator();
@@ -2627,6 +2739,181 @@ void renderNativePatchEditors(AppContext& ctx) {
         std::remove_if(ctx.openNativeEditors.begin(), ctx.openNativeEditors.end(),
                         [](const NativePatchEditorWindow& e) { return !e.open; }),
         ctx.openNativeEditors.end());
+}
+
+// --- Performance patch editor ----------------------------------------------
+// Opened via openPerformancePatchEditor() from renderBankDetail()'s
+// Performance case, mirroring how Device/Native rows open their own modeless
+// editors (D-015/D-036 precedent). Edits a fpe::SwPatch's name, channel-level
+// vibrato (FmSwVoice) and per-operator velocity-sensitivity/tremolo
+// (FmSwOp x4, see include/fpe/SwPatch.h). Per the project owner's explicit
+// request: waveform fields (LWF/SLW) are shown as an image (same
+// image+spinner treatment as HwPatch's WS, D-021) rather than a bare number,
+// mode fields (LFM/SLM) as a symbol dropdown rather than a bare number, and
+// everything else as a plain slider for now (exact register widths for
+// these fields aren't confirmed against any FITOM_X doc yet, unlike
+// HwPatch's FieldRange tables - a human will narrow these later, per the
+// project owner).
+
+// Symbolic dropdown for FmSwVoice::LFM / FmSwOp::SLM - both fields share the
+// same 3-value enum (FmSwOp::SLM's comment: "mode (same semantics as
+// LFM)"), so one shared combo handles both rather than duplicating it.
+void renderLfoModeCombo(const char* label, uint8_t& mode) {
+    static constexpr std::pair<uint8_t, const char*> kModes[3] = {
+        {0, "ループ"},
+        {1, "ワンショット(保持)"},
+        {2, "ワンショット(ゼロへ)"},
+    };
+    const char* preview = "?";
+    for (const auto& [v, name] : kModes) {
+        if (v == mode) {
+            preview = name;
+            break;
+        }
+    }
+    if (ImGui::BeginCombo(label, preview)) {
+        for (const auto& [v, name] : kModes) {
+            const bool selected = (v == mode);
+            if (ImGui::Selectable(name, selected)) mode = v;
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+}
+
+// Channel-level vibrato band (FmSwVoice) - laid out the same way
+// renderPatchEditor()'s ALG band is (image+spinner control at the left,
+// flanked by the rest of the group's sliders), since LWF is this struct's
+// own "value shown as an image" field, same role ALG plays for HwPatch.
+void renderSwVoiceEditor(fpe::FmSwVoice& sw) {
+    ImGui::Text("チャンネルビブラート");
+    ImGui::BeginGroup();
+    renderImageSpinner("lwf", "LWF", sw.LWF, FieldRange{0, 6, true}, 150.0f,
+                        [](int v, int& w, int& h) { return getLfoWaveTexture(v, w, h); });
+    ImGui::EndGroup();
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::SetNextItemWidth(150);
+    sliderU8("LFS(位相リセット)", sw.LFS, 0, 1);
+    ImGui::SetNextItemWidth(150);
+    renderLfoModeCombo("LFM", sw.LFM);
+    ImGui::SetNextItemWidth(150);
+    sliderU8("LFD(ディレイ)", sw.LFD, 0, 99);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    sliderU8("LFR(レート)", sw.LFR, 0, 99);
+    ImGui::SetNextItemWidth(150);
+    sliderU8("LFI(フェードイン)", sw.LFI, 0, 99);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    sliderI16("深さ(cent)", sw.depth_cents, -1200, 1200);
+    ImGui::EndGroup();
+}
+
+// Per-operator velocity-sensitivity + tremolo band (FmSwOp), one box per
+// operator laid out side-by-side like renderHwOpEditor()'s per-op boxes.
+// VLD/VLR are explicitly commented "reserved, currently unused" in
+// include/fpe/SwPatch.h, so they're shown disabled (matching the
+// FieldRange.used=false convention used for chip-unused HwPatch fields)
+// rather than omitted, keeping every operator box the same shape.
+void renderSwOpEditor(int index, fpe::FmSwOp& op) {
+    ImGui::PushID(index);
+    ImGui::BeginChild("swop", ImVec2(230, 420), true);
+    ImGui::Text("OP %d", index + 1);
+    ImGui::Separator();
+    ImGui::TextUnformatted("ベロシティ感度");
+    sliderU8("VTL", op.VTL, 0, 99);
+    sliderU8("VAR", op.VAR, 0, 99);
+    sliderU8("VDR", op.VDR, 0, 99);
+    sliderU8("VSL", op.VSL, 0, 99);
+    sliderU8("VSR", op.VSR, 0, 99);
+    sliderU8("VRR", op.VRR, 0, 99);
+    ImGui::BeginDisabled();
+    sliderU8("VLD(未使用)", op.VLD, 0, 99);
+    sliderU8("VLR(未使用)", op.VLR, 0, 99);
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("トレモロ");
+    renderImageSpinner("slw", "波形", op.SLW, FieldRange{0, 6, true}, 100.0f,
+                        [](int v, int& w, int& h) { return getLfoWaveTexture(v, w, h); });
+    sliderU8("SLS(位相リセット)", op.SLS, 0, 1);
+    renderLfoModeCombo("SLM", op.SLM);
+    sliderU8("SLD(深さ)", op.SLD, 0, 127);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("0-63=正、64-127=負(-64..-1)");
+    sliderU8("SLY(ディレイ)", op.SLY, 0, 99);
+    sliderU8("SLR(レート)", op.SLR, 0, 99);
+    sliderU8("SLI(フェードイン)", op.SLI, 0, 99);
+    ImGui::EndChild();
+    ImGui::PopID();
+}
+
+void renderPerformancePatchEditor(AppContext& ctx, PerformancePatchEditorWindow& editor) {
+    fpe::PatchWorkspace& ws = ctx.workspace;
+    auto& banks = ws.performanceBanks();
+    if (editor.bankIndex >= banks.size()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "このバンクは既に存在しません。");
+        return;
+    }
+    auto& bank = banks[editor.bankIndex];
+    fpe::SwPatch* patch = bank.findByProg(editor.prog);
+    if (!patch) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "このパッチは既に存在しません。");
+        return;
+    }
+
+    ImGui::Text("[performance bank %d prog %d]", bank.bankIndex, patch->prog);
+    ImGui::SameLine();
+    {
+        // Top-right "登録" placement, matching renderPatchEditor()/
+        // renderNativePatchEditor()'s convention - SwBank has no narrower
+        // single-bank save API either, so this persists the whole workspace.
+        const float buttonW = 90.0f;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
+        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+            try {
+                ctx.workspace.save();
+            } catch (const std::exception& e) {
+                ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
+            }
+        }
+    }
+
+    char nameBuf[256];
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", patch->name.c_str());
+    if (ImGui::InputText("名前", nameBuf, sizeof(nameBuf))) patch->name = nameBuf;
+
+    ImGui::SetNextItemWidth(200);
+    sliderI16("微調整(cent)", patch->fine_transpose, -1200, 1200);
+
+    ImGui::Separator();
+    renderSwVoiceEditor(patch->sw);
+
+    ImGui::Separator();
+    ImGui::Text("オペレータ");
+    for (size_t i = 0; i < patch->ops.size(); ++i) {
+        renderSwOpEditor(static_cast<int>(i), patch->ops[i]);
+        if (i + 1 < patch->ops.size()) ImGui::SameLine();
+    }
+}
+
+constexpr ImVec2 kPerformancePatchEditorInitialSize(1100.0f, 700.0f);
+
+void renderPerformancePatchEditors(AppContext& ctx) {
+    for (auto& editor : ctx.openPerformanceEditors) {
+        if (!editor.open) continue;
+        const std::string title = "パフォーマンスパッチ編集##perfeditor" + std::to_string(editor.id);
+        ImGui::SetNextWindowSize(kPerformancePatchEditorInitialSize, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(title.c_str(), &editor.open)) {
+            renderPerformancePatchEditor(ctx, editor);
+        }
+        ImGui::End();
+    }
+    ctx.openPerformanceEditors.erase(
+        std::remove_if(ctx.openPerformanceEditors.begin(), ctx.openPerformanceEditors.end(),
+                        [](const PerformancePatchEditorWindow& e) { return !e.open; }),
+        ctx.openPerformanceEditors.end());
 }
 
 // Outline only lists banks/kits (name, index, patch/note count) - drilling
@@ -2768,7 +3055,8 @@ void renderBankDetail(AppContext& ctx) {
             ImGui::Text("パフォーマンスバンク [bank %d] %s", bank.bankIndex, bank.name.c_str());
             ImGui::Separator();
             for (auto& patch : bank.patches) {
-                ImGui::BulletText("[prog %d] %s", patch.prog, patch.name.c_str());
+                std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
+                if (ImGui::Selectable(label.c_str())) openPerformancePatchEditor(ctx, ctx.selectedIndex, patch.prog);
             }
             break;
         }
@@ -3026,6 +3314,11 @@ int main(int argc, char** argv) {
             renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()
             renderErrorPopup(ctx); // e.g. "登録" save failures - kiosk mode has no menu to show them elsewhere
             ImGui::End();
+            // The kiosk editor's own sw_bank/sw_prog row (above) can now open a
+            // PerformancePatchEditorWindow via its "編集" button - render those
+            // as their own sibling windows (not nested inside "パッチ編集"),
+            // same as the non-kiosk branch below.
+            renderPerformancePatchEditors(ctx);
             if (!ctx.kioskEditor.open) {
                 sendFullRegisteredOverride(ctx, ctx.kioskEditor); // D-027, same as the normal editor windows' close handling
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -3051,6 +3344,7 @@ int main(int argc, char** argv) {
             renderPatchEditors(ctx);
             renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()
             renderNativePatchEditors(ctx);
+            renderPerformancePatchEditors(ctx);
             renderHwPatchPicker(ctx); // ToneLayer hw_bank/hw_prog label click, see openHwPatchPicker()
             renderNewBankDialog(ctx);
             renderPreferencesDialog(ctx); // also renders the shared path-picker modal, nested inside its own popup (see D-019)

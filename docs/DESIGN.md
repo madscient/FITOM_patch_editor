@@ -2197,6 +2197,139 @@ sw_bank/sw_prog表示を、`renderPatchEditor()`のsw_bank/sw_prog表示
 変更なしのため回帰なし)を再確認した。クリック操作自体の実機確認は
 上記と同様、引き続き利用者の目視確認待ち。
 
+### D-037: パフォーマンスパッチ編集画面を実装、LFO波形はイメージ表示・モードはシンボルドロップダウン
+
+利用者から「パフォーマンスパッチ編集画面を実装。波形についてはhwパッチの
+WSと同様にイメージ表示とする(画像は数値のみ埋め込んだプレースホルダで
+良い、あとで人間が調整する)。モードは数値ではなくシンボル選択(ドロップ
+ダウン等)。他はとりあえずスライダーで良い(あとで人間が調整する)」と
+いう依頼を受けた。
+
+**前提**: パフォーマンスパッチ(`fpe::SwPatch`)の編集フォームはこれまで
+存在せず、BankDetailの表示は`ImGui::BulletText`による読み取り専用の
+一行(`[prog %d] %s`)だけだった。今回が最初の編集フォーム実装になる。
+
+**設計方針**: D-015(Device編集画面)・D-036(Native編集画面)で確立済みの
+パターンをそのまま踏襲した。
+
+- `PerformancePatchEditorWindow`(`AppContext::openPerformanceEditors`)は
+  既存2種と同じ「`{bankIndex, prog}`のインデックスのみを保持し、実体
+  (`fpe::SwPatch&`)は毎フレーム`ws.performanceBanks()[bankIndex]
+  .findByProg(prog)`で引き直す」設計(D-012/D-015/D-036)。複数同時に
+  開ける。BankDetailのパフォーマンスバンク行を、Device/Nativeケースと
+  同じ`ImGui::Selectable`+`openPerformancePatchEditor()`に変更した
+  (以前の`ImGui::BulletText`のみの一覧表示から変更)。
+- LFO波形フィールド(`FmSwVoice::LWF`= チャンネルビブラート波形、
+  `FmSwOp::SLW`= オペレータごとのトレモロ波形。`FmSwOp.h`のコメント
+  「same choices as LWF」の通り、両方とも同じ0-6の7値enum)は、
+  HwPatchのWS(D-021)と全く同じ`renderImageSpinner()`(画像+スピン
+  ボタン、値が画像自体に焼き込まれる表示)を再利用して表示する。
+  **画像アセット自体は依頼文言通り「数値のみ埋め込んだプレースホルダ」**
+  - `assets/waveforms/lfo{0-6}.png`(168x100、WS用`ws<n>.png`と同じ
+    サイズ)を、大きな数字1つだけを描いた最小限のPNG(Pillow等の画像
+    ライブラリがこのマシンに無かったため、`zlib`標準ライブラリのみで
+    PNGを直接エンコードする使い捨てスクリプトで生成、リポジトリには
+    生成済みPNGのみコミットしスクリプト自体は残していない)として新規
+    追加した。実際の波形形状(up-saw/square/triangle/S&H/down-saw/
+    delta/sine、`FmSwVoice::LWF`のコメント参照)は今回描いていない -
+    依頼文言「あとで人間が調整する」の通り、人間による差し替えを
+    前提にしている。
+- モードフィールド(`FmSwVoice::LFM`/`FmSwOp::SLM`、コメント「0=loop/
+  1=one-shot hold/2=one-shot to zero」「mode (same semantics as LFM)」)
+  は、D-033の`renderRhythmInstrumentCombo()`(OPL_RHYの「Inst.」
+  ドロップダウン)と同じパターンの`renderLfoModeCombo()`(値→日本語
+  ラベルの固定テーブル+`ImGui::BeginCombo`)で表示する。LFM/SLMは同じ
+  enumを共有するため、1つの共有関数で両方をカバーした(重複実装を
+  避けた)。
+- それ以外の全フィールド(`FmSwVoice`の`LFS`/`LFD`/`LFR`/`LFI`/
+  `depth_cents`、`FmSwOp`の`VTL`/`VAR`/`VDR`/`VSL`/`VSR`/`VRR`/`VLD`/
+  `VLR`/`SLS`/`SLD`/`SLY`/`SLR`/`SLI`、`SwPatch::fine_transpose`)は、
+  依頼文言「他はとりあえずスライダーで良い」の通り、単純な
+  `ImGui::SliderInt`ベースの`sliderU8()`/新規`sliderI16()`(int16_t版、
+  `sliderU8()`と対になる薄いラッパー)で表示する。**実際のレジスタ幅は
+  FITOM_X側のいかなるドキュメントとも未確認**(HwPatchの
+  `FieldRange`/`getVoiceFieldRanges()`/`getOpFieldRanges()`(D-016)の
+  ような確認済みテーブルではなく、暫定値)。`depth_cents`/
+  `fine_transpose`は構造体自身のコメントに明記されている
+  `-1200..+1200`をそのまま使い、それ以外の未確認フィールドは
+  `HwOpFieldRanges`の未確認チップ向けフォールバック(`genericOpRanges()`、
+  D-016)と同じ「0-99」を暫定値として採用した。`FmSwOp::VLD`/`VLR`は
+  構造体自身のコメントで「reserved, currently unused」と明記されている
+  ため、HwPatchの「チップが読まないフィールドは`FieldRange.used=false`
+  でグレーアウトしつつ表示は維持する」という既存の慣習(D-016)に
+  倣い、スライダー自体は表示したまま`ImGui::BeginDisabled()`で
+  無効化した。
+- チャンネルビブラート(`FmSwVoice`)のレイアウトは、HwPatchのALG帯
+  (D-017、画像+スピンボタンをバンド左端に置き、残りのスライダー群を
+  右に並べる)と同じ構成(`renderSwVoiceEditor()`)。オペレータごとの
+  ベロシティ感度/トレモロ(`FmSwOp`x4)は、HwPatchの`renderHwOpEditor()`
+  と同じ「1オペレータ1`ImGui::BeginChild`ボックス、`SameLine()`で
+  横に並べる」構成(`renderSwOpEditor()`)にした。
+
+**意図的にスコープを絞った点**: Device編集画面(D-015/D-027)が持つ
+リアルタイム差分SysEx送信・試聴鍵盤・「登録」時のFITOM_X再送信は実装
+していない。D-036のネイティブパッチ編集画面と同じ理由 - `SwPatch`
+自体は合成パラメータを一切持たず、`sw_bank`/`sw_prog`経由でそれを
+参照するHwPatch側で初めて音になる(HwPatchの試聴は既存のDevice編集
+画面が担う)ため、ここで重複して実装する理由がない。「登録」ボタンは
+`ctx.workspace.save()`のみ呼ぶ(他のCRUD操作と同じ扱い)。
+
+**実機確認**: ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、
+データモデル層に変更なしのため回帰なし)を確認した。**クリック操作の
+実機確認はしていない**。`CLAUDE.md`「GUIの動作確認について」の方針
+(利用者の明示的な指示が無い限り自動クリック操作をしない)に加え、
+今回の変更点(Performance BankDetailの行クリック→エディタ起動→各
+コントロールの見た目・操作)はクリックそのものを経ないと露出しない
+ため、キオスクモードでの受動的スクリーンショット確認(D-035等で行って
+いたもの)も見送った - キオスクモード自体`<hwbank-file> <prog>`という
+Device(HwPatch)専用の起動引数しか持たず(D-026)、パフォーマンスパッチを
+直接キオスク起動する経路が無いことも理由の一つ。利用者自身の目視確認を
+待つ。
+
+**追記(同日): Device/Native編集画面のsw_bank/sw_prog表示行に「編集」
+ボタンを追加、参照先のパフォーマンスパッチ編集画面を直接開けるように
+した**。利用者から「ネイティブパッチ編集、デバイスパッチ編集の
+パフォーマンスパッチ表示部の右端に「編集」ボタンを配置して、
+パフォーマンスパッチ編集画面をモーダルまたはオーバーレイで表示する」
+という追加依頼を受けた。ToneLayerのhw_bank/hw_prog行が既に持っている
+「ラベル(クリックでピッカー)+末尾の「編集」ボタン(参照先の既存
+モードレス編集ウィンドウを開く)」という構成(D-036)と全く同じパターンを、
+`renderPatchEditor()`/`renderNativePatchEditor()`双方のsw_bank/sw_prog行に
+適用した。
+
+- `findDeviceBankVectorIndex()`(D-036、`HwBank::bankIndex`という安定
+  キーで`ws.deviceBanks()`のベクタ添字を引く)と対になる新規
+  `findPerformanceBankVectorIndex(ws, bankIndex)`を追加した -
+  `SwBank::bankIndex`という同じ意味のキーで`ws.performanceBanks()`の
+  ベクタ添字を引く(`openPerformancePatchEditor()`はベクタ添字を
+  要求するが、`sw_bank`フィールド自体は`SwBank::bankIndex`であって
+  ベクタ位置ではないため、この変換が要る)。
+- 両編集画面のsw_bank/sw_prog表示ブロックで、ラベルの`Selectable`の
+  直後に`ImGui::SameLine()`+「編集」ボタンを追加。参照が未解決
+  (`sw_bank`/`sw_prog`が負、または解決先が見つからない)の間は
+  `ImGui::BeginDisabled()`でグレーアウトする(ToneLayerの「編集」
+  ボタンが`hwPatch`の有無で無効化する、D-036と同じ扱い)。ボタン押下時は
+  `findPerformanceBankVectorIndex()`で得たベクタ添字を使って
+  `openPerformancePatchEditor()`を呼ぶ - D-037本文で新設した
+  `PerformancePatchEditorWindow`をそのまま再利用しており、独立した
+  モーダルは新設していない(依頼文面の「モーダルまたはオーバーレイで」
+  を、D-036と同じ判断で「既存のモードレスウィンドウを再利用」と解釈)。
+- キオスクモード(D-026)は`renderPatchEditor(ctx, ctx.kioskEditor)`を
+  唯一のパッチ編集画面として使うため、そのsw_bank/sw_prog行の「編集」
+  ボタンから`ctx.openPerformanceEditors`に新しいウィンドウが積まれ
+  得るようになった。キオスク分岐は元々`renderPerformancePatchEditors(ctx)`
+  を呼んでいなかった(パフォーマンスパッチ編集画面自体、D-037時点では
+  キオスク経由で開く手段が無かったため)ので、`ImGui::End()`
+  (「パッチ編集」ウィンドウを閉じた)直後に呼び出しを追加した -
+  独立したモードレスウィンドウなので、外側の「パッチ編集」の
+  `Begin`/`End`にネストさせず、兄弟ウィンドウとして描画する(同じ
+  理由で非キオスク分岐でも`renderPatchEditors()`等はネストさせていない)。
+
+ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、データモデル層に
+変更なしのため回帰なし)を確認した。クリック操作自体の実機確認は、
+D-037本文と同じ理由(キオスクモードでの受動確認手段が無い)により
+引き続き利用者の目視確認待ち。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
