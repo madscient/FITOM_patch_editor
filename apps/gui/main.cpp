@@ -1229,7 +1229,15 @@ HwVoiceFieldRanges getVoiceFieldRanges(fpe::VoicePatchType t) {
     if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnVoiceRanges();
     if (t == fpe::VoicePatchType::OPM || isOpzFamily(t)) return opmVoiceRanges();
     if (t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
-        t == fpe::VoicePatchType::OPL3_2) {
+        t == fpe::VoicePatchType::OPL3_2 || t == fpe::VoicePatchType::OPL_RHY) {
+        // OPL_RHY (COPLRhythm): confirmed against core/src/OPL_new.cpp's
+        // updateVoice() - the FB/ALG channel register write
+        // (`0xC0+physCh = 0x30 | (FB&7)<<1 | (ALG&1)`) is byte-for-byte the
+        // same as plain OPL/OPL2/OPL3_2's, so it takes identical ranges
+        // (and, per isOplAlgFamily() below, the same opl_alg<0-1>.png
+        // series/parallel diagrams) despite being an otherwise very
+        // different editing surface (see the "Inst." combo/op-count logic
+        // in renderPatchEditor(), D-033).
         return oplVoiceRanges();
     }
     if (t == fpe::VoicePatchType::OPL3) return opl3FourOpVoiceRanges();
@@ -1245,7 +1253,10 @@ HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t, int opIndex = -1) {
     if (t == fpe::VoicePatchType::OPM) return opmOpRanges();
     if (isOpzFamily(t)) return opzOpRanges();
     if (t == fpe::VoicePatchType::OPL) return oplOpRanges(0);        // no WS register at all - always sine
-    if (t == fpe::VoicePatchType::OPL2) return oplOpRanges(3);       // 2bit WS (0-3)
+    // OPL2 and OPL_RHY both mask WS with `& 0x3` (2bit) in their respective
+    // drivers (COPL2::updateVoice()/COPLRhythm::writeOperatorRegs()) - same
+    // range, reused here rather than duplicated.
+    if (t == fpe::VoicePatchType::OPL2 || t == fpe::VoicePatchType::OPL_RHY) return oplOpRanges(3);
     if (t == fpe::VoicePatchType::OPL3_2) return oplOpRanges(7);     // 3bit WS (0-7)
     if (t == fpe::VoicePatchType::OPL3) {
         // 3bit WS (same register width as OPL3_2), PDT used only on the
@@ -1639,9 +1650,11 @@ void inputI16Ranged(const char* label, int16_t& field, const FieldRange& range) 
 
 // Chip families whose WS field has a real waveform-select image
 // (assets/waveforms/ws<0-7>.png, D-021) to show instead of a plain number -
-// OPL/OPL2/OPL3_2/OPL3 (2/3bit WS - OPL3 4OP mode's WS is the same 3bit
-// register width as OPL3_2's, `o.WS & 0x7` in COPL3::updateVoice(), so it
-// reuses the same ws<0-7>.png set rather than needing its own) and the OPLL
+// OPL/OPL2/OPL3_2/OPL3/OPL_RHY (2/3bit WS - OPL3 4OP mode's WS is the same
+// 3bit register width as OPL3_2's, `o.WS & 0x7` in COPL3::updateVoice(), and
+// OPL_RHY's is the same 2bit width as OPL2's, `o.WS & 0x3` in
+// COPLRhythm::writeOperatorRegs() - see getOpFieldRanges() - so both reuse
+// this same ws<0-7>.png set rather than needing their own) and the OPLL
 // family (1bit WS, confirmed from core/src/OPLL_new.cpp - see
 // opllOpRanges()). Deliberately broader than the ALG-family checks in
 // renderPatchEditor() (which treat OPL3 4OP mode's ALG separately from the
@@ -1651,7 +1664,8 @@ void inputI16Ranged(const char* label, int16_t& field, const FieldRange& range) 
 // ranges.WS via getOpFieldRanges()).
 bool isOplWsImageFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
-           t == fpe::VoicePatchType::OPL3_2 || t == fpe::VoicePatchType::OPL3 || isOpllFamily(t);
+           t == fpe::VoicePatchType::OPL3_2 || t == fpe::VoicePatchType::OPL3 ||
+           t == fpe::VoicePatchType::OPL_RHY || isOpllFamily(t);
 }
 
 // Renders a value as an image (with the value burned into its own
@@ -1700,6 +1714,58 @@ void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value,
 
     ImGui::PopButtonRepeat();
     if (!range.used) ImGui::EndDisabled();
+}
+
+// OPL_RHY (VOICE_PATCH_OPL_RHY, COPLRhythm) only - renders `ext.rhythm_ch`
+// as a symbolic "Inst." dropdown (HH/CYM/TOM/SD/BD) rather than a bare
+// number, per the explicit "設定値は数値ではなくシンボルをドロップダウン
+// 等で選択する" request. The 0-4 numbering and symbol order are FITOM_X's
+// own (`docs/terminology.md`'s "OPL系内蔵リズムチャンネル" section:
+// `ext.rhythm_ch`, 0=HH/1=CYM/2=TOM/3=SD/4=BD - `resolveTriple()` reads
+// this to force-route the patch to one of COPLRhythm's 5 fixed channels;
+// it's a routing-time field, independent of `hw.ALG`, which
+// COPLRhythm::queryCh() reads separately for the device's own channel
+// bookkeeping). 255 ("unset") shows as no selection instead of silently
+// defaulting to HH, since an unset rhythm_ch fails patch resolution
+// entirely on the FITOM_X side (docs/terminology.md: "未設定(255)または
+// 範囲外は解決失敗") - defaulting here would hide that this patch doesn't
+// work yet.
+//
+// Only BD (rhythm_ch=4) is a 2-operator instrument -
+// COPLRhythm::updateVoice() reads `hwOp[0]`+`hwOp[1]` for ch==4, `hwOp[0]`
+// only otherwise (confirmed real data:
+// FITOM_staging/banks/OPL2/msx_audio/msx_audio_preset_rhythm.hwbank.json's
+// prog 0 "OPL Bass Drum" has 2 ops + rhythm_ch:4, every other prog has 1 op
+// + rhythm_ch 0-3). So selecting an instrument here also resizes `ops[]` to
+// match (D-033) - the per-operator panels below immediately reflect what's
+// actually used, rather than leaving a stale unused OP2 around (or missing
+// the one BD needs). This only fires on an explicit selection, never on a
+// merely-loaded/unopened patch, so correctly-sized data from disk is never
+// silently touched before the user interacts with the dropdown.
+void renderRhythmInstrumentCombo(fpe::HwPatch& patch) {
+    static constexpr std::pair<uint8_t, const char*> kInstruments[5] = {
+        {0, "HH"}, {1, "CYM"}, {2, "TOM"}, {3, "SD"}, {4, "BD"},
+    };
+    const uint8_t current = patch.ext.rhythm_ch;
+    const char* preview = "(未設定)";
+    for (const auto& [v, label] : kInstruments) {
+        if (v == current) {
+            preview = label;
+            break;
+        }
+    }
+    ImGui::SetNextItemWidth(90);
+    if (ImGui::BeginCombo("Inst.", preview)) {
+        for (const auto& [v, label] : kInstruments) {
+            const bool selected = (v == current);
+            if (ImGui::Selectable(label, selected)) {
+                patch.ext.rhythm_ch = v;
+                patch.ops.resize((v == 4) ? 2 : 1);
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
 }
 
 void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges, fpe::VoicePatchType groupType) {
@@ -1867,18 +1933,31 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::Separator();
     ImGui::Text("チャンネルパラメータ");
 
+    // OPL_RHY-only: "Inst." combo picks which of COPLRhythm's 5 fixed
+    // channels (ext.rhythm_ch) this patch targets, ahead of (and
+    // controlling the op-count behind) the ALG/FB band below - see
+    // renderRhythmInstrumentCombo()/D-033.
+    if (bank.voicePatchType == fpe::VoicePatchType::OPL_RHY) {
+        ImGui::BeginGroup();
+        renderRhythmInstrumentCombo(*patch);
+        ImGui::EndGroup();
+        ImGui::SameLine();
+    }
+
     // ALG is shown as its own input here - the connection-diagram image
     // (OPN/OPN2/OPM/OPZ/OPZ2: assets/alg_diagrams/opn_al<0-7>.png,
     // D-016/D-017, extended to OPM/OPZ/OPZ2 in D-031 since they share the
     // same 3bit 0-7 ALG semantics per docs/voice-parameter-reference.md;
-    // OPL/OPL2/OPL3_2: opl_alg<0-1>.png, D-021 - OPLL is excluded, see
-    // isOplAlgFamily()); OPL3 4OP mode: opl3_al<0-7>.png (its own 3bit
-    // packed ALG semantics - CON1/CON2/ConnectionSEL - distinct from both
-    // of the above, see opl3FourOpVoiceRanges()) has the current ALG value
-    // burned into its own top-left corner (so the image itself represents
-    // the setting, not a separate "ALG n" text widget), flanked left/right
-    // by spin buttons - at the left edge of this band, rather than a
-    // slider elsewhere.
+    // OPL/OPL2/OPL3_2/OPL_RHY: opl_alg<0-1>.png, D-021 (OPL_RHY added in
+    // D-033 - COPLRhythm's FB/ALG channel register write is identical to
+    // plain OPL/OPL2/OPL3_2's, see getVoiceFieldRanges()) - OPLL is
+    // excluded, see isOplAlgFamily()); OPL3 4OP mode: opl3_al<0-7>.png (its
+    // own 3bit packed ALG semantics - CON1/CON2/ConnectionSEL - distinct
+    // from both of the above, see opl3FourOpVoiceRanges()) has the current
+    // ALG value burned into its own top-left corner (so the image itself
+    // represents the setting, not a separate "ALG n" text widget), flanked
+    // left/right by spin buttons - at the left edge of this band, rather
+    // than a slider elsewhere.
     ImGui::BeginGroup();
     {
         const bool isOpnAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPN ||
@@ -1886,7 +1965,8 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
                                      bank.voicePatchType == fpe::VoicePatchType::OPM || isOpzFamily(bank.voicePatchType);
         const bool isOplAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPL ||
                                      bank.voicePatchType == fpe::VoicePatchType::OPL2 ||
-                                     bank.voicePatchType == fpe::VoicePatchType::OPL3_2;
+                                     bank.voicePatchType == fpe::VoicePatchType::OPL3_2 ||
+                                     bank.voicePatchType == fpe::VoicePatchType::OPL_RHY;
         const bool isOpl3FourOpAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPL3;
         if (isOpnAlgFamily) {
             renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
