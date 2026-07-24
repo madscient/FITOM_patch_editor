@@ -998,7 +998,35 @@ HwVoiceFieldRanges oplVoiceRanges() {
     r.FB2 = {0, 0, false};
     return r;
 }
-HwOpFieldRanges oplOpRanges(int wsMax) {
+
+// OPL3 (YMF262) 4OP mode - VOICE_PATCH_OPL3 (0x30), distinct from the 2OP
+// residual VOICE_PATCH_OPL3_2 (0x22, oplVoiceRanges() above). Confirmed
+// against core/src/OPL_new.cpp's COPL3::updateVoice(): `hw.ALG & 0x7` is
+// used as a single 3bit packed value (`alValue()`) - bit0=CON1 (front pair
+// M1/C1 connection), bit1=CON2 (back pair M2/C2 connection), bit2=
+// ConnectionSEL (4OP link, drives the 0x104 CONNECTIONSEL register bit and
+// carmsk[] carrier-mask lookup) - matching the 8 assets/alg_diagrams/
+// opl3_al<0-7>.png diagrams (one per packed value) rather than the 2OP
+// family's single ALG-bit0 opl_alg<0-1>.png pair. `hw.FB`/`hw.FB2` are each
+// written to their own independent 0xC0 register (front/back pair) -
+// `(p.hw.FB & 7)`/`(p.hw.FB2 & 7)` - unlike the 2OP family where FB2 is
+// unused. AMS/PMS/NFQ aren't referenced (OPM/PSG-only fields).
+HwVoiceFieldRanges opl3FourOpVoiceRanges() {
+    HwVoiceFieldRanges r;
+    r.FB = {0, 7, true};
+    r.ALG = {0, 7, true};
+    r.AMS = {0, 0, false};
+    r.PMS = {0, 0, false};
+    r.NFQ = {0, 0, false};
+    r.FB2 = {0, 7, true};
+    return r;
+}
+// `pdtUsed` is only true for OPL3 4op mode's front/back-pair pseudo-detune
+// (ops[0]/ops[2] only - see getOpFieldRanges()'s OPL3 branch); every other
+// caller in this family (OPL/OPL2/OPL3_2, none of which have a per-pair
+// pseudo-detune concept per docs/voice-parameter-reference.md) leaves it at
+// the default false.
+HwOpFieldRanges oplOpRanges(int wsMax, bool pdtUsed = false) {
     HwOpFieldRanges r;
     r.AR = {0, 31, true};
     r.DR = {0, 31, true};
@@ -1011,7 +1039,7 @@ HwOpFieldRanges oplOpRanges(int wsMax) {
     r.MUL = {0, 15, true};
     r.DT1 = {0, 0, false};
     r.DT2 = {0, 0, false};
-    r.PDT = {0, 0, false};
+    r.PDT = pdtUsed ? FieldRange{-32768, 32767, true} : FieldRange{0, 0, false};
     r.AM = {0, 1, true};
     r.VIB = {0, 1, true};
     r.EGT = {0, 0, false};
@@ -1204,16 +1232,26 @@ HwVoiceFieldRanges getVoiceFieldRanges(fpe::VoicePatchType t) {
         t == fpe::VoicePatchType::OPL3_2) {
         return oplVoiceRanges();
     }
+    if (t == fpe::VoicePatchType::OPL3) return opl3FourOpVoiceRanges();
     if (isOpllFamily(t)) return opllVoiceRanges();
     return genericVoiceRanges();
 }
-HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t) {
+// `opIndex` (-1 = "don't know/not applicable") only matters for OPL3 4OP
+// mode's PDT field, which is a per-pair (not per-operator) concept - see
+// opl3FourOpVoiceRanges()'s comment and COPL3::updateFnumber() (only
+// ops[0].PDT/ops[2].PDT are ever read). Every other chip family ignores it.
+HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t, int opIndex = -1) {
     if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnOpRanges();
     if (t == fpe::VoicePatchType::OPM) return opmOpRanges();
     if (isOpzFamily(t)) return opzOpRanges();
     if (t == fpe::VoicePatchType::OPL) return oplOpRanges(0);        // no WS register at all - always sine
     if (t == fpe::VoicePatchType::OPL2) return oplOpRanges(3);       // 2bit WS (0-3)
     if (t == fpe::VoicePatchType::OPL3_2) return oplOpRanges(7);     // 3bit WS (0-7)
+    if (t == fpe::VoicePatchType::OPL3) {
+        // 3bit WS (same register width as OPL3_2), PDT used only on the
+        // front/back pair's lead operator (index 0/2).
+        return oplOpRanges(7, opIndex == 0 || opIndex == 2);
+    }
     if (isOpllFamily(t)) return opllOpRanges();
     return genericOpRanges();
 }
@@ -1289,6 +1327,26 @@ GLuint getOplAlgTexture(int alg, int& outWidth, int& outHeight) {
     auto it = cache.find(alg);
     if (it == cache.end()) {
         it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opl_alg" + std::to_string(alg) + ".png")))
+                 .first;
+    }
+    outWidth = it->second.width;
+    outHeight = it->second.height;
+    return it->second.id;
+}
+
+// Same idea again, but for OPL3 (YMF262) 4OP mode's 3bit packed ALG
+// (bit0=CON1 front pair/bit1=CON2 back pair/bit2=ConnectionSEL - see
+// opl3FourOpVoiceRanges()'s comment) - assets/alg_diagrams/opl3_al<0-7>.png,
+// one diagram per packed value. A different asset set from both
+// getOpnAlgTexture() (3bit but OPN/OPM-semantics ALG) and getOplAlgTexture()
+// (the 2OP family's 1bit ALG) - OPL3 4OP mode's ALG bits mean something
+// chip-specific to this mode, so it gets its own images rather than reusing
+// either.
+GLuint getOpl3AlgTexture(int alg, int& outWidth, int& outHeight) {
+    static std::unordered_map<int, CachedTex> cache;
+    auto it = cache.find(alg);
+    if (it == cache.end()) {
+        it = cache.emplace(alg, loadTexture(assetsDir() / "alg_diagrams" / ("opl3_al" + std::to_string(alg) + ".png")))
                  .first;
     }
     outWidth = it->second.width;
@@ -1581,15 +1639,19 @@ void inputI16Ranged(const char* label, int16_t& field, const FieldRange& range) 
 
 // Chip families whose WS field has a real waveform-select image
 // (assets/waveforms/ws<0-7>.png, D-021) to show instead of a plain number -
-// OPL/OPL2/OPL3_2 (2/3bit WS) and the OPLL family (1bit WS, confirmed from
-// core/src/OPLL_new.cpp - see opllOpRanges()). Deliberately broader than
-// isOplAlgFamily() below (which excludes OPLL, since OPLL's ALG isn't a
+// OPL/OPL2/OPL3_2/OPL3 (2/3bit WS - OPL3 4OP mode's WS is the same 3bit
+// register width as OPL3_2's, `o.WS & 0x7` in COPL3::updateVoice(), so it
+// reuses the same ws<0-7>.png set rather than needing its own) and the OPLL
+// family (1bit WS, confirmed from core/src/OPLL_new.cpp - see
+// opllOpRanges()). Deliberately broader than the ALG-family checks in
+// renderPatchEditor() (which treat OPL3 4OP mode's ALG separately from the
+// 2OP family's, and exclude OPLL entirely, since OPLL's ALG isn't a
 // connection selector) - WS's meaning (waveform shape) is consistent across
 // all of these, only its bit width differs (already reflected in
 // ranges.WS via getOpFieldRanges()).
 bool isOplWsImageFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
-           t == fpe::VoicePatchType::OPL3_2 || isOpllFamily(t);
+           t == fpe::VoicePatchType::OPL3_2 || t == fpe::VoicePatchType::OPL3 || isOpllFamily(t);
 }
 
 // Renders a value as an image (with the value burned into its own
@@ -1801,7 +1863,6 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     if (ImGui::InputInt("sw_prog", &swProg)) patch->sw_prog = swProg;
 
     const HwVoiceFieldRanges voiceRanges = getVoiceFieldRanges(bank.voicePatchType);
-    const HwOpFieldRanges opRanges = getOpFieldRanges(bank.voicePatchType);
 
     ImGui::Separator();
     ImGui::Text("チャンネルパラメータ");
@@ -1811,10 +1872,13 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     // D-016/D-017, extended to OPM/OPZ/OPZ2 in D-031 since they share the
     // same 3bit 0-7 ALG semantics per docs/voice-parameter-reference.md;
     // OPL/OPL2/OPL3_2: opl_alg<0-1>.png, D-021 - OPLL is excluded, see
-    // isOplAlgFamily()) has the current ALG value burned into its own
-    // top-left corner (so the image itself represents the setting, not a
-    // separate "ALG n" text widget), flanked left/right by spin buttons -
-    // at the left edge of this band, rather than a slider elsewhere.
+    // isOplAlgFamily()); OPL3 4OP mode: opl3_al<0-7>.png (its own 3bit
+    // packed ALG semantics - CON1/CON2/ConnectionSEL - distinct from both
+    // of the above, see opl3FourOpVoiceRanges()) has the current ALG value
+    // burned into its own top-left corner (so the image itself represents
+    // the setting, not a separate "ALG n" text widget), flanked left/right
+    // by spin buttons - at the left edge of this band, rather than a
+    // slider elsewhere.
     ImGui::BeginGroup();
     {
         const bool isOpnAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPN ||
@@ -1823,12 +1887,16 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         const bool isOplAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPL ||
                                      bank.voicePatchType == fpe::VoicePatchType::OPL2 ||
                                      bank.voicePatchType == fpe::VoicePatchType::OPL3_2;
+        const bool isOpl3FourOpAlgFamily = bank.voicePatchType == fpe::VoicePatchType::OPL3;
         if (isOpnAlgFamily) {
             renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
                                 [](int v, int& w, int& h) { return getOpnAlgTexture(v, w, h); });
         } else if (isOplAlgFamily) {
             renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
                                 [](int v, int& w, int& h) { return getOplAlgTexture(v, w, h); });
+        } else if (isOpl3FourOpAlgFamily) {
+            renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
+                                [](int v, int& w, int& h) { return getOpl3AlgTexture(v, w, h); });
         } else {
             renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
                                 [](int, int& w, int& h) {
@@ -1856,7 +1924,13 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::EndGroup();
 
     ImGui::Separator();
+    // Recomputed per operator index (rather than hoisted once outside the
+    // loop) because OPL3 4OP mode's PDT field's `used` flag depends on the
+    // index (front/back pair lead operators only, 0/2 - see
+    // getOpFieldRanges()); every other chip family ignores the index and
+    // returns the same ranges regardless.
     for (size_t i = 0; i < patch->ops.size(); ++i) {
+        const HwOpFieldRanges opRanges = getOpFieldRanges(bank.voicePatchType, static_cast<int>(i));
         renderHwOpEditor(static_cast<int>(i), patch->ops[i], opRanges, bank.voicePatchType);
         if (i + 1 < patch->ops.size()) ImGui::SameLine();
     }
