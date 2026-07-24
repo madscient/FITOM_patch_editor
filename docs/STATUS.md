@@ -73,15 +73,19 @@
   (D-015)。パラメータ範囲・ウィンドウ幅・鍵盤3オクターブ+CC#1/CC#7
   レバー・ALG接続図はOPN/OPN2系(D-016)・OPL/OPL2/OPL3_2/OPLL系
   (D-021、2026-07-18)・OPM/OPZ/OPZ2系(D-031、2026-07-19)・OPL3(4OP
-  モード)系(D-032、2026-07-24)が実チップのレジスタ幅で確認済み。
-  ALG接続図はOPN/OPN2に加えOPM/OPZ/OPZ2も`opn_al{0-7}.png`を共用
-  (同じ3bit 0-7のALGセマンティクス、D-031)、OPL/OPL2/OPL3_2は
-  `opl_alg{0-1}.png`、OPL3(4OPモード)は専用の`opl3_al{0-7}.png`
-  (3bitパック値=CON1/CON2/ConnectionSEL、D-032)。WS(波形選択)の
-  画像+スピンボタンUIもOPL系(D-021)に加えOPM(非活性)/OPZ/OPZ2
-  (`opz_ws{0-7}.png`、D-031)・OPL3(4OPモード、OPL3_2と同じ
-  `ws{0-7}.png`を共用、D-032)に対応。**OPL_RHY/PSG系等、残りのチップ
-  種別のパラメータ範囲はまだ未確認**(`genericVoiceRanges()`/
+  モード)系(D-032)・OPL_RHY系(D-033、2026-07-24)が実チップの
+  レジスタ幅で確認済み。ALG接続図はOPN/OPN2に加えOPM/OPZ/OPZ2も
+  `opn_al{0-7}.png`を共用(同じ3bit 0-7のALGセマンティクス、D-031)、
+  OPL/OPL2/OPL3_2/OPL_RHYは`opl_alg{0-1}.png`(D-033でOPL_RHYを追加)、
+  OPL3(4OPモード)は専用の`opl3_al{0-7}.png`(3bitパック値=CON1/CON2/
+  ConnectionSEL、D-032)。WS(波形選択)の画像+スピンボタンUIもOPL系
+  (D-021)に加えOPM(非活性)/OPZ/OPZ2(`opz_ws{0-7}.png`、D-031)・
+  OPL3(4OPモード)・OPL_RHY(いずれもOPL2と同じ`ws{0-7}.png`を共用、
+  D-032/D-033)に対応。OPL_RHYはさらにチャンネルパラメータに
+  `ext.rhythm_ch`を「Inst.」ドロップダウン(HH/CYM/TOM/SD/BDのシンボル
+  選択)として追加し、BD選択時のみ2オペレータ・他は1オペレータに
+  `ops[]`を自動リサイズする(D-033)。**PSG系等、残りのチップ種別の
+  パラメータ範囲はまだ未確認**(`genericVoiceRanges()`/
   `genericOpRanges()`の0-99フォールバックのまま)で、`docs/
   voice-parameter-reference.md`+FITOM_X実ソースのレジスタマスクを
   突き合わせて`getVoiceFieldRanges()`/`getOpFieldRanges()`(`apps/gui/
@@ -1232,19 +1236,63 @@
   キオスクモードで直接開き、ALG接続図(`opl3_al6.png`)・FB2の非
   グレーアウト表示・4オペレータ全ての表示(WS画像・エンベロープ波形が
   実データと一致)をスクリーンショットで確認した。
-- 未完了・既知の問題: 「詳細」フォールドアウトでPDTがOP1/OP3のみに
-  表示されOP2/OP4では非表示になることは、コードパス上は保証されている
-  (`getOpFieldRanges(OPL3, opIndex)`の分岐)が、クリック確認は未実施
-  (詳細はD-032参照)。GUIのクリック自動化はマシンのマウス/フォーカスを
+- 未完了・既知の問題: GUIのクリック自動化はマシンのマウス/フォーカスを
   奪い利用者の作業と競合するため、利用者から明示的に指示されない限り
   実施しない方針に変更した(`CLAUDE.md`「GUIの動作確認について」節
-  参照、2026-07-24)。利用者自身の目視確認待ち。OPL_RHY/PSG系等、
-  残りのチップ種別のパラメータ範囲・接続図・波形画像は引き続き未対応。
-  SampleZoneの`name`フィールド追加、ネイティブ/パフォーマンス/
-  ドラムノートの編集フォーム、バンク/パッチの複製・削除UIも引き続き
-  未着手。
-- 次にやること: OPL3(4OP)の「詳細」フォールドアウト(PDTのOP1/OP3
-  限定表示)のクリック確認は、利用者から指示があれば実施する
-  (`CLAUDE.md`参照、指示がなければ不要)。それ以外はOPL_RHY/PSG系への
-  対応、またはネイティブ/パフォーマンス/ドラムノートの編集フォーム・
-  バンク/パッチの複製・削除UIに進む。
+  参照、2026-07-24)。「詳細」フォールドアウトでPDTがOP1/OP3のみに
+  表示されOP2/OP4では非表示になる件は、この方針変更後に利用者自身が
+  実機で目視確認し「OK」との回答を得た。OPL_RHY/PSG系等、残りのチップ
+  種別のパラメータ範囲・接続図・波形画像は引き続き未対応。SampleZoneの
+  `name`フィールド追加、ネイティブ/パフォーマンス/ドラムノートの
+  編集フォーム、バンク/パッチの複製・削除UIも引き続き未着手。
+- 次にやること: OPL_RHY/PSG系への対応、またはネイティブ/パフォーマンス/
+  ドラムノートの編集フォーム・バンク/パッチの複製・削除UIに進む。
+  (→2026-07-24、下記セッションでOPL_RHYに対応。)
+
+### 2026-07-24 (同マシン、OPL_RHY(内蔵リズムチャンネル)パッチ編集画面を追加)
+- やったこと: 利用者から「OPL_RHYでは楽器音の選択により編集できる
+  オペレータ数の増減がある。チャンネルパラメータに`ext.rhythm_ch`
+  フィールドを追加し、`rhythm_ch=4`の場合のみ2OP、他は1OP。ラベルは
+  「Inst.」、設定値はシンボル(HH,CYM,TOM,SD,BD)をドロップダウンで
+  選択。他はOPL(2OP)に準ずる」と依頼された(詳細はD-033参照)。
+  `docs/terminology.md`「OPL系内蔵リズムチャンネル」節と
+  `core/src/OPL_new.cpp`の`COPLRhythm`を突き合わせ、`ext.rhythm_ch`が
+  `hw.ALG`とは完全に別軸(パッチ解決レイヤーでの強制チャンネル
+  ルーティング用)であること、BD(`rhythm_ch=4`)のみ2opで他は1opである
+  こと、FB/ALG/WSは通常のOPL/OPL2と register 単位で同一であることを
+  確認した。`getVoiceFieldRanges()`/`getOpFieldRanges()`・
+  `isOplAlgFamily`・`isOplWsImageFamily()`のいずれもOPL_RHYを既存の
+  OPL/OPL2共用の分岐に追加するだけで済み、専用のレンジ関数は不要
+  だった。新規`renderRhythmInstrumentCombo()`で`ext.rhythm_ch`を
+  「Inst.」ドロップダウン(HH/CYM/TOM/SD/BD、未設定(255)は空選択)として
+  実装し、選択変更時に`patch.ops.resize((v==4) ? 2 : 1)`でオペレータ
+  パネル数を追随させる(ロード直後の未操作時は発火しない設計)。
+  ビルド・`ctest`全通過を確認後、実データ
+  (`FITOM_staging/banks/OPL2/msx_audio/msx_audio_preset_rhythm.
+  hwbank.json`)をキオスクモードで開いて確認した。この過程で、
+  同じバンクファイルでも参照元プロファイルの`hw_banks[].group`が
+  `"OPL2"`か`"OPL_RHY"`かで`bank.voicePatchType`(延いては「Inst.」
+  コンボの表示有無)が変わることに気付いた(本エディタは常に
+  プロファイル側の`group`を権威とし、バンクファイル自身の
+  `voice_patch_type`フィールドは見ない設計、D-008以来一貫。実装バグ
+  ではなく元々の仕様通り)。`group:"OPL_RHY"`の`emu_opl.profile.json`
+  経由で開き直し、(1)`prog 0`("OPL Bass Drum"、`rhythm_ch:4`)で
+  「Inst.」が「BD」・2オペレータパネル、(2)`prog 1`("OPL Close Hi
+  Hat"、`rhythm_ch:0`)で「Inst.」が「HH」・1オペレータパネル、を
+  スクリーンショットで確認した。
+- 未完了・既知の問題: `buildHwPatchDiffJson()`(D-027のリアルタイム
+  差分SysEx送信)が`hw`/`ops`のみを対象にし`ext`(`rhythm_ch`含む)を
+  対象外にしている既存の制限(OPL_RHY固有ではない)により、「Inst.」を
+  変更した直後・次にキーを押すまでの一瞬だけリアルタイム試聴に反映
+  されないギャップがあるが、今回は許容し手を入れていない(詳細は
+  D-033参照)。ドロップダウンのクリック操作自体の目視確認は、方針通り
+  利用者に委ねる(未実施)。PSG系等、残りのチップ種別のパラメータ範囲・
+  接続図・波形画像は引き続き未対応。SampleZoneの`name`フィールド追加、
+  ネイティブ/パフォーマンス/ドラムノートの編集フォーム、バンク/パッチ
+  の複製・削除UIも引き続き未着手。
+- 次にやること: 利用者からOPL_RHYの目視確認結果(特に「Inst.」
+  ドロップダウンのクリック操作・BD⇔他楽器切り替え時のオペレータ数
+  増減)のフィードバックがあれば対応する。それ以外はPSG系への対応、
+  または`buildHwPatchDiffJson()`の`ext`差分対応(必要になれば)、
+  ネイティブ/パフォーマンス/ドラムノートの編集フォーム・バンク/パッチ
+  の複製・削除UIに進む。
