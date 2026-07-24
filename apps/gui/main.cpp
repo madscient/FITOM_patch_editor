@@ -2064,12 +2064,14 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         if (patch->sw_bank >= 0 && patch->sw_prog >= 0) {
             const fpe::SwBank* swBank = ws.findPerformanceBank(patch->sw_bank);
             const fpe::SwPatch* swPatch = ws.resolvePerformancePatch(patch->sw_bank, patch->sw_prog);
-            swLabel = "SW: " + (swBank ? swBank->name : ("bank " + std::to_string(patch->sw_bank))) + " / " +
-                      (swPatch ? swPatch->name : ("prog " + std::to_string(patch->sw_prog) + " (見つかりません)"));
+            swLabel = "パフォーマンス: " + 
+                      std::to_string(patch->sw_bank) + "/" + std::to_string(patch->sw_prog) + " : " +
+                      (swBank ? swBank->name : std::string("(N/A)")) + " / " +
+                      (swPatch ? swPatch->name : std::string("(N/A)"));
         } else {
             swLabel = "SW: (未設定)";
         }
-        if (ImGui::Selectable(swLabel.c_str(), false, 0, ImVec2(320, 0))) {
+        if (ImGui::Selectable(swLabel.c_str(), false, 0, ImVec2(640, 0))) {
             openSwPatchPicker(ctx, editor.bankIndex, patch->prog);
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてSWパッチを選択");
