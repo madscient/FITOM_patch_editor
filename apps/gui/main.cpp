@@ -1933,17 +1933,6 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::Separator();
     ImGui::Text("チャンネルパラメータ");
 
-    // OPL_RHY-only: "Inst." combo picks which of COPLRhythm's 5 fixed
-    // channels (ext.rhythm_ch) this patch targets, ahead of (and
-    // controlling the op-count behind) the ALG/FB band below - see
-    // renderRhythmInstrumentCombo()/D-033.
-    if (bank.voicePatchType == fpe::VoicePatchType::OPL_RHY) {
-        ImGui::BeginGroup();
-        renderRhythmInstrumentCombo(*patch);
-        ImGui::EndGroup();
-        ImGui::SameLine();
-    }
-
     // ALG is shown as its own input here - the connection-diagram image
     // (OPN/OPN2/OPM/OPZ/OPZ2: assets/alg_diagrams/opn_al<0-7>.png,
     // D-016/D-017, extended to OPM/OPZ/OPZ2 in D-031 since they share the
@@ -1999,8 +1988,20 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::SetNextItemWidth(150);
     sliderU8Ranged("NFQ", patch->hw.NFQ, voiceRanges.NFQ);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    sliderU8Ranged("FB2", patch->hw.FB2, voiceRanges.FB2);
+    if (bank.voicePatchType == fpe::VoicePatchType::OPL3) {
+        ImGui::SetNextItemWidth(150);
+        sliderU8Ranged("FB2", patch->hw.FB2, voiceRanges.FB2);
+        ImGui::SameLine();
+    }
+    // OPL_RHY-only: "Inst." combo picks which of COPLRhythm's 5 fixed
+    // channels (ext.rhythm_ch) this patch targets, ahead of (and
+    // controlling the op-count behind) the ALG/FB band below - see
+    // renderRhythmInstrumentCombo()/D-033.
+    if (bank.voicePatchType == fpe::VoicePatchType::OPL_RHY) {
+        ImGui::SetNextItemWidth(150);
+        renderRhythmInstrumentCombo(*patch);
+        ImGui::SameLine();
+    }
     ImGui::EndGroup();
 
     ImGui::Separator();
