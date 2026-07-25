@@ -5,7 +5,7 @@
 
 #include "fpe/DrumKit.h"
 #include "fpe/HwPatch.h"
-#include "fpe/NativePatch.h"
+#include "fpe/LayeredPatch.h"
 #include "fpe/PcmBank.h"
 #include "fpe/Profile.h"
 #include "fpe/SampleZone.h"
@@ -16,8 +16,8 @@
 // requested for the patch editor:
 //
 //   パッチプロファイル (Profile)
-//     + ネイティブパッチバンク (PatchBank)         -> nativePatchBanks()
-//     |   + ネイティブパッチ (Patch)
+//     + レイヤードパッチバンク (PatchBank)         -> layeredPatchBanks()
+//     |   + レイヤードパッチ (Patch)
 //     |       + トーンレイヤー0..3 (ToneLayer)
 //     + パフォーマンスバンク (SwBank)                -> performanceBanks()
 //     |   + パフォーマンスパッチ (SwPatch)
@@ -61,14 +61,14 @@ public:
     const std::vector<std::string>& warnings() const { return warnings_; }
 
     // --- Browse tree ---
-    std::vector<PatchBank>& nativePatchBanks() { return patchBanks_; }
+    std::vector<PatchBank>& layeredPatchBanks() { return patchBanks_; }
     std::vector<SwBank>& performanceBanks() { return swBanks_; }
     std::vector<HwBank>& deviceBanks() { return hwBanks_; }
     std::vector<SampleZoneBank>& sampleZoneBanks() { return sampleZoneBanks_; }
     std::vector<PcmBank>& pcmBanks() { return pcmBanks_; }
     std::vector<DrumKit>& drumKits() { return drumKits_; }
 
-    PatchBank* findNativePatchBank(int bank);
+    PatchBank* findLayeredPatchBank(int bank);
     SwBank* findPerformanceBank(int bank);
     HwBank* findDeviceBank(VoicePatchType type, int bank);
     SampleZoneBank* findSampleZoneBank(VoicePatchType type, int bank);
@@ -76,13 +76,13 @@ public:
     DrumKit* findDrumKit(int prog);
 
     // Reference-following helper for the "device voice patch -> performance
-    // patch" and "native patch -> performance patch" tree edges.
+    // patch" and "layered patch -> performance patch" tree edges.
     SwPatch* resolvePerformancePatch(int swBank, int swProg);
 
-    // --- CRUD: native patch banks / patches ---
-    PatchBank& createNativePatchBank(int bankIndex, const std::string& name, const std::string& relativeFile);
-    bool deleteNativePatchBank(int bankIndex);
-    PatchBank* duplicateNativePatchBank(int fromBank, int toBank, const std::string& newRelativeFile);
+    // --- CRUD: layered patch banks / patches ---
+    PatchBank& createLayeredPatchBank(int bankIndex, const std::string& name, const std::string& relativeFile);
+    bool deleteLayeredPatchBank(int bankIndex);
+    PatchBank* duplicateLayeredPatchBank(int fromBank, int toBank, const std::string& newRelativeFile);
 
     Patch& createPatch(PatchBank& bank, int prog, const std::string& name);
     bool deletePatch(PatchBank& bank, int prog);

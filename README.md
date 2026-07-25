@@ -53,7 +53,7 @@ include/fpe/         公開ヘッダー(namespace fpe、データモデル)
   VoicePatchType.h     チップ系統の分類 (CC#0直接デバイス選択値 / HwBankタグ)
   HwPatch.h            HwPatch("デバイスボイスパッチ"): FM/PSGのレジスタレベル合成パラメータ
   SwPatch.h            SwPatch("パフォーマンスパッチ"): ビブラート/トレモロ/ベロシティ感度
-  NativePatch.h        ToneLayer / Patch / PatchBank ("ネイティブパッチ"、通常モードCC#0=0)
+  LayeredPatch.h       ToneLayer / Patch / PatchBank ("レイヤードパッチ"、通常モードCC#0=0)
   DrumKit.h            DrumNote / DrumKit (リズムチャンネル用プログラム)
   SampleZone.h         SampleZone / SampleZonePatch / SampleZoneBank (ADPCM/AWMサンプル音源)
   Profile.h            トップレベルの *.profile.json (バンクレジストリ + 未対応フィールドの保持)
@@ -72,8 +72,8 @@ fixtures/            テスト用の手書きサンプルプロファイル+バ�
 
 ```
 パッチプロファイル (Profile)
-  + ネイティブパッチバンク (PatchBank)      -> nativePatchBanks()
-  |   + ネイティブパッチ (Patch)
+  + レイヤードパッチバンク (PatchBank)      -> layeredPatchBanks()
+  |   + レイヤードパッチ (Patch)
   |       + トーンレイヤー0..3 (ToneLayer)
   + パフォーマンスバンク (SwBank)             -> performanceBanks()
   |   + パフォーマンスパッチ (SwPatch)
@@ -160,7 +160,7 @@ fitom_patch_editor_gui.exe "C:\path\to\some.profile.json"
 
 すべての構造体には、FITOM_Xのどのドキュメント節から起こしたかを
 コメントで注記しています(`docs/hwpatch-reference.md`、
-`docs/swpatch-reference.md`、`docs/native-patch-reference.md`、
+`docs/swpatch-reference.md`、`docs/layered-patch-reference.md`、
 `docs/patch-structure-design.md`、`docs/config-design.md`、
 `docs/voice-parameter-reference.md`、`docs/terminology.md`)。
 本ライブラリはFITOM_Xの公開ドキュメントのみから実装されており、FITOM_X
@@ -169,7 +169,7 @@ fitom_patch_editor_gui.exe "C:\path\to\some.profile.json"
 `config_schema/drumkit.schema.json` とは未照合です。本番投入前に、
 以下の2点は実際のスキーマと突き合わせて確認することをおすすめします。
 
-1. **`profile.json` トップレベルの、ネイティブパッチバンク/パフォーマンス
+1. **`profile.json` トップレベルの、レイヤードパッチバンク/パフォーマンス
    バンク用配列名。** ドキュメント内の実例(worked example)では
    `profile_name`、`hw_plugins[]`、`midi_inputs[]`のみが示されており、
    確定しているのは `hw_banks[]` と `drum_banks[]` のみです。本ライブラリ
