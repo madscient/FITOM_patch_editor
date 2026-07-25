@@ -90,7 +90,7 @@ static void testLoad(fpe::PatchWorkspace& ws) {
     CHECK(ws.nativePatchBanks().size() == 1);
     CHECK(ws.performanceBanks().size() == 1);
     CHECK(ws.deviceBanks().size() == 1);
-    CHECK(ws.pcmBanks().size() == 1);
+    CHECK(ws.pcmBanks().size() == 2); // one via hw_banks[group=ADPCMA], one via pcm_banks[] (D-038 "追記2")
     CHECK(ws.drumKits().size() == 2);
 
     // Bank registries live nested under profile.json's "banks" object on
@@ -151,6 +151,15 @@ static void testLoad(fpe::PatchWorkspace& ws) {
         if (entry1) CHECK(entry1->name == "snare");
         CHECK(pcmBank->findByIndex(2) == nullptr);
     }
+
+    // Same PcmBank shape, but registered via banks.pcm_banks[] (D-038
+    // "追記2") instead of hw_banks[group=ADPCM*] - `group` on a pcm_banks[]
+    // entry used to be silently dropped (PcmBankRef didn't even parse it),
+    // leaving the resulting fpe::PcmBank's voicePatchType at None and
+    // therefore unfindable by findPcmBank(). Regression test for that fix.
+    auto* pcmBankViaPcmBanksArray = ws.findPcmBank(fpe::VoicePatchType::ADPCMA, 2);
+    CHECK(pcmBankViaPcmBanksArray != nullptr);
+    if (pcmBankViaPcmBanksArray) CHECK(pcmBankViaPcmBanksArray->entries.size() == 2);
 
     // Reference-following: HwPatch.sw_bank/sw_prog -> SwPatch
     if (hwBank) {

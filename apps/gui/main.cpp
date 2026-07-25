@@ -51,7 +51,7 @@
 // chip doesn't read; other chip families still fall back to a generic
 // 0-99 range until similarly confirmed. OPN/OPN2 also show the ALG
 // connection-diagram image for the current algorithm (assets/alg_diagrams,
-// D-016). Performance/Drum patch editors are still future work.
+// D-016).
 //
 // Selecting a Native patch from BankDetail opens a separate modeless editor
 // (renderNativePatchEditors()/renderNativePatchEditor(), D-036) for its
@@ -74,10 +74,29 @@
 // FITOM_X doc, unlike HwPatch's FieldRange tables). No realtime preview -
 // a SwPatch has no synthesis parameters of its own to sound.
 //
+// Drum kits (BankCategory::Drum) get a two-level drill-down instead of one
+// modeless editor (D-038): renderBankDetail() itself becomes the "ドラム
+// ノート選択画面" for a "routed" kit - all 128 MIDI notes 0-127, including
+// unassigned ones, each with 複製/削除 buttons - and selecting/creating a
+// note opens a fourth modeless editor
+// (renderDrumNoteEditors()/renderDrumNoteEditor()) for that one
+// fpe::DrumNote's name, source patch (a picker spanning both the native-
+// patch and device-voice-patch trees, since a DrumNote's source has the same
+// CC#0 "normal mode vs direct mode" duality as ToneLayer/Patch's own
+// references), play_note (by name or by an on-screen keyboard - deliberately
+// not a raw number field, per the project owner's request), fine_tune/pan/
+// gate_time, and its own sw_bank/sw_prog override. Unlike the Native/
+// Performance editors, this one DOES support realtime preview (a press-
+// and-hold "試聴" button) since a DrumNote's source patch + play_note fully
+// determine what it would sound like on their own. "direct" kits have no
+// discrete note list (DrumKit.h's effectiveNotes() - the whole kit is one
+// passthrough range), so they stay on renderBankDetail() and get a much
+// smaller inline edit (source-patch picker + note range) instead of the
+// note-list/editor drill-down.
+//
 // "新規プロファイル作成"/"プロファイル削除" are shown in the main menu
-// but intentionally left disabled - not implemented yet. Drum-note patch
-// editing forms and the virtual MIDI controller are also still future work
-// (see docs/STATUS.md).
+// but intentionally left disabled - not implemented yet. The virtual MIDI
+// controller is also still future work (see docs/STATUS.md).
 //
 // Backend: GLFW (window/input) + OpenGL3 (rendering) + GLEW (GL function
 // loading). All three, plus Dear ImGui itself and nlohmann/json, are
@@ -164,6 +183,20 @@ bool isProfileFileName(const std::string& name) {
     return name == "profile.json" ||
            (name.size() > suffix.size() &&
             name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0);
+}
+
+// Scientific pitch notation (MIDI note 60 = "C4", 69 = "A4" = 440Hz) - used
+// by the drum-note editor's play_note field (renderDrumNoteEditor()) so it
+// can be picked by name ("C4"/"A3") rather than a bare 0-127 number, per the
+// project owner's explicit request. This octave numbering is a convention
+// choice (some hardware/DAWs instead call note 60 "C3") - not derived from
+// any FITOM_X doc, since play_note is just a raw MIDI note number on the
+// wire either way and the label is purely this editor's own UI sugar.
+std::string midiNoteName(int note) {
+    static const char* kNames[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    if (note < 0 || note > 127) return "?";
+    const int octave = note / 12 - 1;
+    return std::string(kNames[note % 12]) + std::to_string(octave);
 }
 
 // Lists *.profile.json files (and subdirectories, for navigation) in one
@@ -360,7 +393,12 @@ struct PatchEditorWindow {
 // every frame" convention (D-012/D-015) - safer than holding a pointer
 // across frames if the underlying vector were ever reallocated while the
 // picker is open.
-enum class SwPatchPickerTarget { Device, Native };
+// D-038 adds a third target: a DrumNote's own sw_bank/sw_prog override
+// (include/fpe/DrumKit.h - falls back to the resolved source patch's own
+// sw_bank/sw_prog when unset, same "-1 = not set" convention as
+// HwPatch/Patch). Reuses this shared picker/state rather than a fourth
+// bespoke one, same reasoning as adding Native alongside Device (D-036).
+enum class SwPatchPickerTarget { Device, Native, DrumNote };
 
 struct SwPatchPickerState {
     bool open = false;
@@ -369,6 +407,8 @@ struct SwPatchPickerState {
     int devicePatchProg = 0;    // Target::Device: HwPatch::prog within that bank
     size_t nativeBankIndex = 0; // Target::Native: index into ws.nativePatchBanks() of the Patch being edited
     int nativePatchProg = 0;    // Target::Native: Patch::prog within that bank
+    size_t drumKitIndex = 0;    // Target::DrumNote: index into ws.drumKits()
+    uint8_t drumNote = 0;       // Target::DrumNote: DrumNote::note within that kit (routed kits only)
 };
 
 // A single modeless "native patch editor" window
@@ -401,6 +441,24 @@ struct PerformancePatchEditorWindow {
     int prog = 0;         // SwPatch::prog within that bank
 };
 
+// A single modeless "drum note editor" window (renderDrumNoteEditor(),
+// D-038). Edits one fpe::DrumNote within a "routed" fpe::DrumKit - "direct"
+// kits have no discrete per-note list to open one of (see DrumKit.h's
+// effectiveNotes() comment: a direct kit's notes are synthesized, not
+// independently editable), so those are instead edited inline in
+// renderBankDetail() itself, not through this window. Same "store indices,
+// re-derive the real DrumNote& every frame" convention as the other patch
+// editor windows (D-012/D-015/D-036/D-037) - `note` is DrumNote::note (the
+// stable MIDI-trigger-note key), not a vector index, since kit.notes[] can
+// be reordered/resized by other UI (duplicate/delete) while this is open.
+struct DrumNoteEditorWindow {
+    int id = 0;
+    bool open = true;
+    size_t kitIndex = 0; // index into ws.drumKits()
+    uint8_t note = 0;    // DrumNote::note within that kit
+    int heldPreviewNote = -1; // play_note currently sounding via the "試聴" button, -1 if none
+};
+
 // Shared "HW (device voice) patch picker" popup for a ToneLayer's
 // hw_bank/hw_prog reference - opened from renderToneLayerEditor() when the
 // user clicks the resolved bank/patch-name label, mirroring how
@@ -419,6 +477,37 @@ struct HwPatchPickerState {
     size_t nativeBankIndex = 0; // index into ws.nativePatchBanks()
     int nativePatchProg = 0;    // Patch::prog within that bank
     int layerIndex = 0;         // index into Patch::layers
+};
+
+// "ソースパッチ" picker for a DrumNote's (or, when isDirect, a whole "direct"
+// DrumKit's) voice_patch_type/patch_bank/patch_prog triple - D-038. Unlike
+// HwPatchPickerState (ToneLayer, HW/device patches only) or SwPatchPickerState
+// (a performance-patch override), this reference has the same dual
+// "normal mode vs direct mode" semantics as CC#0 itself (DrumKit.h): when
+// voice_patch_type == None, patch_bank/patch_prog index a native
+// PatchBank/Patch; otherwise they index a HwBank/HwPatch directly. So the
+// picker lists both trees (native patches and device voice patches) in one
+// popup rather than picking one HW bank kind up front, matching what CC#0
+// actually lets a real DrumNote reference.
+struct DrumSourcePatchPickerState {
+    bool open = false;
+    size_t kitIndex = 0; // index into ws.drumKits()
+    bool isDirect = false; // true: target is the DrumKit's own fields (kit.patch_bank etc); false: target is a DrumNote
+    uint8_t note = 0;     // when !isDirect: DrumNote::note within that kit
+};
+
+// On-screen keyboard popup for a DrumNote's play_note field (D-038),
+// alongside the by-name dropdown in renderDrumNoteEditor() - per the project
+// owner's request that play_note be settable either by note name or by
+// clicking a keyboard, not by typing a raw number. `baseNote` is the
+// picker's own scroll position (which octave range is currently shown),
+// independent of the note being edited, so paging through octaves doesn't
+// fight with the value being picked.
+struct DrumNoteKeyboardPickerState {
+    bool open = false;
+    size_t kitIndex = 0; // index into ws.drumKits()
+    uint8_t note = 0;    // DrumNote::note within that kit (the note being edited, routed kits only)
+    int baseNote = 48;   // C3 - leftmost key currently shown, always a C
 };
 
 // Editable working copy shown by renderPreferencesDialog() - only written
@@ -449,6 +538,8 @@ struct AppContext {
     int nextNativeEditorId = 0;
     std::vector<PerformancePatchEditorWindow> openPerformanceEditors;
     int nextPerformanceEditorId = 0;
+    std::vector<DrumNoteEditorWindow> openDrumNoteEditors;
+    int nextDrumNoteEditorId = 0;
     // One shared preview output (FITOM_X's internal MIDI pipe, falling
     // back to a regular MIDI port via RtMidi - see PreviewOutput,
     // docs/DESIGN.md D-018), reused by every open patch editor's preview
@@ -460,6 +551,8 @@ struct AppContext {
     PathPickerState pathPicker; // shared browse-button popup, see PathPickerState/openPathPicker()
     SwPatchPickerState swPatchPicker; // shared SW-patch picker, see SwPatchPickerState/openSwPatchPicker()
     HwPatchPickerState hwPatchPicker; // shared HW-patch picker (for ToneLayer refs), see HwPatchPickerState/openHwPatchPicker()
+    DrumSourcePatchPickerState drumSourcePatchPicker; // shared drum-note source-patch picker, see openDrumSourcePatchPicker()
+    DrumNoteKeyboardPickerState drumNoteKeyboardPicker; // shared drum-note play_note keyboard picker, see openDrumNoteKeyboardPicker()
 
     // Selection driving the BankDetail screen - which category/index into
     // the corresponding PatchWorkspace vector. Only meaningful while
@@ -569,6 +662,28 @@ void openPerformancePatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
     ctx.openPerformanceEditors.push_back(w);
 }
 
+// Opens a modeless editor for the DrumNote at ws.drumKits()[kitIndex] whose
+// DrumNote::note == `note`, or re-focuses an already-open one for the same
+// note. Mirrors openPatchEditor()/openNativePatchEditor()/
+// openPerformancePatchEditor() for the drum-note case (D-038). Assumes the
+// note already exists (renderBankDetail()'s "作成" button upserts a default
+// DrumNote before calling this for a previously-unassigned note) - unlike
+// those three, there's no separate "create" entry point here.
+void openDrumNoteEditor(AppContext& ctx, size_t kitIndex, uint8_t note) {
+    for (auto& e : ctx.openDrumNoteEditors) {
+        if (e.kitIndex == kitIndex && e.note == note) {
+            e.open = true;
+            ImGui::SetWindowFocus((std::string("ドラムノート編集##drumnoteeditor") + std::to_string(e.id)).c_str());
+            return;
+        }
+    }
+    DrumNoteEditorWindow w;
+    w.id = ctx.nextDrumNoteEditorId++;
+    w.kitIndex = kitIndex;
+    w.note = note;
+    ctx.openDrumNoteEditors.push_back(w);
+}
+
 // A ToneLayer's hw_bank is HwBank::bankIndex (profile.json
 // hw_banks[].bank), not a vector index into ws.deviceBanks() - resolving or
 // opening the referenced HwPatch (from the picker or the "編集" button)
@@ -595,6 +710,108 @@ std::optional<size_t> findPerformanceBankVectorIndex(fpe::PatchWorkspace& ws, in
         if (banks[i].bankIndex == bankIndex) return i;
     }
     return std::nullopt;
+}
+
+// Same idea again, but for a native PatchBank (PatchBank::bankIndex) -
+// needed because a DrumNote's "normal mode" source-patch reference
+// (voice_patch_type == None) indexes patch_bank/patch_prog into a native
+// PatchBank/Patch exactly like ToneLayer's sw_bank/hw_bank do (D-038, see
+// describeDrumSourcePatch()/openDrumSourcePatchEditor() below).
+std::optional<size_t> findNativePatchBankVectorIndex(fpe::PatchWorkspace& ws, int bankIndex) {
+    auto& banks = ws.nativePatchBanks();
+    for (size_t i = 0; i < banks.size(); ++i) {
+        if (banks[i].bankIndex == bankIndex) return i;
+    }
+    return std::nullopt;
+}
+
+// Resolves and formats a DrumNote's (or a "direct" DrumKit's own)
+// voice_patch_type/patch_bank/patch_prog triple for display - D-038. Shared
+// by renderBankDetail()'s note list and renderDrumNoteEditor(), since both
+// need the exact same "normal mode vs direct mode" resolution (see
+// DrumSourcePatchPickerState's comment). Real drum kits commonly reference
+// AWM/ADPCM sample banks (e.g. FITOM_staging's OPL4AWM YRW801 drum bank),
+// not just ordinary chip HwBanks - those are separate PatchWorkspace vectors
+// with their own shapes (fpe::PcmBank/fpe::SampleZoneBank, D-011/D-013), so
+// they need their own resolution branch each, same as
+// renderBankDetail()'s existing Pcm/SampleZone cases handle them separately
+// from Device.
+std::string describeDrumSourcePatch(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, int patchBank, int patchProg) {
+    if (type == fpe::VoicePatchType::None) {
+        fpe::PatchBank* bank = ws.findNativePatchBank(patchBank);
+        const fpe::Patch* patch = bank ? bank->findByProg(patchProg) : nullptr;
+        return "ネイティブ " + std::to_string(patchBank) + "/" + std::to_string(patchProg) + " : " +
+               (bank ? bank->name : std::string("(N/A)")) + " / " + (patch ? patch->name : std::string("(N/A)"));
+    }
+    if (fpe::isPcmWaveformVoicePatchType(type)) {
+        // patch_prog is a plain 0-based entries[] array index for this
+        // family, not a `prog` field (PcmBank.h) - findByIndex(), not
+        // findByProg().
+        fpe::PcmBank* bank = ws.findPcmBank(type, patchBank);
+        const fpe::PcmBankEntry* entry =
+            (bank && patchProg >= 0) ? bank->findByIndex(static_cast<size_t>(patchProg)) : nullptr;
+        return "PCM " + fpe::voicePatchTypeToString(type) + " " + std::to_string(patchBank) + "/" +
+               std::to_string(patchProg) + " : " + (bank ? bank->name : std::string("(N/A)")) + " / " +
+               (entry ? entry->name : std::string("(N/A)"));
+    }
+    if (fpe::isSampleBasedVoicePatchType(type)) {
+        fpe::SampleZoneBank* bank = ws.findSampleZoneBank(type, patchBank);
+        const fpe::SampleZonePatch* patch = bank ? bank->findByProg(patchProg) : nullptr;
+        return "サンプルゾーン " + fpe::voicePatchTypeToString(type) + " " + std::to_string(patchBank) + "/" +
+               std::to_string(patchProg) + " : " + (bank ? bank->name : std::string("(N/A)")) + " / " +
+               (patch ? patch->name : std::string("(N/A)"));
+    }
+    auto idx = findDeviceBankVectorIndex(ws, type, patchBank);
+    const fpe::HwBank* bank = idx ? &ws.deviceBanks()[*idx] : nullptr;
+    const fpe::HwPatch* patch = bank ? bank->findByProg(patchProg) : nullptr;
+    return "デバイス " + fpe::voicePatchTypeToString(type) + " " + std::to_string(patchBank) + "/" +
+           std::to_string(patchProg) + " : " + (bank ? bank->name : std::string("(N/A)")) + " / " +
+           (patch ? patch->name : std::string("(N/A)"));
+}
+
+// True when describeDrumSourcePatch() would resolve to something openable
+// via openDrumSourcePatchEditor() - used to grey out the drum-note editor's
+// "編集" button, since PCM waveform entries and AWM sample zones have no
+// editor of their own to open (see openDrumSourcePatchEditor()'s comment).
+bool drumSourcePatchHasEditor(fpe::VoicePatchType type) {
+    return !fpe::isPcmWaveformVoicePatchType(type) && !fpe::isSampleBasedVoicePatchType(type);
+}
+
+// Opens the referenced source patch's own editor (native or device,
+// whichever voice_patch_type indicates) - the drum-note editor's "編集"
+// button next to its source-patch label, mirroring ToneLayer's hw_bank
+// "編集" button (renderToneLayerEditor()). No-op if the reference doesn't
+// resolve to anything currently loaded, or if it's a PCM waveform entry/AWM
+// sample zone - neither has an edit form anywhere in this editor (PcmBank.h:
+// "end users never edit this bank's *content* directly"; SampleZonePatch
+// likewise only ever shown read-only in renderBankDetail()'s own
+// SampleZone case) - callers should check drumSourcePatchHasEditor() first
+// to grey the button out instead of leaving it a silent no-op.
+void openDrumSourcePatchEditor(AppContext& ctx, fpe::VoicePatchType type, int patchBank, int patchProg) {
+    if (type == fpe::VoicePatchType::None) {
+        auto idx = findNativePatchBankVectorIndex(ctx.workspace, patchBank);
+        if (idx) openNativePatchEditor(ctx, *idx, patchProg);
+    } else if (drumSourcePatchHasEditor(type)) {
+        auto idx = findDeviceBankVectorIndex(ctx.workspace, type, patchBank);
+        if (idx) openPatchEditor(ctx, *idx, patchProg);
+    }
+}
+
+// Finds the smallest unused MIDI note (0-127) strictly after `fromNote`,
+// wrapping around to 0 if none is found above it - used by the "複製" button
+// in renderBankDetail()'s drum-note list (D-038) to auto-assign the copy's
+// note number without asking the user, matching this codebase's existing
+// "one past the current max" auto-numbering convention for new banks
+// (nextBankIndex()/nextDeviceBankIndex()/nextDrumProg() above), adapted here
+// to "next free slot" since note numbers are a fixed 0-127 range rather than
+// an open-ended counter. Returns -1 if every one of the 128 notes is already
+// assigned.
+int nextFreeDrumNote(fpe::DrumKit& kit, uint8_t fromNote) {
+    for (int offset = 1; offset <= 128; ++offset) {
+        const int candidate = (fromNote + offset) % 128;
+        if (!kit.findNote(static_cast<uint8_t>(candidate))) return candidate;
+    }
+    return -1;
 }
 
 // Auto-assigns a new bank's index/prog as one past the highest already in
@@ -872,6 +1089,18 @@ void openNativeSwPatchPicker(AppContext& ctx, size_t nativeBankIndex, int native
     ctx.swPatchPicker.open = true;
 }
 
+// Same picker again, repointed at a DrumNote's own sw_bank/sw_prog override
+// (D-038) instead of a HwPatch's/Patch's. Called from renderDrumNoteEditor()
+// when the user clicks that note's sw_bank/sw_prog label. Routed kits only -
+// a "direct" kit's own sw_bank/sw_prog isn't wired to this picker (see
+// docs/DESIGN.md D-038's scope note).
+void openDrumNoteSwPatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
+    ctx.swPatchPicker.target = SwPatchPickerTarget::DrumNote;
+    ctx.swPatchPicker.drumKitIndex = kitIndex;
+    ctx.swPatchPicker.drumNote = note;
+    ctx.swPatchPicker.open = true;
+}
+
 // Modal listing every performance (SW) bank/patch, grouped by bank -
 // clicking a patch writes its {bank,prog} into the target's sw_bank/sw_prog
 // fields. Re-resolves the target sw_bank/sw_prog int fields every frame
@@ -898,7 +1127,7 @@ void renderSwPatchPicker(AppContext& ctx) {
         }
         targetSwBank = &hwPatch->sw_bank;
         targetSwProg = &hwPatch->sw_prog;
-    } else {
+    } else if (p.target == SwPatchPickerTarget::Native) {
         auto& nativeBanks = ctx.workspace.nativePatchBanks();
         if (p.nativeBankIndex >= nativeBanks.size()) {
             p.open = false;
@@ -911,6 +1140,19 @@ void renderSwPatchPicker(AppContext& ctx) {
         }
         targetSwBank = &nativePatch->sw_bank;
         targetSwProg = &nativePatch->sw_prog;
+    } else {
+        auto& kits = ctx.workspace.drumKits();
+        if (p.drumKitIndex >= kits.size()) {
+            p.open = false;
+            return;
+        }
+        fpe::DrumNote* note = kits[p.drumKitIndex].findNote(p.drumNote);
+        if (!note) {
+            p.open = false;
+            return;
+        }
+        targetSwBank = &note->sw_bank;
+        targetSwProg = &note->sw_prog;
     }
 
     const char* title = "パッチピッカー (SW)";
@@ -1030,6 +1272,193 @@ void renderHwPatchPicker(AppContext& ctx) {
             ImGui::PopID();
         }
         if (hwBanks.empty()) ImGui::TextDisabled("(デバイスパッチバンクがありません)");
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!stayOpen) p.open = false;
+}
+
+// Points the shared DrumSourcePatchPickerState at a specific DrumNote and
+// opens the picker - called from renderDrumNoteEditor() when the user
+// clicks the resolved source-patch label.
+void openDrumSourcePatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
+    ctx.drumSourcePatchPicker.kitIndex = kitIndex;
+    ctx.drumSourcePatchPicker.isDirect = false;
+    ctx.drumSourcePatchPicker.note = note;
+    ctx.drumSourcePatchPicker.open = true;
+}
+
+// Same picker, repointed at a "direct" DrumKit's own patch_bank/patch_prog/
+// voice_patch_type triple instead of one of its notes' - called from
+// renderBankDetail()'s Drum/direct case.
+void openDrumSourcePatchPickerDirect(AppContext& ctx, size_t kitIndex) {
+    ctx.drumSourcePatchPicker.kitIndex = kitIndex;
+    ctx.drumSourcePatchPicker.isDirect = true;
+    ctx.drumSourcePatchPicker.open = true;
+}
+
+// Modal listing BOTH the native-patch tree and the device-voice-patch tree
+// in one popup (D-038) - a DrumNote's source patch has the same "normal
+// mode vs direct mode" duality as CC#0 itself (see
+// DrumSourcePatchPickerState's comment), so unlike renderHwPatchPicker()
+// (device patches only) this picker has to offer both. Picking a native
+// patch writes {None, nativeBank.bankIndex, patch.prog}; picking a device
+// patch writes {bank.voicePatchType, bank.bankIndex, hwPatch.prog} - either
+// way into the same three target fields, resolved to pointers up front
+// exactly like renderSwPatchPicker()'s Device/Native/DrumNote branching.
+void renderDrumSourcePatchPicker(AppContext& ctx) {
+    DrumSourcePatchPickerState& p = ctx.drumSourcePatchPicker;
+    if (!p.open) return;
+
+    auto& kits = ctx.workspace.drumKits();
+    if (p.kitIndex >= kits.size()) {
+        p.open = false;
+        return;
+    }
+    fpe::DrumKit& kit = kits[p.kitIndex];
+
+    fpe::VoicePatchType* targetType = nullptr;
+    int* targetBank = nullptr;
+    int* targetProg = nullptr;
+    if (p.isDirect) {
+        targetType = &kit.voice_patch_type;
+        targetBank = &kit.patch_bank;
+        targetProg = &kit.patch_prog;
+    } else {
+        fpe::DrumNote* note = kit.findNote(p.note);
+        if (!note) {
+            p.open = false;
+            return;
+        }
+        targetType = &note->voice_patch_type;
+        targetBank = &note->patch_bank;
+        targetProg = &note->patch_prog;
+    }
+
+    const char* title = "パッチピッカー (ドラムノート ソースパッチ)";
+    ImGui::OpenPopup(title);
+    bool stayOpen = true;
+    if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(
+            "発音元パッチを選択してください(ネイティブパッチ、またはデバイスボイスパッチ/PCM波形/サンプルゾーンを直接指定)。");
+        ImGui::Separator();
+
+        ImGui::BeginChild("drumsourcepatchpickerlist", ImVec2(560, 460), true);
+        if (ImGui::TreeNodeEx("native", ImGuiTreeNodeFlags_DefaultOpen, "ネイティブパッチ (normal mode)")) {
+            for (auto& bank : ctx.workspace.nativePatchBanks()) {
+                ImGui::PushID(bank.bankIndex);
+                const bool isCurrentBank = *targetType == fpe::VoicePatchType::None && bank.bankIndex == *targetBank;
+                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[bank %d] %s", bank.bankIndex,
+                                       bank.name.c_str())) {
+                    for (auto& patch : bank.patches) {
+                        const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
+                        const bool selected = isCurrentBank && patch.prog == *targetProg;
+                        if (ImGui::Selectable(label.c_str(), selected)) {
+                            *targetType = fpe::VoicePatchType::None;
+                            *targetBank = bank.bankIndex;
+                            *targetProg = patch.prog;
+                            p.open = false;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (ctx.workspace.nativePatchBanks().empty()) ImGui::TextDisabled("(ネイティブパッチバンクがありません)");
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNodeEx("device", ImGuiTreeNodeFlags_DefaultOpen, "デバイスボイスパッチ (direct)")) {
+            for (auto& bank : ctx.workspace.deviceBanks()) {
+                ImGui::PushID(&bank);
+                const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+                const bool isCurrentBank = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
+                                       bank.bankIndex, bank.name.c_str())) {
+                    for (auto& hwPatch : bank.patches) {
+                        const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
+                        const bool selected = isCurrentBank && hwPatch.prog == *targetProg;
+                        if (ImGui::Selectable(label.c_str(), selected)) {
+                            *targetType = bank.voicePatchType;
+                            *targetBank = bank.bankIndex;
+                            *targetProg = hwPatch.prog;
+                            p.open = false;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (ctx.workspace.deviceBanks().empty()) ImGui::TextDisabled("(デバイスパッチバンクがありません)");
+            ImGui::TreePop();
+        }
+        // PCM波形バンク(ADPCM-B/A・PCM-D8、fpe::PcmBank)とサンプルゾーン
+        // バンク(AWM、fpe::SampleZoneBank)は、実際のドラムキットが
+        // よく参照する(例: OPL4AWM YRW801ドラムバンク)が、通常のHwBank/
+        // HwPatchとは別のPatchWorkspaceベクタ・別の形状を持つため
+        // (D-011/D-013)、上のdeviceツリーには出てこない - それぞれ専用の
+        // ツリーとして追加する。
+        if (ImGui::TreeNodeEx("pcm", ImGuiTreeNodeFlags_DefaultOpen, "PCM波形バンク (ADPCM-B/A, PCM-D8)")) {
+            for (auto& bank : ctx.workspace.pcmBanks()) {
+                ImGui::PushID(&bank);
+                const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+                const bool isCurrentBank = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
+                                       bank.bankIndex, bank.name.c_str())) {
+                    for (size_t i = 0; i < bank.entries.size(); ++i) {
+                        const std::string label = "[" + std::to_string(i) + "] " + bank.entries[i].name;
+                        const bool selected = isCurrentBank && static_cast<int>(i) == *targetProg;
+                        if (ImGui::Selectable(label.c_str(), selected)) {
+                            *targetType = bank.voicePatchType;
+                            *targetBank = bank.bankIndex;
+                            *targetProg = static_cast<int>(i);
+                            p.open = false;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    if (bank.entries.empty()) ImGui::TextDisabled("(エントリがありません)");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (ctx.workspace.pcmBanks().empty()) ImGui::TextDisabled("(PCM波形バンクがありません)");
+            ImGui::TreePop();
+        }
+        if (ImGui::TreeNodeEx("samplezone", ImGuiTreeNodeFlags_DefaultOpen, "サンプルゾーンバンク (AWM)")) {
+            for (auto& bank : ctx.workspace.sampleZoneBanks()) {
+                ImGui::PushID(&bank);
+                const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
+                const bool isCurrentBank = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
+                                       bank.bankIndex, bank.name.c_str())) {
+                    for (auto& patch : bank.patches) {
+                        const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
+                        const bool selected = isCurrentBank && patch.prog == *targetProg;
+                        if (ImGui::Selectable(label.c_str(), selected)) {
+                            *targetType = bank.voicePatchType;
+                            *targetBank = bank.bankIndex;
+                            *targetProg = patch.prog;
+                            p.open = false;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            if (ctx.workspace.sampleZoneBanks().empty()) ImGui::TextDisabled("(サンプルゾーンバンクがありません)");
+            ImGui::TreePop();
+        }
         ImGui::EndChild();
 
         ImGui::Separator();
@@ -2088,6 +2517,74 @@ KeyboardResult renderPreviewKeyboard(int baseNote, int whiteKeyCount, float whit
     return result;
 }
 
+// Points the shared DrumNoteKeyboardPickerState at a specific DrumNote's
+// play_note and opens the picker (D-038) - called from
+// renderDrumNoteEditor() next to the by-name dropdown, per the project
+// owner's request that play_note be settable either way. Centers the
+// initial keyboard view on an octave around the note's current play_note
+// (rounded down to a C) so the picker opens showing the current value
+// rather than always starting at C3.
+void openDrumNoteKeyboardPicker(AppContext& ctx, size_t kitIndex, uint8_t note, uint8_t currentPlayNote) {
+    ctx.drumNoteKeyboardPicker.kitIndex = kitIndex;
+    ctx.drumNoteKeyboardPicker.note = note;
+    ctx.drumNoteKeyboardPicker.baseNote = std::clamp((currentPlayNote / 12) * 12 - 12, 0, 127 - 12 * 3);
+    ctx.drumNoteKeyboardPicker.open = true;
+}
+
+// Modal on-screen keyboard (renderPreviewKeyboard(), 3 octaves at a time)
+// for picking a DrumNote's play_note by clicking a key instead of typing a
+// number (D-038). `baseNote` pages independently of the note being edited
+// via the two octave-shift buttons, since the picker's own scroll position
+// and the value it's about to write are two different things.
+void renderDrumNoteKeyboardPicker(AppContext& ctx) {
+    DrumNoteKeyboardPickerState& p = ctx.drumNoteKeyboardPicker;
+    if (!p.open) return;
+
+    auto& kits = ctx.workspace.drumKits();
+    if (p.kitIndex >= kits.size()) {
+        p.open = false;
+        return;
+    }
+    fpe::DrumNote* note = kits[p.kitIndex].findNote(p.note);
+    if (!note) {
+        p.open = false;
+        return;
+    }
+
+    const char* title = "プレイノート選択 (キーボード)";
+    ImGui::OpenPopup(title);
+    bool stayOpen = true;
+    if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("現在のプレイノート: %s (%d)", midiNoteName(note->play_note).c_str(), note->play_note);
+        ImGui::Separator();
+
+        ImGui::BeginDisabled(p.baseNote <= 0);
+        if (ImGui::ArrowButton("##octdown", ImGuiDir_Left)) p.baseNote = std::max(0, p.baseNote - 12);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Text("%s - %s", midiNoteName(p.baseNote).c_str(), midiNoteName(p.baseNote + 36).c_str());
+        ImGui::SameLine();
+        ImGui::BeginDisabled(p.baseNote + 12 > 127 - 12 * 3);
+        if (ImGui::ArrowButton("##octup", ImGuiDir_Right)) p.baseNote = std::min(127 - 12 * 3, p.baseNote + 12);
+        ImGui::EndDisabled();
+
+        KeyboardResult kb = renderPreviewKeyboard(p.baseNote, 22, 70.0f); // 3 octaves, matches the patch editors' own
+        if (kb.pressedNote >= 0) {
+            note->play_note = static_cast<uint8_t>(kb.pressedNote);
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::Separator();
+        if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!stayOpen) p.open = false;
+}
+
 void sliderU8(const char* label, uint8_t& field, int minV, int maxV) {
     int v = field;
     if (ImGui::SliderInt(label, &v, minV, maxV)) field = static_cast<uint8_t>(std::clamp(v, minV, maxV));
@@ -2923,6 +3420,203 @@ void renderPerformancePatchEditors(AppContext& ctx) {
         ctx.openPerformanceEditors.end());
 }
 
+// --- Drum note editor -------------------------------------------------------
+// Opened via openDrumNoteEditor() from renderBankDetail()'s Drum/routed
+// case, mirroring how Device/Native/Performance rows open their own
+// modeless editors (D-015/D-036/D-037 precedent). Edits one fpe::DrumNote:
+// name, its source patch (voice_patch_type/patch_bank/patch_prog - a
+// picker rather than raw numbers, same rationale as every other patch
+// reference in this editor, D-034/D-036), play_note (by name or by an
+// on-screen keyboard - explicitly not a raw number, per the project
+// owner's request), fine_tune/pan/gate_time (plain sliders/input - exact
+// register widths unconfirmed, same "human narrows later" treatment as
+// SwPatch's own unconfirmed fields, D-037), and its own sw_bank/sw_prog
+// override. Unlike NativePatchEditorWindow/PerformancePatchEditorWindow,
+// this DOES support realtime preview (selectDevice + note on/off on a
+// press-and-hold button) per the project owner's explicit "登録前に
+// プレビュー発音可能とする" requirement - a DrumNote, unlike a native Patch
+// or SwPatch, fully determines what would sound (source patch + play note)
+// on its own, so there's a real "would this sound right" question to answer
+// before saving.
+void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
+    fpe::PatchWorkspace& ws = ctx.workspace;
+    auto& kits = ws.drumKits();
+    if (editor.kitIndex >= kits.size()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "このドラムキットは既に存在しません。");
+        return;
+    }
+    fpe::DrumKit& kit = kits[editor.kitIndex];
+    fpe::DrumNote* note = kit.findNote(editor.note);
+    if (!note) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "このドラムノートは既に存在しません。");
+        return;
+    }
+
+    ImGui::Text("[drum prog %d] note %d (%s)", kit.prog, note->note, midiNoteName(note->note).c_str());
+    ImGui::SameLine();
+    {
+        // Top-right "登録", matching every other patch editor's own (D-027) -
+        // persists the whole workspace (DrumKit has no narrower single-note
+        // save API either).
+        const float buttonW = 90.0f;
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
+        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+            try {
+                ws.save();
+            } catch (const std::exception& e) {
+                ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
+            }
+        }
+    }
+
+    char nameBuf[256];
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", note->name.c_str());
+    if (ImGui::InputText("名前", nameBuf, sizeof(nameBuf))) note->name = nameBuf;
+
+    ImGui::Separator();
+    // ソースパッチ: resolved label + picker, per the project owner's request
+    // that this be a patch picker rather than a raw voice_patch_type/
+    // patch_bank/patch_prog triple of numbers.
+    {
+        const std::string label =
+            "ソースパッチ: " + describeDrumSourcePatch(ws, note->voice_patch_type, note->patch_bank, note->patch_prog);
+        if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(640, 0))) {
+            openDrumSourcePatchPicker(ctx, editor.kitIndex, note->note);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(ネイティブ/デバイス/PCM波形/サンプルゾーン)を選択");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!drumSourcePatchHasEditor(note->voice_patch_type));
+        if (ImGui::Button("編集##srcedit")) {
+            openDrumSourcePatchEditor(ctx, note->voice_patch_type, note->patch_bank, note->patch_prog);
+        }
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Separator();
+    // プレイノート: ノート名ドロップダウン、またはスクリーンキーボード型
+    // ピッカーのいずれかで選択(数値入力は用意しない、依頼通り)。
+    {
+        ImGui::TextUnformatted("プレイノート");
+        ImGui::SameLine();
+        const std::string currentLabel = midiNoteName(note->play_note) + " (" + std::to_string(note->play_note) + ")";
+        ImGui::SetNextItemWidth(140);
+        if (ImGui::BeginCombo("##playnotecombo", currentLabel.c_str())) {
+            for (int n = 0; n <= 127; ++n) {
+                const bool selected = (n == note->play_note);
+                const std::string itemLabel = midiNoteName(n) + " (" + std::to_string(n) + ")";
+                if (ImGui::Selectable(itemLabel.c_str(), selected)) note->play_note = static_cast<uint8_t>(n);
+                if (selected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キーボードで選択")) {
+            openDrumNoteKeyboardPicker(ctx, editor.kitIndex, note->note, note->play_note);
+        }
+    }
+
+    ImGui::Separator();
+    {
+        int fineTune = note->fine_tune;
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::SliderInt("微調整 fine_tune (kfs)", &fineTune, -128, 127)) note->fine_tune = fineTune;
+        ImGui::SameLine();
+        int pan = note->pan;
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::SliderInt("パンオフセット", &pan, -64, 63)) note->pan = pan;
+        int gateTime = note->gate_time;
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::InputInt("ゲートタイム (0=NoteOffで停止)", &gateTime)) note->gate_time = std::max(0, gateTime);
+    }
+
+    ImGui::Separator();
+    // sw_bank/sw_prog: per-note performance-patch override, same resolved-
+    // label + picker treatment as HwPatch/Patch's own sw_bank/sw_prog
+    // (D-034/D-036), reusing the shared SwPatchPickerState via
+    // openDrumNoteSwPatchPicker().
+    {
+        std::string swLabel;
+        const fpe::SwPatch* swPatch = nullptr;
+        if (note->sw_bank >= 0 && note->sw_prog >= 0) {
+            const fpe::SwBank* swBank = ws.findPerformanceBank(note->sw_bank);
+            swPatch = ws.resolvePerformancePatch(note->sw_bank, note->sw_prog);
+            swLabel = "パフォーマンス: " + std::to_string(note->sw_bank) + "/" + std::to_string(note->sw_prog) +
+                      " : " + (swBank ? swBank->name : std::string("(N/A)")) + " / " +
+                      (swPatch ? swPatch->name : std::string("(N/A)"));
+        } else {
+            swLabel = "パフォーマンス: (N/A)";
+        }
+        if (ImGui::Selectable(swLabel.c_str(), false, 0, ImVec2(640, 0))) {
+            openDrumNoteSwPatchPicker(ctx, editor.kitIndex, note->note);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてパフォーマンスパッチを選択");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!swPatch);
+        if (ImGui::Button("編集##swedit")) {
+            auto swIdx = findPerformanceBankVectorIndex(ws, note->sw_bank);
+            if (swIdx) openPerformancePatchEditor(ctx, *swIdx, note->sw_prog);
+        }
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Separator();
+    // 試聴 (D-038): 登録前でも現在のソースパッチ+プレイノートでその場で
+    // 発音できるようにする、との依頼。鍵盤全体は不要なので、
+    // renderPreviewKeyboard()と同じIsItemActivated()/IsItemDeactivated()の
+    // 押し続け方式のボタン1つで済ませる。fine_tune/pan/gate_time/
+    // sw_bank・sw_progは(DeviceパッチのAR/DR等と違って)差分SysEx越しに
+    // 送れる合成パラメータではないため、この試聴には反映しない - ソース
+    // パッチ自体の音は参照先のDeviceパッチ編集画面で確認できる。
+    {
+        const PreviewOutput::ActiveBackend backend = ctx.previewOutput.ensureReady();
+        const bool connected = backend != PreviewOutput::ActiveBackend::None;
+        const uint8_t previewChannel = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
+        const std::string statusText =
+            backend == PreviewOutput::ActiveBackend::FitomXPipe
+                ? "FITOM_Xに接続済み(割当CH " + std::to_string(previewChannel) + ")"
+            : backend == PreviewOutput::ActiveBackend::RtMidi ? "MIDI出力(フォールバック)で試聴中"
+                                                               : "未接続(オフライン、プリファレンスでMIDI出力を設定できます)";
+        ImGui::TextColored(connected ? ImVec4(0.4f, 1.0f, 0.6f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "試聴: %s",
+                            statusText.c_str());
+
+        ImGui::BeginDisabled(!connected);
+        ImGui::Button("試聴 (押している間発音)");
+        if (ImGui::IsItemActivated()) {
+            ctx.previewOutput.selectDevice(previewChannel, static_cast<uint8_t>(note->voice_patch_type),
+                                            static_cast<uint8_t>(note->patch_bank),
+                                            static_cast<uint8_t>(note->patch_prog));
+            ctx.previewOutput.noteOn(previewChannel, note->play_note, 100);
+            editor.heldPreviewNote = note->play_note;
+        }
+        if (ImGui::IsItemDeactivated()) {
+            if (editor.heldPreviewNote >= 0) {
+                ctx.previewOutput.noteOff(previewChannel, static_cast<uint8_t>(editor.heldPreviewNote), 0);
+            }
+            editor.heldPreviewNote = -1;
+        }
+        ImGui::EndDisabled();
+    }
+}
+
+constexpr ImVec2 kDrumNoteEditorInitialSize(720.0f, 620.0f);
+
+void renderDrumNoteEditors(AppContext& ctx) {
+    for (auto& editor : ctx.openDrumNoteEditors) {
+        if (!editor.open) continue;
+        const std::string title = "ドラムノート編集##drumnoteeditor" + std::to_string(editor.id);
+        ImGui::SetNextWindowSize(kDrumNoteEditorInitialSize, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin(title.c_str(), &editor.open)) {
+            renderDrumNoteEditor(ctx, editor);
+        }
+        ImGui::End();
+    }
+    ctx.openDrumNoteEditors.erase(
+        std::remove_if(ctx.openDrumNoteEditors.begin(), ctx.openDrumNoteEditors.end(),
+                        [](const DrumNoteEditorWindow& e) { return !e.open; }),
+        ctx.openDrumNoteEditors.end());
+}
+
 // Outline only lists banks/kits (name, index, patch/note count) - drilling
 // into individual patches happens on a separate BankDetail screen, reached
 // by clicking a bank/kit here (see selectBank()/renderBankDetail()).
@@ -3119,13 +3813,113 @@ void renderBankDetail(AppContext& ctx) {
             const char* typeStr = (kit.type == fpe::DrumKitType::Routed) ? "routed" : "direct";
             ImGui::Text("ドラムキット [prog %d] %s (%s)", kit.prog, kit.name.c_str(), typeStr);
             ImGui::Separator();
+
             if (kit.type == fpe::DrumKitType::Routed) {
-                for (auto& note : kit.notes) {
-                    ImGui::BulletText("note %d: %s -> play_note %d", note.note, note.name.c_str(), note.play_note);
+                // ドラムノート選択画面 (D-038): 0-127の全MIDIノートを表示し、
+                // 未割当のノートも一覧できるようにする(依頼通り)。割当済みの
+                // 行はクリックでドラムノート編集画面(モードレス、
+                // openDrumNoteEditor())を開き、末尾に複製・削除ボタンを
+                // 用意する。未割当の行は「作成」ボタンでデフォルト値の
+                // DrumNoteを追加した上で編集画面を開く。複製・削除は
+                // バンク作成(D-014)と同様、即座にws.save()する構造的な
+                // 変更として扱う(登録ボタンでの明示保存が必要な、
+                // 各ノートのフィールド編集そのものとは区別する)。
+                ImGui::TextUnformatted("ドラムノート一覧 (0-127、未割当も表示)");
+                ImGui::Separator();
+                for (int n = 0; n < 128; ++n) {
+                    ImGui::PushID(n);
+                    fpe::DrumNote* note = kit.findNote(static_cast<uint8_t>(n));
+                    if (note) {
+                        const std::string label = "note " + std::to_string(n) + " (" + midiNoteName(n) + "): " +
+                                                   note->name + "  -> play " + midiNoteName(note->play_note) + " (" +
+                                                   std::to_string(note->play_note) + ")";
+                        if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(560, 0))) {
+                            openDrumNoteEditor(ctx, ctx.selectedIndex, static_cast<uint8_t>(n));
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("複製")) {
+                            const int toNote = nextFreeDrumNote(kit, static_cast<uint8_t>(n));
+                            if (toNote >= 0) {
+                                fpe::DrumNote copy = *note;
+                                copy.note = static_cast<uint8_t>(toNote);
+                                try {
+                                    ws.upsertDrumNote(kit, copy);
+                                    ws.save();
+                                } catch (const std::exception& e) {
+                                    ctx.errorMessage = std::string("複製に失敗しました:\n") + e.what();
+                                }
+                            } else {
+                                ctx.errorMessage = "複製に失敗しました:\n空いているノート番号がありません。";
+                            }
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("削除")) {
+                            try {
+                                ws.deleteDrumNote(kit, static_cast<uint8_t>(n));
+                                ws.save();
+                            } catch (const std::exception& e) {
+                                ctx.errorMessage = std::string("削除に失敗しました:\n") + e.what();
+                            }
+                        }
+                    } else {
+                        ImGui::TextDisabled("note %d (%s): (未割当)", n, midiNoteName(n).c_str());
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("作成")) {
+                            fpe::DrumNote fresh;
+                            fresh.note = static_cast<uint8_t>(n);
+                            fresh.play_note = static_cast<uint8_t>(n);
+                            try {
+                                ws.upsertDrumNote(kit, fresh);
+                                ws.save();
+                                openDrumNoteEditor(ctx, ctx.selectedIndex, static_cast<uint8_t>(n));
+                            } catch (const std::exception& e) {
+                                ctx.errorMessage = std::string("作成に失敗しました:\n") + e.what();
+                            }
+                        }
+                    }
+                    ImGui::PopID();
                 }
             } else {
-                ImGui::BulletText("note %d-%d -> patch_bank=%d patch_prog=%d", kit.note_min, kit.note_max,
-                                   kit.patch_bank, kit.patch_prog);
+                // "direct"キットは個別ノートのリストを持たず(DrumKit.h
+                // effectiveNotes()参照)、note_min-note_max全体に単一の
+                // ソースパッチをpassthroughで割り当てる形なので、
+                // ドラムノート選択画面/編集画面の階層は適用されない
+                // (未割当・複製・削除の概念自体が存在しない)。この場に
+                // インラインでソースパッチピッカー+音域+登録ボタンのみを
+                // 用意する(D-038、スコープ限定 - sw_bank/sw_prog・
+                // fine_tune/pan/gate_timeは今回未対応、docs/STATUS.md参照)。
+                {
+                    const float buttonW = 90.0f;
+                    const float avail = ImGui::GetContentRegionAvail().x;
+                    if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
+                    if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+                        try {
+                            ws.save();
+                        } catch (const std::exception& e) {
+                            ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
+                        }
+                    }
+                }
+
+                const std::string label =
+                    "ソースパッチ: " + describeDrumSourcePatch(ws, kit.voice_patch_type, kit.patch_bank, kit.patch_prog);
+                if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(640, 0))) {
+                    openDrumSourcePatchPickerDirect(ctx, ctx.selectedIndex);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(ネイティブ/デバイス/PCM波形/サンプルゾーン)を選択");
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!drumSourcePatchHasEditor(kit.voice_patch_type));
+                if (ImGui::Button("編集##srcedit")) {
+                    openDrumSourcePatchEditor(ctx, kit.voice_patch_type, kit.patch_bank, kit.patch_prog);
+                }
+                ImGui::EndDisabled();
+
+                int noteRange[2] = {kit.note_min, kit.note_max};
+                ImGui::SetNextItemWidth(160);
+                if (ImGui::InputInt2("音域(lo-hi)", noteRange)) {
+                    kit.note_min = static_cast<uint8_t>(std::clamp(noteRange[0], 0, 127));
+                    kit.note_max = static_cast<uint8_t>(std::clamp(noteRange[1], 0, 127));
+                }
             }
             break;
         }
@@ -3349,10 +4143,13 @@ int main(int argc, char** argv) {
                     break;
             }
             renderPatchEditors(ctx);
-            renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()
+            renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()/openDrumNoteSwPatchPicker()
             renderNativePatchEditors(ctx);
             renderPerformancePatchEditors(ctx);
+            renderDrumNoteEditors(ctx);
             renderHwPatchPicker(ctx); // ToneLayer hw_bank/hw_prog label click, see openHwPatchPicker()
+            renderDrumSourcePatchPicker(ctx); // drum-note source-patch label click, see openDrumSourcePatchPicker()
+            renderDrumNoteKeyboardPicker(ctx); // drum-note "キーボードで選択" click, see openDrumNoteKeyboardPicker()
             renderNewBankDialog(ctx);
             renderPreferencesDialog(ctx); // also renders the shared path-picker modal, nested inside its own popup (see D-019)
             renderErrorPopup(ctx);

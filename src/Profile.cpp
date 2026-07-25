@@ -59,11 +59,13 @@ void from_json(const nlohmann::json& j, SccWaveBankRef& v) {
 void to_json(nlohmann::json& j, const PcmBankRef& v) {
     j = nlohmann::json{{"bank", v.bank}, {"file", v.file}};
     if (!v.name.empty()) j["name"] = v.name;
+    if (!v.group.empty()) j["group"] = v.group;
 }
 void from_json(const nlohmann::json& j, PcmBankRef& v) {
     v.bank = getOr<int>(j, "bank", 0);
     v.file = getRequired<std::string>(j, "file", "pcm_banks[]");
     v.name = getOr<std::string>(j, "name", "");
+    v.group = getOr<std::string>(j, "group", "");
 }
 
 namespace {

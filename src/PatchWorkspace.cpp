@@ -178,14 +178,29 @@ void PatchWorkspace::loadBanks() {
     }
 
     // banks.pcm_banks[]: an alternate registration path for the same
-    // *.pcmbank.json shape (no `group` tag, so voicePatchType stays None -
-    // see fpe::PcmBankRef). Not currently used by any real profile we've
-    // seen (hw_banks[group=ADPCM*] is used instead - D-013), but the ref
-    // itself has been round-tripped since D-008, so load it the same way.
+    // *.pcmbank.json shape as hw_banks[group=ADPCM*] (D-013) - and, per
+    // D-038's investigation, actually the one every real profile we've
+    // checked (FITOM_staging's emu_opn.profile.json etc) uses for these,
+    // not hw_banks[]. `group` is optional per profile.schema.json (empty =
+    // legacy "every PCM device shares bank 0" behavior), but resolve it via
+    // stringToVoicePatchType() exactly like hw_banks[] does whenever it's
+    // set - a fpe::PcmBank left at voicePatchType::None can't be found by
+    // any real DrumNote/HwPatch reference into it (PatchWorkspace::
+    // findPcmBank() matches on {voicePatchType, bankIndex}), which is
+    // exactly the bug this fixes (D-038 "追記2": `group` used to be dropped
+    // entirely here, silently, since PcmBankRef didn't even parse it).
     for (const auto& ref : profile_.pcm_banks) {
         try {
             const std::string label = "pcm_banks[bank=" + std::to_string(ref.bank) + "]";
             PcmBank bank = loadPcmBank(resolve(ref.file), label, warnings_);
+            if (!ref.group.empty()) {
+                auto typeOpt = stringToVoicePatchType(ref.group);
+                if (typeOpt) {
+                    bank.voicePatchType = *typeOpt;
+                } else {
+                    warnings_.push_back(label + ": unrecognized group name \"" + ref.group + "\"");
+                }
+            }
             bank.bankIndex = ref.bank;
             bank.sourceFile = resolve(ref.file);
             pcmBanks_.push_back(std::move(bank));

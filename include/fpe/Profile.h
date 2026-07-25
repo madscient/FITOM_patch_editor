@@ -78,13 +78,23 @@ void to_json(nlohmann::json& j, const SccWaveBankRef& v);
 void from_json(const nlohmann::json& j, SccWaveBankRef& v);
 
 // profile.json banks.pcm_banks[] entry (*.pcmbank.json registration).
-// Confirmed against config_schema/profile.schema.json; the referenced
-// *.pcmbank.json content itself is not modeled by this library yet (ref is
-// preserved for round-tripping only).
+// Confirmed against config_schema/profile.schema.json. `group` is optional
+// per the schema (empty = pre-D-038 "all PCM devices share bank 0" legacy
+// behavior) but every real profile actually seen in FITOM_staging sets it
+// (ADPCMB/ADPCMA/PCMD8) - PatchWorkspace::loadBanks() uses it exactly like
+// HwBankRef::group, via VoicePatchType::stringToVoicePatchType(), to tag the
+// resulting fpe::PcmBank so DrumNote/HwPatch source-patch references into it
+// (voice_patch_type/patch_bank/patch_prog) can actually be resolved -
+// PatchWorkspace::findPcmBank() matches on {voicePatchType, bankIndex}, so a
+// bank left at its default VoicePatchType::None from a dropped `group` is
+// unfindable by any real reference (D-038 "追記2" - this field was entirely
+// missing before that fix, silently discarding `group` for every pcm_banks[]
+// entry and leaving every such fpe::PcmBank's voicePatchType at None).
 struct PcmBankRef {
     int bank = 0;
     std::string file;
     std::string name;
+    std::string group; // empty = not set (legacy shared-bank-0 behavior) - see above
 };
 void to_json(nlohmann::json& j, const PcmBankRef& v);
 void from_json(const nlohmann::json& j, PcmBankRef& v);

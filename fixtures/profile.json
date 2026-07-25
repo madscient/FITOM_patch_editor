@@ -11,6 +11,9 @@
       { "group": "OPM", "bank": 0, "file": "banks/OPM/dx27_dx100/00_default.hwbank.json" },
       { "group": "ADPCMA", "bank": 1, "file": "banks/PCM/test.pcmbank.json" }
     ],
+    "pcm_banks": [
+      { "group": "ADPCMA", "bank": 2, "file": "banks/PCM/test.pcmbank.json" }
+    ],
     "drum_banks": [
       { "prog": 0, "name": "Standard Kit", "file": "drums/std_kit.drumkit.json" },
       { "prog": 1, "name": "OPL4 AWM GM std kit", "file": "drums/direct_kit.drumkit.json" }

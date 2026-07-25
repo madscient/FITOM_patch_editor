@@ -2330,6 +2330,261 @@ Device(HwPatch)専用の起動引数しか持たず(D-026)、パフォーマン�
 D-037本文と同じ理由(キオスクモードでの受動確認手段が無い)により
 引き続き利用者の目視確認待ち。
 
+### D-038: ドラムキット編集画面を新規実装(キット選択→ノート選択→ノート編集の階層化、ソースパッチ/プレイノートはピッカー、登録前プレビュー対応)
+
+利用者から次の依頼を受けた。
+
+- ドラムキット選択→ドラムノート選択→ドラムノート編集のように階層化
+  画面遷移する。
+- ドラムノート選択画面では未割当のドラムノートも表示する。
+- ドラムノート選択画面では、ドラムノートの複製・削除のインターフェース
+  を用意する。
+- ドラムノート編集画面: ソースパッチは数値入力ではなくパッチピッカーに
+  よる。プレイノート設定は数値入力ではなく、ノート名(C4, A3など)選択、
+  およびスクリーンキーボード型ピッカーによる入力も可能とする。登録前に
+  プレビュー発音可能とする。
+
+**前提**: `fpe::DrumKit`/`fpe::DrumNote`の編集フォームはこれまで存在せず、
+BankDetailの表示は`ImGui::BulletText`による読み取り専用の一覧だけだった
+(routed: `note %d: %s -> play_note %d`の並び、direct: 単一行の要約)。
+今回が最初の編集フォーム実装になる。
+
+**階層化画面遷移は既存の構造そのままで実現できた**: Outline(ドラムキット
+マップのツリー、既存)の各行クリックが元々`selectBank(Drum, i)` →
+BankDetailだった - これが「ドラムキット選択」に相当する。今回、
+BankDetailのDrumケース自体を「ドラムノート選択画面」に格上げし(後述)、
+そこでの行クリック/作成が新設の`DrumNoteEditorWindow`
+(`renderDrumNoteEditors()`/`renderDrumNoteEditor()`、
+`AppContext::openDrumNoteEditors`)というモードレスウィンドウを開く -
+これが「ドラムノート編集」。Device(D-015)/Native(D-036)/Performance
+(D-037)と全く同じ「`{kitIndex, note}`のインデックスのみ保持し、実体
+(`fpe::DrumNote*` = `kit.findNote(note)`)は毎フレーム引き直す」設計
+(D-012以来の慣習)。新しいAppState列は追加していない - 既存3種と同様、
+「バンク/キット一覧→BankDetail→モードレス編集ウィンドウ」の型に
+そのまま載せられたため。
+
+**"direct"キットはこの階層に乗らない**: `DrumKit.h`の`effectiveNotes()`
+のコメントの通り、"direct"キットは`note_min`-`note_max`全体に単一の
+ソースパッチをpassthroughで割り当てる形で、個別ノートのvector
+(`notes[]`)を持たない(=「未割当ノート」「複製」「削除」という概念
+自体が存在しない)。よって"direct"キットはBankDetailの中に留め、後述の
+ソースパッチピッカー+音域(note_min/note_max)+「登録」ボタンだけの
+簡易インライン編集にした。"routed"キットのみが「ノート選択画面→ノート
+編集画面」のフルな階層を持つ。**意図的なスコープ限定**: "direct"キットの
+`sw_bank`/`sw_prog`/`fine_tune`/`pan`/`gate_time`は今回未対応(依頼文言が
+"ドラムノート編集画面"の要件として書かれていたため、個別ノートを持たない
+"direct"側は同じ優先度と判断しなかった)。
+
+**ドラムノート選択画面(BankDetailのDrumケース、routed)**: MIDIノート
+0-127を毎フレーム全件走査し、`kit.findNote(n)`の有無で行の見た目を
+分ける。
+
+- 割当済み: `note N (ノート名): 名前 -> play ノート名 (N)`の
+  `ImGui::Selectable`(クリックで`openDrumNoteEditor()`)+
+  `複製`/`削除`の`ImGui::SmallButton`。
+- 未割当: `ImGui::TextDisabled`で薄く表示+`作成`ボタン(デフォルト値の
+  `DrumNote`を`ws.upsertDrumNote()`で追加した上でそのまま編集画面を
+  開く)。
+
+「複製」は複製先のノート番号をユーザーに聞かず、新設の
+`nextFreeDrumNote(kit, fromNote)`(0-127を`fromNote+1`から折り返しで
+走査し、最初の空きノート番号を返す)で自動割当する - この
+リポジトリの既存の「新規バンク作成時は現在の最大値+1を自動採番する」
+慣習(`nextBankIndex()`/`nextDeviceBankIndex()`/`nextDrumProg()`)を
+「open-endedなカウンタ」ではなく「0-127の固定レンジ」向けに適応した
+もの。`PatchWorkspace`には「ノートの複製」専用APIは無い(`upsertDrumNote`/
+`deleteDrumNote`のみ) - 複製はGUI層で「既存ノートをコピーしてnoteフィールド
+だけ書き換えてupsertする」という組み合わせで実現しており、データ層の
+変更は不要だった。
+
+**「複製」「削除」「作成」は構造的変更として即座に`ws.save()`する**
+- ノート一覧に対する追加/削除は、既存の「新規バンク作成」ダイアログ
+(D-014、OK押下で即save())と同じ性質の構造的変更と判断した。これに
+対して、ノート編集画面内でのフィールド編集(名前/ソースパッチ/
+プレイノート/fine_tune等)は他の全編集画面と同じく「登録」ボタンでの
+明示保存が必要(即時保存しない) - この非対称は意図的で、D-014の
+先例(構造変更は即保存)とD-027以来の慣習(フィールド編集は明示登録)を
+そのまま踏襲した形。
+
+**ソースパッチピッカー(新規`DrumSourcePatchPickerState`/
+`renderDrumSourcePatchPicker()`)**: `DrumNote`の`voice_patch_type`/
+`patch_bank`/`patch_prog`は、CC#0そのものと同じ「normal modeか
+direct modeか」の二重性を持つ(`DrumKit.h`のコメント: `voice_patch_type
+== None`ならnormal mode = `patch_bank`/`patch_prog`はネイティブ
+`PatchBank`/`Patch`を指す、それ以外はHwBank/HwPatchを直接指す)。
+既存の`HwPatchPickerState`(ToneLayer用、device patchのみ)や
+`SwPatchPickerState`(performance patch専用)のどちらもこの二重参照を
+単独では表現できないため、新規ピッカーを追加した。1つのポップアップに
+「ネイティブパッチ」ツリーと「デバイスボイスパッチ」ツリー(既存の
+`renderHwPatchPicker()`と同じチップ別グルーピング)を両方表示し、
+どちらを選んでも同じ3フィールド(`voice_patch_type`/`patch_bank`/
+`patch_prog`)に書き込む - 書き込み先のポインタを`isDirect`フラグで
+`DrumNote*`か`DrumKit`自身のフィールドに切り替える設計は、
+`renderSwPatchPicker()`のDevice/Native/DrumNote三分岐と同じ
+「ターゲットに応じてポインタを解決し、UI自体は共有する」パターン。
+`describeDrumSourcePatch()`(解決結果の文字列化)と
+`openDrumSourcePatchEditor()`(「編集」ボタン - 参照先の既存Native/Device
+編集画面をそのまま開く、D-036と同じ「独立モーダルは新設しない」判断)は
+BankDetailの行表示とノート編集画面の両方で共有する。
+
+**プレイノート入力(依頼により数値入力を使わない)**: 2種類の入力手段を
+用意した。
+
+- ノート名ドロップダウン: `midiNoteName(note)`(新規、MIDIノート60を
+  "C4"とする一般的なscientific pitch notationの実装 - 依頼文言の
+  「C4, A3など」という例と整合。FITOM_X側のどの資料にも基づかない、
+  この画面だけのUI表現上の取り決め - ワイヤ上は生のMIDIノート番号を
+  送るだけなので、オクターブ数字の付け方自体は機能に影響しない)で
+  0-127全件をラベル化し、`ImGui::BeginCombo`で一覧表示する。
+- スクリーンキーボード型ピッカー(新規`DrumNoteKeyboardPickerState`/
+  `renderDrumNoteKeyboardPicker()`): 既存の試聴鍵盤`renderPreviewKeyboard()`
+  (D-015)をそのまま再利用したモーダル。3オクターブ分を一度に表示し、
+  「◀」「▶」ボタンでオクターブ単位にページングできる(表示範囲=
+  `baseNote`はピッカー自身の状態で、編集対象の現在値とは独立 - 現在値の
+  近くを初期表示するだけで、ページングが現在値を書き換えることはない)。
+  鍵盤クリックで即座に`play_note`へ反映してポップアップを閉じる(他の
+  ピッカーと同じ「クリック=即選択、確定ボタンは無し」の流儀)。
+
+**登録前プレビュー(依頼により対応、Native/Performance編集画面とは異なる
+判断)**: D-036/D-037では「NativePatch/SwPatch自体は合成パラメータを
+持たないため試聴を実装しない」という判断をしていたが、`DrumNote`は
+ソースパッチ+`play_note`の組だけで「何が鳴るか」を完全に決定するため、
+「登録前に音を確認したい」という要求に実体がある。Device編集画面
+(D-015/D-027)の試聴鍵盤と同じ`ctx.previewOutput`(FITOM_Xパイプ優先/
+RtMidiフォールバック)を使うが、鍵盤全体は不要(play_noteは既に確定した
+1音)なので、`renderPreviewKeyboard()`の白鍵/黒鍵1つと同じ
+`IsItemActivated()`/`IsItemDeactivated()`による押し続け方式の
+ボタン1つ(「試聴 (押している間発音)」)で済ませた。押下時に
+`selectDevice(ch, voice_patch_type, patch_bank, patch_prog)` →
+`noteOn(ch, play_note, 100)`、離した時に`noteOff()`。Device編集画面が
+持つ「差分SysExでリアルタイムに合成パラメータを送る」仕組み(D-027)は
+持たない - `DrumNote`自身のfine_tune/pan/gate_time/sw_bank/sw_progは
+HwPatch側のAR/DR等と違って`sendHwPatchOverride()`で送れる合成パラメータ
+ではないため、対象外(この試聴は「ソースパッチ+プレイノートの組み合わせ
+で意図した音が鳴るか」だけを確認する用途)。
+
+**sw_bank/sw_prog(ノート単位のパフォーマンスパッチ上書き)**は
+`SwPatchPickerTarget`に`DrumNote`を追加して既存の`SwPatchPickerState`/
+`renderSwPatchPicker()`をそのまま再利用した(D-036が`Native`を追加した
+のと同じ理由 - 4つ目の同型ピッカーを新設せず、ポインタ解決の分岐を
+1つ増やすだけにした)。
+
+ビルド(`cmake --build build/vs2026`)・`ctest`(既存117項目、データモデル
+層に変更なしのため回帰なし)を確認した。**クリック操作の実機確認は
+行っていない**(`CLAUDE.md`「GUIの動作確認について」の方針により、
+利用者の明示的な指示が無い限り自動クリック操作をしない。かつ今回の
+変更点は階層遷移そのもの(ドラムキット選択→ノート選択→ノート編集→
+各種ピッカー)を経ないと露出できず、キオスクモードにもドラムキット
+直接起動の経路が無いため、受動的なスクリーンショット確認も見送った)。
+利用者自身の目視確認を待つ。
+
+**追記(同日): PCM波形バンク(ADPCM-B/A・PCM-D8)・AWMサンプルゾーンバンク
+を参照するソースパッチが解決できておらず、ピッカーにも出てこないバグを
+修正**。利用者が実機で確認したところ、実データ(`voice_patch_type=ADPCMA`
+のドラムノート)のソースパッチ表示が常に「デバイス ADPCMA 1/2 :
+(N/A) / (N/A)」になり、`renderDrumSourcePatchPicker()`にもPCM波形バンクが
+一覧されないという報告を受けた。
+
+原因は`describeDrumSourcePatch()`/`renderDrumSourcePatchPicker()`が
+「`voice_patch_type == None`ならネイティブ、それ以外は常に
+`ws.deviceBanks()`(通常のHwBank/HwPatch)」の二択でしか分岐していな
+かったこと。実際にはCC#0の直接デバイス選択値はもう2系統ある - ADPCM-B
+(Y8950)/ADPCM-B/ADPCM-A/PCM-D8(`isPcmWaveformVoicePatchType()`)は
+`ws.pcmBanks()`(`fpe::PcmBank`、"パッチ"は`entries[]`の0-basedインデックス
+そのもの、prog フィールドを持たない - D-013)、AWM
+(`isSampleBasedVoicePatchType()`)は`ws.sampleZoneBanks()`(`fpe::
+SampleZoneBank`/`SampleZonePatch`、prog持ち)という、どちらも通常のHwBank/
+HwPatchとは別のPatchWorkspaceベクタ・別の形状を持つ。ドラムキットは
+実際にAWM/ADPCMサンプルバンク(例: `FITOM_staging`のOPL4AWM
+YRW801ドラムバンク)を頻繁に参照するにもかかわらず(既知の未対応課題
+「SampleZoneに`name`が無い」の項目でも触れていた「ドラムキットでは
+ゾーンそのものが個々のリズム音を表す」という背景と同じ話)、この2系統への
+分岐が実装時に単純に漏れていた。
+
+- `describeDrumSourcePatch()`に`isPcmWaveformVoicePatchType`/
+  `isSampleBasedVoicePatchType`の分岐を追加(`None`と`else`(通常の
+  HwBank)の間に挿入)。PCM側は`PcmBank::findByIndex()`(prognoでは
+  なく配列添字)、SampleZone側は`SampleZoneBank::findByProg()`で解決する。
+- `renderDrumSourcePatchPicker()`に「PCM波形バンク」「サンプルゾーン
+  バンク」の2つのツリーを追加(既存の「ネイティブパッチ」「デバイス
+  ボイスパッチ」の後に追加、`renderBankDetail()`のPcm/SampleZoneケースと
+  同じ一覧ロジックを再利用)。選択時は同じ3フィールド
+  (`voice_patch_type`/`patch_bank`/`patch_prog`)に書き込む - PCM側は
+  `patch_prog`に配列添字を直接書き込む点だけがデバイス/ネイティブ側と
+  異なる。
+- 新規`drumSourcePatchHasEditor(type)`(PCM波形バンク・AWMサンプル
+  ゾーンは`PcmBank.h`/`SampleZone.h`のコメントの通りそもそも編集フォームが
+  存在しないため`false`を返す)を追加し、ドラムノート編集画面・
+  "direct"キットのインライン編集の両方の「編集」ボタンをこの2系統では
+  `ImGui::BeginDisabled()`でグレーアウトするようにした(以前は
+  クリックしても何も起きない無言のno-opだった)。
+
+ビルド(`cmake --build build/vs2026`)・`ctest`(既存117項目、回帰なし)を
+再確認した。クリック確認は引き続き利用者の目視確認待ち。
+
+**追記2(同日): 上記の修正だけでは直っておらず、実は`fpe::PcmBank`の
+`voicePatchType`がそもそも設定されていなかったというデータモデル層の
+バグが根本原因だったと判明・修正**。利用者が実機で再確認したところ、
+(1)ソースパッチのpcmbank参照が依然解決されない、(2)パッチピッカーで
+pcmbank配下のprogを選択してドラムノート編集画面に戻るとネイティブ
+パッチが選択されている、という2件の報告を受けた。
+
+前回の追記まではGUI層(`describeDrumSourcePatch()`/
+`renderDrumSourcePatchPicker()`)がPCM波形バンク/AWMサンプルゾーンバンクへ
+分岐すらしていなかったことだけが原因だと考えていたが、実際に利用者の
+実データ(`FITOM_staging/config/profiles/emu_opn.profile.json`)を一時的な
+検証用実行ファイル(`tmp_probe.cpp`、CMakeLists.txtに一時ターゲット追加、
+検証後にソース・ビルド産物・CMakeLists.txtの追加分とも削除)で
+`PatchWorkspace::load()`させて調べたところ、より根深いバグが見つかった。
+
+- 実プロファイルはADPCM-B/ADPCM-Aバンクを`hw_banks[group=ADPCM*]`ではなく
+  **`banks.pcm_banks[]`(`group`フィールド付き)** で登録していた
+  (例: `{"bank": 1, "file": "...", "group": "ADPCMA"}`)。D-013時点の
+  調査(および本ファイルの以前の記述)では「`pcm_banks[]`は`group`タグを
+  持たず、実プロファイルでも使われていない」としていたが、**この前提が
+  誤りだった** - `profile.schema.json`を再確認すると`pcm_banks[]`の各
+  要素にも`group`(enum: ADPCMB/ADPCMA/PCMD8)が定義されており、実際に
+  `emu_opn.profile.json`はこれを使って3つのPCMバンク(ADPCM-B x2、
+  ADPCM-A x1)を登録していた。
+- ところが`fpe::PcmBankRef`(`include/fpe/Profile.h`)自体が`group`
+  フィールドを一切パースしておらず(構造体にメンバーが無い)、
+  `PatchWorkspace::loadBanks()`の`pcm_banks[]`ループも`bank.voicePatchType`
+  を設定していなかった - デフォルト値`VoicePatchType::None`のまま
+  読み込まれていた。`PatchWorkspace::findPcmBank()`は`{voicePatchType,
+  bankIndex}`の組で検索するため、voicePatchTypeがNoneのPcmBankは
+  `findPcmBank(ADPCMA, 1)`等では永久に見つからない - これが(1)の直接の
+  原因。
+- (2)も同じ根本原因の症状: `renderDrumSourcePatchPicker()`のPCM波形バンク
+  ツリーは`bank.voicePatchType`(=常にNone)を選択時にそのまま
+  `*targetType`へ書き込んでいたため、PCM側のエントリを選んでも結果として
+  `voice_patch_type=None`(=「ネイティブ/normal mode」の目印)が書き込まれ、
+  以後「ネイティブ ...: (N/A)/(N/A)」に見えてしまっていた。
+
+**修正**: データモデル層(`fpe_data`)を直接修正した。
+
+- `fpe::PcmBankRef`(`include/fpe/Profile.h`)に`std::string group;`を
+  追加(空文字列 = 未指定、スキーマ通り「省略時は全PCMデバイスがbank0を
+  共有する」旧来動作)。`to_json`/`from_json`(`src/Profile.cpp`)も対応。
+- `PatchWorkspace::loadBanks()`(`src/PatchWorkspace.cpp`)の`pcm_banks[]`
+  ループに、`hw_banks[]`ループと全く同じ
+  `stringToVoicePatchType(ref.group)`による解決を追加し、`bank.
+  voicePatchType`へ書き込むようにした(`group`が空の場合はNoneのまま=
+  意図的な後方互換動作、不明な文字列の場合は`hw_banks[]`と同じ形式で
+  warningに積む)。
+- `fixtures/profile.json`に`pcm_banks[]`エントリ(`group: "ADPCMA"`、
+  `bank: 2`、既存の`test.pcmbank.json`を再利用)を追加し、
+  `tests/smoke_test.cpp`に`findPcmBank(ADPCMA, 2)`が解決することの
+  回帰テストを追加(117→119項目、全通過)。
+
+実データでの検証(`tmp_probe.cpp`、検証後削除)では、修正前は3つの
+PcmBankすべてが`voicePatchType=0(None)`と表示されていたのに対し、修正後は
+`type=81(ADPCMB)`/`82(ADPCMA)`/`81(ADPCMB)`と正しく表示され、
+`findPcmBank(ADPCMA,1)`が非nullを返し、`findByIndex(2)`が実際に
+"PSS_560_PSS_560_BassDrum"(note 35 "Acoustic Bass Drum"のpatch_prog=2と
+一致)を返すことを確認した。ビルド(`cmake --build build/vs2026`)・
+`ctest`(119項目、全通過)を確認済み。クリック確認は引き続き利用者の
+目視確認待ち。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
