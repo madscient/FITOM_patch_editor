@@ -2484,15 +2484,22 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::BeginGroup();
     ImGui::SetNextItemWidth(150);
     sliderU8Ranged("FB", patch->hw.FB, voiceRanges.FB);
-    ImGui::SetNextItemWidth(150);
-    sliderU8Ranged("AMS", patch->hw.AMS, voiceRanges.AMS);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    sliderU8Ranged("PMS", patch->hw.PMS, voiceRanges.PMS);
-    ImGui::SetNextItemWidth(150);
-    sliderU8Ranged("NFQ", patch->hw.NFQ, voiceRanges.NFQ);
-    ImGui::SameLine();
-    if (bank.voicePatchType == fpe::VoicePatchType::OPL3) {
+    if (bank.voicePatchType == fpe::VoicePatchType::OPM || bank.voicePatchType == fpe::VoicePatchType::OPZ ||
+        bank.voicePatchType == fpe::VoicePatchType::OPZ2 || bank.voicePatchType == fpe::VoicePatchType::OPN2) {
+        ImGui::SetNextItemWidth(150);
+        sliderU8Ranged("AMS", patch->hw.AMS, voiceRanges.AMS);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(150);
+        sliderU8Ranged("PMS", patch->hw.PMS, voiceRanges.PMS);
+        ImGui::SameLine();
+    }
+    if (bank.voicePatchType == fpe::VoicePatchType::OPM || bank.voicePatchType == fpe::VoicePatchType::OPZ ||
+        bank.voicePatchType == fpe::VoicePatchType::OPZ2) {
+        ImGui::SetNextItemWidth(150);
+        sliderU8Ranged("NFQ", patch->hw.NFQ, voiceRanges.NFQ);
+        ImGui::SameLine();
+    }
+     if (bank.voicePatchType == fpe::VoicePatchType::OPL3) {
         ImGui::SetNextItemWidth(150);
         sliderU8Ranged("FB2", patch->hw.FB2, voiceRanges.FB2);
         ImGui::SameLine();
@@ -2761,8 +2768,8 @@ void renderNativePatchEditors(AppContext& ctx) {
 void renderLfoModeCombo(const char* label, uint8_t& mode) {
     static constexpr std::pair<uint8_t, const char*> kModes[3] = {
         {0, "ループ"},
-        {1, "ワンショット(保持)"},
-        {2, "ワンショット(ゼロへ)"},
+        {1, "ワンショット(ホールド)"},
+        {2, "ワンショット(リセット)"},
     };
     const char* preview = "?";
     for (const auto& [v, name] : kModes) {
@@ -2786,27 +2793,27 @@ void renderLfoModeCombo(const char* label, uint8_t& mode) {
 // flanked by the rest of the group's sliders), since LWF is this struct's
 // own "value shown as an image" field, same role ALG plays for HwPatch.
 void renderSwVoiceEditor(fpe::FmSwVoice& sw) {
-    ImGui::Text("チャンネルビブラート");
+    ImGui::Text("チャンネルピッチLFO(ビブラート)");
     ImGui::BeginGroup();
-    renderImageSpinner("lwf", "LWF", sw.LWF, FieldRange{0, 6, true}, 150.0f,
+    renderImageSpinner("lwf", "Waveform", sw.LWF, FieldRange{0, 6, true}, 150.0f,
                         [](int v, int& w, int& h) { return getLfoWaveTexture(v, w, h); });
     ImGui::EndGroup();
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::SetNextItemWidth(150);
-    sliderU8("LFS(位相リセット)", sw.LFS, 0, 1);
+    sliderU8("リセット", sw.LFS, 0, 1);
     ImGui::SetNextItemWidth(150);
-    renderLfoModeCombo("LFM", sw.LFM);
+    renderLfoModeCombo("モード", sw.LFM);
     ImGui::SetNextItemWidth(150);
-    sliderU8("LFD(ディレイ)", sw.LFD, 0, 99);
+    sliderU8("ディレイ", sw.LFD, 0, 99);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150);
-    sliderU8("LFR(レート)", sw.LFR, 0, 99);
+    sliderU8("周波数", sw.LFR, 0, 99);
     ImGui::SetNextItemWidth(150);
-    sliderU8("LFI(フェードイン)", sw.LFI, 0, 99);
+    sliderU8("フェードイン", sw.LFI, 0, 99);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150);
-    sliderI16("深さ(cent)", sw.depth_cents, -1200, 1200);
+    sliderI16("デプス(cent)", sw.depth_cents, -1200, 1200);
     ImGui::EndGroup();
 }
 
@@ -2822,28 +2829,28 @@ void renderSwOpEditor(int index, fpe::FmSwOp& op) {
     ImGui::Text("OP %d", index + 1);
     ImGui::Separator();
     ImGui::TextUnformatted("ベロシティ感度");
-    sliderU8("VTL", op.VTL, 0, 99);
-    sliderU8("VAR", op.VAR, 0, 99);
-    sliderU8("VDR", op.VDR, 0, 99);
-    sliderU8("VSL", op.VSL, 0, 99);
-    sliderU8("VSR", op.VSR, 0, 99);
-    sliderU8("VRR", op.VRR, 0, 99);
+    sliderU8("TL", op.VTL, 0, 99);
+    sliderU8("AR", op.VAR, 0, 99);
+    sliderU8("DR", op.VDR, 0, 99);
+    sliderU8("SL", op.VSL, 0, 99);
+    sliderU8("SR", op.VSR, 0, 99);
+    sliderU8("RR", op.VRR, 0, 99);
     ImGui::BeginDisabled();
     sliderU8("VLD(未使用)", op.VLD, 0, 99);
     sliderU8("VLR(未使用)", op.VLR, 0, 99);
     ImGui::EndDisabled();
 
     ImGui::Separator();
-    ImGui::TextUnformatted("トレモロ");
+    ImGui::TextUnformatted("オペレータTL LFO");
     renderImageSpinner("slw", "波形", op.SLW, FieldRange{0, 6, true}, 100.0f,
                         [](int v, int& w, int& h) { return getLfoWaveTexture(v, w, h); });
-    sliderU8("SLS(位相リセット)", op.SLS, 0, 1);
-    renderLfoModeCombo("SLM", op.SLM);
-    sliderU8("SLD(深さ)", op.SLD, 0, 127);
+    sliderU8("リセット", op.SLS, 0, 1);
+    renderLfoModeCombo("モード", op.SLM);
+    sliderU8("デプス", op.SLD, 0, 127);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("0-63=正、64-127=負(-64..-1)");
-    sliderU8("SLY(ディレイ)", op.SLY, 0, 99);
-    sliderU8("SLR(レート)", op.SLR, 0, 99);
-    sliderU8("SLI(フェードイン)", op.SLI, 0, 99);
+    sliderU8("ディレイ", op.SLY, 0, 99);
+    sliderU8("周波数", op.SLR, 0, 99);
+    sliderU8("フェードイン", op.SLI, 0, 99);
     ImGui::EndChild();
     ImGui::PopID();
 }
