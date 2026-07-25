@@ -284,7 +284,7 @@ void PatchWorkspace::createNew(const std::filesystem::path& dir, const std::stri
     warnings_.clear();
 }
 
-PatchBank* PatchWorkspace::findNativePatchBank(int bank) {
+PatchBank* PatchWorkspace::findLayeredPatchBank(int bank) {
     for (auto& b : patchBanks_) if (b.bankIndex == bank) return &b;
     return nullptr;
 }
@@ -316,9 +316,9 @@ SwPatch* PatchWorkspace::resolvePerformancePatch(int swBank, int swProg) {
     return bank->findByProg(swProg);
 }
 
-// --- native patch banks / patches -----------------------------------------
+// --- layered patch banks / patches -----------------------------------------
 
-PatchBank& PatchWorkspace::createNativePatchBank(int bankIndex, const std::string& name,
+PatchBank& PatchWorkspace::createLayeredPatchBank(int bankIndex, const std::string& name,
                                                   const std::string& relativeFile) {
     PatchBank bank;
     bank.name = name;
@@ -335,7 +335,7 @@ PatchBank& PatchWorkspace::createNativePatchBank(int bankIndex, const std::strin
     return patchBanks_.back();
 }
 
-bool PatchWorkspace::deleteNativePatchBank(int bankIndex) {
+bool PatchWorkspace::deleteLayeredPatchBank(int bankIndex) {
     auto it = std::remove_if(patchBanks_.begin(), patchBanks_.end(),
                               [&](const PatchBank& b) { return b.bankIndex == bankIndex; });
     bool removed = it != patchBanks_.end();
@@ -347,9 +347,9 @@ bool PatchWorkspace::deleteNativePatchBank(int bankIndex) {
     return removed;
 }
 
-PatchBank* PatchWorkspace::duplicateNativePatchBank(int fromBank, int toBank,
+PatchBank* PatchWorkspace::duplicateLayeredPatchBank(int fromBank, int toBank,
                                                      const std::string& newRelativeFile) {
-    auto* src = findNativePatchBank(fromBank);
+    auto* src = findLayeredPatchBank(fromBank);
     if (!src) return nullptr;
     PatchBank copy = *src;
     copy.bankIndex = toBank;

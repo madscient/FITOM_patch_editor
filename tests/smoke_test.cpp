@@ -87,7 +87,7 @@ static void testLoad(fpe::PatchWorkspace& ws) {
     CHECK(ws.profile().extra.contains("midi_inputs"));
     CHECK(ws.profile().extra["midi_inputs"][0] == "Test Input");
 
-    CHECK(ws.nativePatchBanks().size() == 1);
+    CHECK(ws.layeredPatchBanks().size() == 1);
     CHECK(ws.performanceBanks().size() == 1);
     CHECK(ws.deviceBanks().size() == 1);
     CHECK(ws.pcmBanks().size() == 2); // one via hw_banks[group=ADPCMA], one via pcm_banks[] (D-038 "追記2")
@@ -103,7 +103,7 @@ static void testLoad(fpe::PatchWorkspace& ws) {
         CHECK(ws.profile().scc_wave_banks[0].file == "banks/scc/default.sccwave.json");
     }
 
-    auto* patchBank = ws.findNativePatchBank(0);
+    auto* patchBank = ws.findLayeredPatchBank(0);
     CHECK(patchBank != nullptr);
     if (patchBank) {
         CHECK(patchBank->name == "General");
@@ -206,8 +206,8 @@ static void testLoad(fpe::PatchWorkspace& ws) {
 }
 
 static void testCrudAndRoundTrip(fpe::PatchWorkspace& ws, const fs::path& outDir) {
-    // Native patch bank / patch / tone layer CRUD
-    auto& newPatchBank = ws.createNativePatchBank(1, "User Bank", "patches/01_user.patchbank.json");
+    // Layered patch bank / patch / tone layer CRUD
+    auto& newPatchBank = ws.createLayeredPatchBank(1, "User Bank", "patches/01_user.patchbank.json");
     auto& patch = ws.createPatch(newPatchBank, 5, "My Lead");
     fpe::ToneLayer layer;
     layer.voice_patch_type = fpe::VoicePatchType::OPN2;
@@ -261,8 +261,8 @@ static void testCrudAndRoundTrip(fpe::PatchWorkspace& ws, const fs::path& outDir
     for (const auto& w : reloaded.warnings()) std::fprintf(stderr, "reload warning: %s\n", w.c_str());
     CHECK(reloaded.warnings().empty());
 
-    CHECK(reloaded.nativePatchBanks().size() == 2);
-    auto* reloadedUserBank = reloaded.findNativePatchBank(1);
+    CHECK(reloaded.layeredPatchBanks().size() == 2);
+    auto* reloadedUserBank = reloaded.findLayeredPatchBank(1);
     CHECK(reloadedUserBank != nullptr);
     if (reloadedUserBank) {
         auto* reloadedPatch = reloadedUserBank->findByProg(5);
@@ -284,7 +284,7 @@ static void testCrudAndRoundTrip(fpe::PatchWorkspace& ws, const fs::path& outDir
 
     // Original data (loaded from the fixture, untouched by CRUD above)
     // must have round-tripped byte-for-byte-equivalent too.
-    auto* reloadedGeneral = reloaded.findNativePatchBank(0);
+    auto* reloadedGeneral = reloaded.findLayeredPatchBank(0);
     CHECK(reloadedGeneral != nullptr);
     if (reloadedGeneral) {
         auto* p = reloadedGeneral->findByProg(0);

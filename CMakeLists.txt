@@ -39,7 +39,7 @@ add_library(fpe_data STATIC
   src/VoicePatchType.cpp
   src/HwPatch.cpp
   src/SwPatch.cpp
-  src/NativePatch.cpp
+  src/LayeredPatch.cpp
   src/DrumKit.cpp
   src/SampleZone.cpp
   src/PcmBank.cpp

@@ -213,7 +213,7 @@ directory, not CWD"`、2026-07-17。詳細は同リポジトリの
 - `FITOM_X/config/profiles/`配下の`preset_opl`/`preset_opm`/
   `preset_opn`/`emulator_opn_family`の各`.profile.json`も同様に確認。
   一部`patch_banks[bank=0].file`が空文字列("プレースホルダ、まだ
-  ネイティブパッチバンク未割り当ての意図と思われる)だったり、
+  レイヤードパッチバンク未割り当ての意図と思われる)だったり、
   `emulator_opn_family.profile.json`が参照する
   `../../banks/sw/necopn_gm.swbank.json`/
   `../../banks/patches/necopn_gm.patchbank.json`が
@@ -329,7 +329,7 @@ FITOM_X本体側で対応方針(`banks.pcm_banks[]`経由に変更する/
 
 ### D-012: プロファイルアウトラインをバンク一覧のみに簡略化、個別パッチは選択後の別画面へ
 
-`apps/gui/main.cpp`のOutline画面が、バンク配下の個別パッチ(ネイティブ
+`apps/gui/main.cpp`のOutline画面が、バンク配下の個別パッチ(レイヤード
 パッチ/パフォーマンスパッチ/デバイスボイスパッチ/サンプルゾーン
 パッチ、ドラムノート)までツリーで展開表示していたのを、バンク/
 キット一覧(名前・インデックス・件数のみ)に簡略化した(利用者からの
@@ -338,7 +338,7 @@ UXフィードバック、2026-07-17)。バンク/キットの行を選択する
 ノート一覧)だけを表示する。「戻る (アウトライン)」でOutlineに戻る。
 
 選択状態は`AppContext::selectedCategory`(`BankCategory` enum:
-Native/Performance/Device/SampleZone/Pcm/Drum。`Pcm`はD-013で追加)+
+Layered/Performance/Device/SampleZone/Pcm/Drum。`Pcm`はD-013で追加)+
 `selectedIndex`(該当vectorへのインデックス)で保持する。本GUIは現時点
 では読み取り専用(バンク一覧はロード時に確定し、以後変化しない)なので、
 インデックスをそのまま保持する単純な実装で問題ない。将来CRUD機能
@@ -431,18 +431,18 @@ FITOM_X側の意図かを断定できないため)。`FITOM_staging`側のデー
 修正、または`config_schema/pcmbank.schema.json`のサンプル修正が
 必要かどうか、利用者側での確認を推奨する。
 
-### D-014: Outlineに「新規バンク作成」ダイアログを追加(ネイティブ/ハードウェア/パフォーマンス/ドラムキット)
+### D-014: Outlineに「新規バンク作成」ダイアログを追加(レイヤード/ハードウェア/パフォーマンス/ドラムキット)
 
 利用者の要望(2026-07-18)に基づき、`apps/gui/main.cpp`のOutline画面に
 「新規バンク作成」ボタンを追加した。押すと以下を入力するモーダル
 ダイアログ(`renderNewBankDialog()`)が開く。
 
-- バンク種別(ネイティブ/ハードウェア/パフォーマンス/ドラムキット の
+- バンク種別(レイヤード/ハードウェア/パフォーマンス/ドラムキット の
   4択、`NewBankType` enum)
 - バンク名(自由テキスト)
 - ファイル名(拡張子・接尾辞なしの語幹のみ入力させ、種別選択に応じて
   ディレクトリ+接尾辞を自動生成 - `buildRelativeBankFile()`。例:
-  ネイティブなら`patches/<stem>.patchbank.json`、ハードウェアなら
+  レイヤードなら`patches/<stem>.patchbank.json`、ハードウェアなら
   `banks/<チップ系統>/<stem>.hwbank.json`)
 - (ハードウェアのみ)チップ系統選択。`kCreatableDeviceGroups`という
   固定リストから選ぶ形にし、**AWM・ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/
@@ -458,7 +458,7 @@ FITOM_X側の意図かを断定できないため)。`FITOM_staging`側のデー
   一致しない不整合なファイルになってしまう。
 - (ドラムキットのみ)routed/direct選択(ラジオボタン、`DrumKitType`)。
 
-バンク番号(ネイティブ/パフォーマンス/ハードウェアの`bank`、
+バンク番号(レイヤード/パフォーマンス/ハードウェアの`bank`、
 ドラムキットの`prog`)は利用者に入力させず、既存バンクの最大値+1を
 自動採番する(`nextBankIndex()`/`nextDeviceBankIndex()`/
 `nextDrumProg()`)。利用者の依頼文面が「バンク種別選択・バンク名・
@@ -470,7 +470,7 @@ routed/direct)は「入力させず妥当な扱いにする」(番号は自動�
 ダイアログの中身が変わる」という設計を既に示唆していたため)。
 
 OK押下時点で、既存のCRUD API
-(`createNativePatchBank`/`createDeviceBank`/`createPerformanceBank`/
+(`createLayeredPatchBank`/`createDeviceBank`/`createPerformanceBank`/
 `createDrumKit`)でメモリ上にバンクを追加した直後に
 `PatchWorkspace::save()`を呼び、実際にスケルトンファイルをディスクに
 書き出す(「バンクファイルを作成」という依頼文言に合わせ、将来实装予定の
@@ -506,7 +506,7 @@ UXを踏まえた要件を受けた。
 提示された3枚のスクリーンショットはいずれもDX7系のFMオペレータ
 編集画面(OP1-OP6、ADSR、鍵盤)で、これは`fpe::HwPatch`
 (デバイスボイスパッチ、`ops[]`= `FmHwOp`)にちょうど対応する。
-ネイティブパッチ(ToneLayerの参照束ね)・パフォーマンスパッチ
+レイヤードパッチ(ToneLayerの参照束ね)・パフォーマンスパッチ
 (SwPatch)・ドラムノートの編集画面は構造が全く異なる(ToneLayerは
 値そのものではなくHwBank/HwProgへの参照)ため、今回はDeviceパッチの
 編集のみを実装し、他の3種別は将来対応とした。BankDetailの
@@ -577,7 +577,7 @@ Outline/BankDetailのどちらを見ていても開いたままになる)。
   (エディタ画面に「試聴: FITOM_X未接続(オフライン)」と表示し、
   利用者に状況が分かるようにした)。本格的な通常MIDI出力を追加する
   場合は、本エントリを更新の上でライブラリ選定から着手すること。
-- **ネイティブパッチ・パフォーマンスパッチ・ドラムノートの編集画面**。
+- **レイヤードパッチ・パフォーマンスパッチ・ドラムノートの編集画面**。
   上記の通りスコープ外(将来対応)。
 - **SysExのJSON形状(`ext`のネスト有無)の実機未確認**。FITOM_X本体
   (`fitom_midi_pipe`バックエンド、`-DFITOM_BUILD_BACKEND_MIDI_PIPE=ON`
@@ -1500,10 +1500,10 @@ profile.json`が参照する**78個のファイル全て**が変更され、内�
   非ゼロ値は確認できなかったが(サンプルした範囲では全て`FIX: 0`)、
   同じ理由でフィールド名を`DM0`→`FIX`にリネームした。
 
-他の5つのデータモデル型(SwPatch/NativePatch/DrumKit/SampleZone/
+他の5つのデータモデル型(SwPatch/LayeredPatch/DrumKit/SampleZone/
 PcmBank/Profile)についても、同じ「実スキーマとの不一致」がないか
 別セッション相当の調査(サブエージェントによる監査)を行った。結果:
-SwPatch・DrumKit・Profileは一致。NativePatchは廃止済みフィールド
+SwPatch・DrumKit・Profileは一致。LayeredPatchは廃止済みフィールド
 (`sw_bank`/`sw_prog`)を書き出しているが実データはこれを持たず実害
 なし。PcmBankは`entries[]`のインライン形式とスキーマにわずかな
 不一致があるが、実データは`adpcm_json`サイドカー経由でロードされる
@@ -1996,7 +1996,7 @@ patch.sw_prog)`)、パッチ編集画面本体には存在しなかった。
 `ImGui::TreeNodeEx`+`ImGui::Selectable`のツリーで一覧表示する。選択すると
 対象HwPatchの`sw_bank`/`sw_prog`を書き換えて閉じる。「参照解除」ボタンで
 `-1/-1`(未設定)に戻せる。利用者の指示通り**SW(パフォーマンスパッチ)
-限定**とし、ネイティブパッチ等、他の参照種別のピッカーは対象外とした
+限定**とし、レイヤードパッチ等、他の参照種別のピッカーは対象外とした
 (将来必要になれば別のpicker stateとして追加すること)。
 
 **状態管理**: 既存の`PathPickerState`(D-019)と同じ設計方針を踏襲した。
@@ -2093,15 +2093,15 @@ ALG接続図・WS波形画像とも修正前なら空表示になっていたは
 続き)で確認した。**利用者自身も実機(元の報告環境、
 `..\FITOM_staging`からの相対パス起動)で再現の上「OK」と確認済み。**
 
-### D-036: ネイティブパッチ編集画面を新規実装、ToneLayerのhw_bank/hw_prog参照はHWパッチピッカー、参照先の編集は既存Device編集画面を再利用
+### D-036: レイヤードパッチ編集画面を新規実装、ToneLayerのhw_bank/hw_prog参照はHWパッチピッカー、参照先の編集は既存Device編集画面を再利用
 
-利用者から「ネイティブパッチ編集画面を実装してほしい。ToneLayer内の
+利用者から「レイヤードパッチ編集画面を実装してほしい。ToneLayer内の
 hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwのみ)による
 ピック選択式にする。各hwpatch表示行の末尾に「編集」ボタンを配置し、
 クリックで対象のhwpatch編集画面をモーダル(オーバーレイでも良い)で
 開く」という依頼を受けた。
 
-**前提**: ネイティブパッチ(`fpe::Patch`/`ToneLayer`)の編集フォームは
+**前提**: レイヤードパッチ(`fpe::Patch`/`ToneLayer`)の編集フォームは
 これまで存在せず、BankDetailの表示は`renderToneLayer()`による読み取り
 専用の`ImGui::BulletText`一行(`hw_bank=%d hw_prog=%d`等、生の数値の
 まま)だけだった。今回が最初の編集フォーム実装になる。
@@ -2109,16 +2109,16 @@ hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwの
 **設計方針**: D-015(Device/HwPatch編集画面)・D-034(sw_bank/sw_prog
 参照ピッカー)で確立済みのパターンをそのまま踏襲した。
 
-- `NativePatchEditorWindow`(`AppContext::openNativeEditors`)は
+- `LayeredPatchEditorWindow`(`AppContext::openLayeredEditors`)は
   `PatchEditorWindow`と同じ「`{bankIndex, prog}`のインデックスのみを
-  保持し、実体(`fpe::Patch&`)は毎フレーム`ws.nativePatchBanks()
+  保持し、実体(`fpe::Patch&`)は毎フレーム`ws.layeredPatchBanks()
   [bankIndex].findByProg(prog)`で引き直す」設計(D-012/D-015)。複数
-  同時に開ける。BankDetailのネイティブパッチバンク行は、Deviceケースと
-  同じ`ImGui::Selectable`+`openNativePatchEditor()`に変更した(以前の
+  同時に開ける。BankDetailのレイヤードパッチバンク行は、Deviceケースと
+  同じ`ImGui::Selectable`+`openLayeredPatchEditor()`に変更した(以前の
   `ImGui::TreeNode`によるインライン展開は廃止)。
 - ToneLayerのhw_bank/hw_prog参照ピッカーは、`SwPatchPickerState`
   (D-034)と対になる新規`HwPatchPickerState`
-  (`{nativeBankIndex, nativePatchProg, layerIndex}`のインデックス3つを
+  (`{layeredBankIndex, layeredPatchProg, layerIndex}`のインデックス3つを
   保持、同じく毎フレーム再解決)+`renderHwPatchPicker()`として実装。
   `ws.deviceBanks()`(全チップ系統のHwBankを横断)を`[group bank] name`
   でグループ化してツリー表示する点もSW版とほぼ同型だが、**選択時に
@@ -2155,8 +2155,8 @@ hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwの
    変える操作)は依頼に含まれていなかったため未実装。既存レイヤーの
    フィールド編集のみ。
 3. Device編集画面(D-015/D-027)が持つリアルタイム差分SysEx送信・
-   試聴鍵盤・「登録」時のFITOM_X再送信は、ネイティブパッチ編集画面には
-   実装していない。ネイティブパッチ自体は合成パラメータを一切持たない
+   試聴鍵盤・「登録」時のFITOM_X再送信は、レイヤードパッチ編集画面には
+   実装していない。レイヤードパッチ自体は合成パラメータを一切持たない
    参照の束でしかなく、試聴自体は「編集」ボタンから開くDevice編集画面が
    従来通り担うため、ここで重複して実装する理由がないと判断した
    (「登録」ボタンは`ctx.workspace.save()`のみ呼ぶ、ディスクへの保存
@@ -2166,7 +2166,7 @@ hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwの
 データモデル層に変更なしのため回帰なし)は確認したが、**クリック操作の
 実機確認はしていない**。`CLAUDE.md`「GUIの動作確認について」の方針
 (利用者の明示的な指示が無い限り自動クリック操作をしない)に加え、
-今回の変更点(Native BankDetailの行クリック→エディタ起動→ToneLayerの
+今回の変更点(Layered BankDetailの行クリック→エディタ起動→ToneLayerの
 ラベルクリック→ピッカー→選択→「編集」ボタン→Device編集画面起動、という
 一連の遷移)はクリックそのものを経ないと露出しないため、キオスクモード
 起動によるビルド後の受動的スクリーンショット確認(D-035等で行っていた
@@ -2177,8 +2177,8 @@ hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwの
 編集画面と同様のピッカー動作としてください」という追加依頼を受け、
 上記スコープ外事項1を解消した。既存の`SwPatchPickerState`
 (D-034、HwPatchの`{deviceBankIndex, devicePatchProg}`前提で組まれて
-いた)を、`SwPatchPickerTarget`(`Device`/`Native`)で参照先を切り替える
-形に一般化した。Device/Native いずれの場合も最終的には
+いた)を、`SwPatchPickerTarget`(`Device`/`Layered`)で参照先を切り替える
+形に一般化した。Device/Layered いずれの場合も最終的には
 「書き換えたい`sw_bank`/`sw_prog`という`int`2つへのポインタ」に解決
 してから同じツリー一覧・選択・「参照解除」ロジックを通す設計にしたため、
 一覧描画コード自体は重複させていない(D-036本文で「HwPatchPickerState
@@ -2188,8 +2188,8 @@ hwpatch参照は数値入力ではなく名前表示+パッチピッカー(hwの
 Patch自身のsw_bank/sw_prog参照はHwPatchのsw_bank/sw_prog参照と全く
 同じ`{bank, prog}`という形なので、一般化する方が自然だった)。
 `openSwPatchPicker(ctx, deviceBankIndex, devicePatchProg)`(既存、
-Device向け)に加え、新規`openNativeSwPatchPicker(ctx, nativeBankIndex,
-nativePatchProg)`(Native向け)を追加し、`renderNativePatchEditor()`の
+Device向け)に加え、新規`openLayeredSwPatchPicker(ctx, layeredBankIndex,
+layeredPatchProg)`(Layered向け)を追加し、`renderLayeredPatchEditor()`の
 sw_bank/sw_prog表示を、`renderPatchEditor()`のsw_bank/sw_prog表示
 (D-034)と全く同じ「パフォーマンス: {bank}/{prog} : バンク名 / パッチ名
 (未解決時は(N/A))」ラベル+クリックでピッカーを開く形に変更した(生の
@@ -2209,14 +2209,14 @@ WSと同様にイメージ表示とする(画像は数値のみ埋め込んだ�
 存在せず、BankDetailの表示は`ImGui::BulletText`による読み取り専用の
 一行(`[prog %d] %s`)だけだった。今回が最初の編集フォーム実装になる。
 
-**設計方針**: D-015(Device編集画面)・D-036(Native編集画面)で確立済みの
+**設計方針**: D-015(Device編集画面)・D-036(Layered編集画面)で確立済みの
 パターンをそのまま踏襲した。
 
 - `PerformancePatchEditorWindow`(`AppContext::openPerformanceEditors`)は
   既存2種と同じ「`{bankIndex, prog}`のインデックスのみを保持し、実体
   (`fpe::SwPatch&`)は毎フレーム`ws.performanceBanks()[bankIndex]
   .findByProg(prog)`で引き直す」設計(D-012/D-015/D-036)。複数同時に
-  開ける。BankDetailのパフォーマンスバンク行を、Device/Nativeケースと
+  開ける。BankDetailのパフォーマンスバンク行を、Device/Layeredケースと
   同じ`ImGui::Selectable`+`openPerformancePatchEditor()`に変更した
   (以前の`ImGui::BulletText`のみの一覧表示から変更)。
 - LFO波形フィールド(`FmSwVoice::LWF`= チャンネルビブラート波形、
@@ -2268,7 +2268,7 @@ WSと同様にイメージ表示とする(画像は数値のみ埋め込んだ�
 
 **意図的にスコープを絞った点**: Device編集画面(D-015/D-027)が持つ
 リアルタイム差分SysEx送信・試聴鍵盤・「登録」時のFITOM_X再送信は実装
-していない。D-036のネイティブパッチ編集画面と同じ理由 - `SwPatch`
+していない。D-036のレイヤードパッチ編集画面と同じ理由 - `SwPatch`
 自体は合成パラメータを一切持たず、`sw_bank`/`sw_prog`経由でそれを
 参照するHwPatch側で初めて音になる(HwPatchの試聴は既存のDevice編集
 画面が担う)ため、ここで重複して実装する理由がない。「登録」ボタンは
@@ -2286,15 +2286,15 @@ Device(HwPatch)専用の起動引数しか持たず(D-026)、パフォーマン�
 直接キオスク起動する経路が無いことも理由の一つ。利用者自身の目視確認を
 待つ。
 
-**追記(同日): Device/Native編集画面のsw_bank/sw_prog表示行に「編集」
+**追記(同日): Device/Layered編集画面のsw_bank/sw_prog表示行に「編集」
 ボタンを追加、参照先のパフォーマンスパッチ編集画面を直接開けるように
-した**。利用者から「ネイティブパッチ編集、デバイスパッチ編集の
+した**。利用者から「レイヤードパッチ編集、デバイスパッチ編集の
 パフォーマンスパッチ表示部の右端に「編集」ボタンを配置して、
 パフォーマンスパッチ編集画面をモーダルまたはオーバーレイで表示する」
 という追加依頼を受けた。ToneLayerのhw_bank/hw_prog行が既に持っている
 「ラベル(クリックでピッカー)+末尾の「編集」ボタン(参照先の既存
 モードレス編集ウィンドウを開く)」という構成(D-036)と全く同じパターンを、
-`renderPatchEditor()`/`renderNativePatchEditor()`双方のsw_bank/sw_prog行に
+`renderPatchEditor()`/`renderLayeredPatchEditor()`双方のsw_bank/sw_prog行に
 適用した。
 
 - `findDeviceBankVectorIndex()`(D-036、`HwBank::bankIndex`という安定
@@ -2356,7 +2356,7 @@ BankDetailのDrumケース自体を「ドラムノート選択画面」に格上
 そこでの行クリック/作成が新設の`DrumNoteEditorWindow`
 (`renderDrumNoteEditors()`/`renderDrumNoteEditor()`、
 `AppContext::openDrumNoteEditors`)というモードレスウィンドウを開く -
-これが「ドラムノート編集」。Device(D-015)/Native(D-036)/Performance
+これが「ドラムノート編集」。Device(D-015)/Layered(D-036)/Performance
 (D-037)と全く同じ「`{kitIndex, note}`のインデックスのみ保持し、実体
 (`fpe::DrumNote*` = `kit.findNote(note)`)は毎フレーム引き直す」設計
 (D-012以来の慣習)。新しいAppState列は追加していない - 既存3種と同様、
@@ -2410,20 +2410,20 @@ BankDetailのDrumケース自体を「ドラムノート選択画面」に格上
 `renderDrumSourcePatchPicker()`)**: `DrumNote`の`voice_patch_type`/
 `patch_bank`/`patch_prog`は、CC#0そのものと同じ「normal modeか
 direct modeか」の二重性を持つ(`DrumKit.h`のコメント: `voice_patch_type
-== None`ならnormal mode = `patch_bank`/`patch_prog`はネイティブ
+== None`ならnormal mode = `patch_bank`/`patch_prog`はレイヤード
 `PatchBank`/`Patch`を指す、それ以外はHwBank/HwPatchを直接指す)。
 既存の`HwPatchPickerState`(ToneLayer用、device patchのみ)や
 `SwPatchPickerState`(performance patch専用)のどちらもこの二重参照を
 単独では表現できないため、新規ピッカーを追加した。1つのポップアップに
-「ネイティブパッチ」ツリーと「デバイスボイスパッチ」ツリー(既存の
+「レイヤードパッチ」ツリーと「デバイスボイスパッチ」ツリー(既存の
 `renderHwPatchPicker()`と同じチップ別グルーピング)を両方表示し、
 どちらを選んでも同じ3フィールド(`voice_patch_type`/`patch_bank`/
 `patch_prog`)に書き込む - 書き込み先のポインタを`isDirect`フラグで
 `DrumNote*`か`DrumKit`自身のフィールドに切り替える設計は、
-`renderSwPatchPicker()`のDevice/Native/DrumNote三分岐と同じ
+`renderSwPatchPicker()`のDevice/Layered/DrumNote三分岐と同じ
 「ターゲットに応じてポインタを解決し、UI自体は共有する」パターン。
 `describeDrumSourcePatch()`(解決結果の文字列化)と
-`openDrumSourcePatchEditor()`(「編集」ボタン - 参照先の既存Native/Device
+`openDrumSourcePatchEditor()`(「編集」ボタン - 参照先の既存Layered/Device
 編集画面をそのまま開く、D-036と同じ「独立モーダルは新設しない」判断)は
 BankDetailの行表示とノート編集画面の両方で共有する。
 
@@ -2445,8 +2445,8 @@ BankDetailの行表示とノート編集画面の両方で共有する。
   鍵盤クリックで即座に`play_note`へ反映してポップアップを閉じる(他の
   ピッカーと同じ「クリック=即選択、確定ボタンは無し」の流儀)。
 
-**登録前プレビュー(依頼により対応、Native/Performance編集画面とは異なる
-判断)**: D-036/D-037では「NativePatch/SwPatch自体は合成パラメータを
+**登録前プレビュー(依頼により対応、Layered/Performance編集画面とは異なる
+判断)**: D-036/D-037では「LayeredPatch/SwPatch自体は合成パラメータを
 持たないため試聴を実装しない」という判断をしていたが、`DrumNote`は
 ソースパッチ+`play_note`の組だけで「何が鳴るか」を完全に決定するため、
 「登録前に音を確認したい」という要求に実体がある。Device編集画面
@@ -2465,7 +2465,7 @@ HwPatch側のAR/DR等と違って`sendHwPatchOverride()`で送れる合成パラ
 
 **sw_bank/sw_prog(ノート単位のパフォーマンスパッチ上書き)**は
 `SwPatchPickerTarget`に`DrumNote`を追加して既存の`SwPatchPickerState`/
-`renderSwPatchPicker()`をそのまま再利用した(D-036が`Native`を追加した
+`renderSwPatchPicker()`をそのまま再利用した(D-036が`Layered`を追加した
 のと同じ理由 - 4つ目の同型ピッカーを新設せず、ポインタ解決の分岐を
 1つ増やすだけにした)。
 
@@ -2486,7 +2486,7 @@ HwPatch側のAR/DR等と違って`sendHwPatchOverride()`で送れる合成パラ
 一覧されないという報告を受けた。
 
 原因は`describeDrumSourcePatch()`/`renderDrumSourcePatchPicker()`が
-「`voice_patch_type == None`ならネイティブ、それ以外は常に
+「`voice_patch_type == None`ならレイヤード、それ以外は常に
 `ws.deviceBanks()`(通常のHwBank/HwPatch)」の二択でしか分岐していな
 かったこと。実際にはCC#0の直接デバイス選択値はもう2系統ある - ADPCM-B
 (Y8950)/ADPCM-B/ADPCM-A/PCM-D8(`isPcmWaveformVoicePatchType()`)は
@@ -2506,11 +2506,11 @@ YRW801ドラムバンク)を頻繁に参照するにもかかわらず(既知の
   HwBank)の間に挿入)。PCM側は`PcmBank::findByIndex()`(prognoでは
   なく配列添字)、SampleZone側は`SampleZoneBank::findByProg()`で解決する。
 - `renderDrumSourcePatchPicker()`に「PCM波形バンク」「サンプルゾーン
-  バンク」の2つのツリーを追加(既存の「ネイティブパッチ」「デバイス
+  バンク」の2つのツリーを追加(既存の「レイヤードパッチ」「デバイス
   ボイスパッチ」の後に追加、`renderBankDetail()`のPcm/SampleZoneケースと
   同じ一覧ロジックを再利用)。選択時は同じ3フィールド
   (`voice_patch_type`/`patch_bank`/`patch_prog`)に書き込む - PCM側は
-  `patch_prog`に配列添字を直接書き込む点だけがデバイス/ネイティブ側と
+  `patch_prog`に配列添字を直接書き込む点だけがデバイス/レイヤード側と
   異なる。
 - 新規`drumSourcePatchHasEditor(type)`(PCM波形バンク・AWMサンプル
   ゾーンは`PcmBank.h`/`SampleZone.h`のコメントの通りそもそも編集フォームが
@@ -2526,7 +2526,7 @@ YRW801ドラムバンク)を頻繁に参照するにもかかわらず(既知の
 `voicePatchType`がそもそも設定されていなかったというデータモデル層の
 バグが根本原因だったと判明・修正**。利用者が実機で再確認したところ、
 (1)ソースパッチのpcmbank参照が依然解決されない、(2)パッチピッカーで
-pcmbank配下のprogを選択してドラムノート編集画面に戻るとネイティブ
+pcmbank配下のprogを選択してドラムノート編集画面に戻るとレイヤード
 パッチが選択されている、という2件の報告を受けた。
 
 前回の追記まではGUI層(`describeDrumSourcePatch()`/
@@ -2557,8 +2557,8 @@ pcmbank配下のprogを選択してドラムノート編集画面に戻るとネ
 - (2)も同じ根本原因の症状: `renderDrumSourcePatchPicker()`のPCM波形バンク
   ツリーは`bank.voicePatchType`(=常にNone)を選択時にそのまま
   `*targetType`へ書き込んでいたため、PCM側のエントリを選んでも結果として
-  `voice_patch_type=None`(=「ネイティブ/normal mode」の目印)が書き込まれ、
-  以後「ネイティブ ...: (N/A)/(N/A)」に見えてしまっていた。
+  `voice_patch_type=None`(=「レイヤード/normal mode」の目印)が書き込まれ、
+  以後「レイヤード ...: (N/A)/(N/A)」に見えてしまっていた。
 
 **修正**: データモデル層(`fpe_data`)を直接修正した。
 

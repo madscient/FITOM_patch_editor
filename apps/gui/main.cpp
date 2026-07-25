@@ -28,7 +28,7 @@
 // any window is created - see main().
 //
 // Outline also has a "新規バンク作成" button (renderNewBankDialog()) that
-// creates a new native/device/performance bank or drum kit - bank
+// creates a new layered/device/performance bank or drum kit - bank
 // index/prog is auto-assigned (one past the current max), and the file's
 // directory+suffix are auto-derived from the chosen bank type
 // (buildRelativeBankFile()). Saves immediately via PatchWorkspace::save()
@@ -53,8 +53,8 @@
 // connection-diagram image for the current algorithm (assets/alg_diagrams,
 // D-016).
 //
-// Selecting a Native patch from BankDetail opens a separate modeless editor
-// (renderNativePatchEditors()/renderNativePatchEditor(), D-036) for its
+// Selecting a Layered patch from BankDetail opens a separate modeless editor
+// (renderLayeredPatchEditors()/renderLayeredPatchEditor(), D-036) for its
 // name/poly/ToneLayer stack. Each ToneLayer's hw_bank/hw_prog device-voice
 // reference is shown as a resolved name label with a clickable picker
 // (renderHwPatchPicker(), HW/device patches only, mirroring the sw_bank/
@@ -80,12 +80,12 @@
 // unassigned ones, each with 複製/削除 buttons - and selecting/creating a
 // note opens a fourth modeless editor
 // (renderDrumNoteEditors()/renderDrumNoteEditor()) for that one
-// fpe::DrumNote's name, source patch (a picker spanning both the native-
+// fpe::DrumNote's name, source patch (a picker spanning both the layered-
 // patch and device-voice-patch trees, since a DrumNote's source has the same
 // CC#0 "normal mode vs direct mode" duality as ToneLayer/Patch's own
 // references), play_note (by name or by an on-screen keyboard - deliberately
 // not a raw number field, per the project owner's request), fine_tune/pan/
-// gate_time, and its own sw_bank/sw_prog override. Unlike the Native/
+// gate_time, and its own sw_bank/sw_prog override. Unlike the Layered/
 // Performance editors, this one DOES support realtime preview (a press-
 // and-hold "試聴" button) since a DrumNote's source patch + play_note fully
 // determine what it would sound like on their own. "direct" kits have no
@@ -171,7 +171,7 @@ enum class AppState { MainMenu, FileBrowser, Outline, BankDetail };
 
 // Which of PatchWorkspace's five browse-tree vectors a BankDetail screen is
 // currently showing (see AppContext::selectedIndex).
-enum class BankCategory { Native, Performance, Device, SampleZone, Pcm, Drum };
+enum class BankCategory { Layered, Performance, Device, SampleZone, Pcm, Drum };
 
 // Matches both "<name>.profile.json" (the naming convention used by
 // production profiles) and a bare "profile.json" (used by fixtures/ and
@@ -321,14 +321,14 @@ constexpr DeviceGroupOption kCreatableDeviceGroups[] = {
 };
 
 // The four bank types the "新規バンク作成" dialog can produce (matches
-// PatchWorkspace's createNativePatchBank/createDeviceBank/
+// PatchWorkspace's createLayeredPatchBank/createDeviceBank/
 // createPerformanceBank/createDrumKit). SampleZoneBank/PcmBank are
 // deliberately not offered here - see kCreatableDeviceGroups above.
-enum class NewBankType { Native, Device, Performance, Drum };
+enum class NewBankType { Layered, Device, Performance, Drum };
 
 struct NewBankDialogState {
     bool open = false;
-    NewBankType type = NewBankType::Native;
+    NewBankType type = NewBankType::Layered;
     char name[128] = {};
     char fileStem[128] = {}; // just the base name - postfix/extension are auto-generated (see buildRelativeBankFile())
     int deviceGroupIndex = 0; // index into kCreatableDeviceGroups, only used when type == Device
@@ -339,8 +339,8 @@ struct NewBankDialogState {
 // A single modeless "patch editor" window (renderPatchEditor()). Several
 // can be open at once (see AppContext::openEditors) - selecting a patch
 // from BankDetail opens one rather than replacing the current screen.
-// Scoped to Device (HwPatch) patches only; Native patches get their own
-// separate NativePatchEditorWindow/renderNativePatchEditor() (D-036) since
+// Scoped to Device (HwPatch) patches only; Layered patches get their own
+// separate LayeredPatchEditorWindow/renderLayeredPatchEditor() (D-036) since
 // they're a reference-only structure (ToneLayers pointing at HwPatches),
 // not a synthesis-parameter form. Performance/Drum editors are still future
 // work (see docs/DESIGN.md D-015).
@@ -375,7 +375,7 @@ struct PatchEditorWindow {
 
 // Shared "SW (performance) patch picker" popup for a `sw_bank`/`sw_prog`
 // reference - opened either from renderPatchEditor() (a HwPatch's own
-// sw_bank/sw_prog) or renderNativePatchEditor() (a native fpe::Patch's own
+// sw_bank/sw_prog) or renderLayeredPatchEditor() (a layered fpe::Patch's own
 // sw_bank/sw_prog, D-036) when the user clicks the resolved bank/patch-name
 // label instead of typing raw numbers (per the project owner's request:
 // patch editors in general should show this reference as a name, with a
@@ -387,7 +387,7 @@ struct PatchEditorWindow {
 //
 // Like PathPickerState, only one instance is needed (only one modal can be
 // open at a time) - repointed at whichever patch is being edited via
-// openSwPatchPicker() (Device) / openNativeSwPatchPicker() (Native). Stores
+// openSwPatchPicker() (Device) / openLayeredSwPatchPicker() (Layered). Stores
 // indices rather than a raw pointer to the target patch, matching
 // PatchEditorWindow's own "store indices, re-derive the real reference
 // every frame" convention (D-012/D-015) - safer than holding a pointer
@@ -397,30 +397,30 @@ struct PatchEditorWindow {
 // (include/fpe/DrumKit.h - falls back to the resolved source patch's own
 // sw_bank/sw_prog when unset, same "-1 = not set" convention as
 // HwPatch/Patch). Reuses this shared picker/state rather than a fourth
-// bespoke one, same reasoning as adding Native alongside Device (D-036).
-enum class SwPatchPickerTarget { Device, Native, DrumNote };
+// bespoke one, same reasoning as adding Layered alongside Device (D-036).
+enum class SwPatchPickerTarget { Device, Layered, DrumNote };
 
 struct SwPatchPickerState {
     bool open = false;
     SwPatchPickerTarget target = SwPatchPickerTarget::Device;
     size_t deviceBankIndex = 0; // Target::Device: index into ws.deviceBanks() of the HwPatch being edited
     int devicePatchProg = 0;    // Target::Device: HwPatch::prog within that bank
-    size_t nativeBankIndex = 0; // Target::Native: index into ws.nativePatchBanks() of the Patch being edited
-    int nativePatchProg = 0;    // Target::Native: Patch::prog within that bank
+    size_t layeredBankIndex = 0; // Target::Layered: index into ws.layeredPatchBanks() of the Patch being edited
+    int layeredPatchProg = 0;    // Target::Layered: Patch::prog within that bank
     size_t drumKitIndex = 0;    // Target::DrumNote: index into ws.drumKits()
     uint8_t drumNote = 0;       // Target::DrumNote: DrumNote::note within that kit (routed kits only)
 };
 
-// A single modeless "native patch editor" window
-// (renderNativePatchEditor()). Edits a native fpe::Patch (its name/poly and
+// A single modeless "layered patch editor" window
+// (renderLayeredPatchEditor()). Edits a layered fpe::Patch (its name/poly and
 // its ToneLayer stack) - distinct from PatchEditorWindow, which edits the
 // underlying per-chip fpe::HwPatch a ToneLayer references. Several can be
 // open at once, same "store indices, re-derive the real Patch& every frame"
 // convention as PatchEditorWindow (D-012/D-015).
-struct NativePatchEditorWindow {
+struct LayeredPatchEditorWindow {
     int id = 0;
     bool open = true;
-    size_t bankIndex = 0; // index into ws.nativePatchBanks()
+    size_t bankIndex = 0; // index into ws.layeredPatchBanks()
     int prog = 0;         // Patch::prog within that bank
 };
 
@@ -428,9 +428,9 @@ struct NativePatchEditorWindow {
 // (renderPerformancePatchEditor()). Edits a fpe::SwPatch (vibrato/tremolo/
 // velocity-sensitivity/fine-transpose expression parameters, see
 // include/fpe/SwPatch.h) - same "store indices, re-derive the real SwPatch&
-// every frame" convention as PatchEditorWindow/NativePatchEditorWindow
+// every frame" convention as PatchEditorWindow/LayeredPatchEditorWindow
 // (D-012/D-015/D-036). No realtime preview/SysEx streaming (like
-// NativePatchEditorWindow, and for the same reason - a SwPatch has no
+// LayeredPatchEditorWindow, and for the same reason - a SwPatch has no
 // synthesis parameters of its own to sound; it only ever applies on top of
 // whichever HwPatch references it via sw_bank/sw_prog, and that HwPatch
 // already has its own preview-capable editor).
@@ -468,14 +468,14 @@ struct DrumNoteEditorWindow {
 // chip family they belong to - picking a patch is really picking "one of
 // this bank's patches", not just a bare number pair.
 //
-// Stores {nativeBankIndex, nativePatchProg, layerIndex} rather than a raw
+// Stores {layeredBankIndex, layeredPatchProg, layerIndex} rather than a raw
 // fpe::ToneLayer*, matching PatchEditorWindow/SwPatchPickerState's own
 // "store indices, re-derive every frame" convention - safer if the
 // underlying vectors are ever reallocated while the picker is open.
 struct HwPatchPickerState {
     bool open = false;
-    size_t nativeBankIndex = 0; // index into ws.nativePatchBanks()
-    int nativePatchProg = 0;    // Patch::prog within that bank
+    size_t layeredBankIndex = 0; // index into ws.layeredPatchBanks()
+    int layeredPatchProg = 0;    // Patch::prog within that bank
     int layerIndex = 0;         // index into Patch::layers
 };
 
@@ -484,9 +484,9 @@ struct HwPatchPickerState {
 // HwPatchPickerState (ToneLayer, HW/device patches only) or SwPatchPickerState
 // (a performance-patch override), this reference has the same dual
 // "normal mode vs direct mode" semantics as CC#0 itself (DrumKit.h): when
-// voice_patch_type == None, patch_bank/patch_prog index a native
+// voice_patch_type == None, patch_bank/patch_prog index a layered
 // PatchBank/Patch; otherwise they index a HwBank/HwPatch directly. So the
-// picker lists both trees (native patches and device voice patches) in one
+// picker lists both trees (layered patches and device voice patches) in one
 // popup rather than picking one HW bank kind up front, matching what CC#0
 // actually lets a real DrumNote reference.
 struct DrumSourcePatchPickerState {
@@ -534,8 +534,8 @@ struct AppContext {
     NewBankDialogState newBankDialog;
     std::vector<PatchEditorWindow> openEditors;
     int nextEditorId = 0;
-    std::vector<NativePatchEditorWindow> openNativeEditors;
-    int nextNativeEditorId = 0;
+    std::vector<LayeredPatchEditorWindow> openLayeredEditors;
+    int nextLayeredEditorId = 0;
     std::vector<PerformancePatchEditorWindow> openPerformanceEditors;
     int nextPerformanceEditorId = 0;
     std::vector<DrumNoteEditorWindow> openDrumNoteEditors;
@@ -559,7 +559,7 @@ struct AppContext {
     // state == BankDetail; set together with the state transition, and
     // never touched by workspace-mutating code, so it can't go stale
     // within a single load (this GUI is still read-only, see file header).
-    BankCategory selectedCategory = BankCategory::Native;
+    BankCategory selectedCategory = BankCategory::Layered;
     size_t selectedIndex = 0;
 
     // Kiosk mode (D-026): launched with a profile + hwbank file + prog CLI
@@ -625,28 +625,28 @@ void openPatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
     ctx.openEditors.push_back(w);
 }
 
-// Opens a modeless editor for the native fpe::Patch at
-// ws.nativePatchBanks()[bankIndex]'s `prog`, or re-focuses an already-open
+// Opens a modeless editor for the layered fpe::Patch at
+// ws.layeredPatchBanks()[bankIndex]'s `prog`, or re-focuses an already-open
 // one for the same patch. Mirrors openPatchEditor() for the Device (HwPatch)
 // case.
-void openNativePatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
-    for (auto& e : ctx.openNativeEditors) {
+void openLayeredPatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
+    for (auto& e : ctx.openLayeredEditors) {
         if (e.bankIndex == bankIndex && e.prog == prog) {
             e.open = true;
-            ImGui::SetWindowFocus((std::string("ネイティブパッチ編集##nativeeditor") + std::to_string(e.id)).c_str());
+            ImGui::SetWindowFocus((std::string("レイヤードパッチ編集##layerededitor") + std::to_string(e.id)).c_str());
             return;
         }
     }
-    NativePatchEditorWindow w;
-    w.id = ctx.nextNativeEditorId++;
+    LayeredPatchEditorWindow w;
+    w.id = ctx.nextLayeredEditorId++;
     w.bankIndex = bankIndex;
     w.prog = prog;
-    ctx.openNativeEditors.push_back(w);
+    ctx.openLayeredEditors.push_back(w);
 }
 
 // Opens a modeless editor for the SwPatch at ws.performanceBanks()[bankIndex]'s
 // `prog`, or re-focuses an already-open one for the same patch. Mirrors
-// openPatchEditor()/openNativePatchEditor() for the Performance case.
+// openPatchEditor()/openLayeredPatchEditor() for the Performance case.
 void openPerformancePatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
     for (auto& e : ctx.openPerformanceEditors) {
         if (e.bankIndex == bankIndex && e.prog == prog) {
@@ -664,7 +664,7 @@ void openPerformancePatchEditor(AppContext& ctx, size_t bankIndex, int prog) {
 
 // Opens a modeless editor for the DrumNote at ws.drumKits()[kitIndex] whose
 // DrumNote::note == `note`, or re-focuses an already-open one for the same
-// note. Mirrors openPatchEditor()/openNativePatchEditor()/
+// note. Mirrors openPatchEditor()/openLayeredPatchEditor()/
 // openPerformancePatchEditor() for the drum-note case (D-038). Assumes the
 // note already exists (renderBankDetail()'s "作成" button upserts a default
 // DrumNote before calling this for a previously-unassigned note) - unlike
@@ -712,13 +712,13 @@ std::optional<size_t> findPerformanceBankVectorIndex(fpe::PatchWorkspace& ws, in
     return std::nullopt;
 }
 
-// Same idea again, but for a native PatchBank (PatchBank::bankIndex) -
+// Same idea again, but for a layered PatchBank (PatchBank::bankIndex) -
 // needed because a DrumNote's "normal mode" source-patch reference
-// (voice_patch_type == None) indexes patch_bank/patch_prog into a native
+// (voice_patch_type == None) indexes patch_bank/patch_prog into a layered
 // PatchBank/Patch exactly like ToneLayer's sw_bank/hw_bank do (D-038, see
 // describeDrumSourcePatch()/openDrumSourcePatchEditor() below).
-std::optional<size_t> findNativePatchBankVectorIndex(fpe::PatchWorkspace& ws, int bankIndex) {
-    auto& banks = ws.nativePatchBanks();
+std::optional<size_t> findLayeredPatchBankVectorIndex(fpe::PatchWorkspace& ws, int bankIndex) {
+    auto& banks = ws.layeredPatchBanks();
     for (size_t i = 0; i < banks.size(); ++i) {
         if (banks[i].bankIndex == bankIndex) return i;
     }
@@ -738,9 +738,9 @@ std::optional<size_t> findNativePatchBankVectorIndex(fpe::PatchWorkspace& ws, in
 // from Device.
 std::string describeDrumSourcePatch(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, int patchBank, int patchProg) {
     if (type == fpe::VoicePatchType::None) {
-        fpe::PatchBank* bank = ws.findNativePatchBank(patchBank);
+        fpe::PatchBank* bank = ws.findLayeredPatchBank(patchBank);
         const fpe::Patch* patch = bank ? bank->findByProg(patchProg) : nullptr;
-        return "ネイティブ " + std::to_string(patchBank) + "/" + std::to_string(patchProg) + " : " +
+        return "レイヤード " + std::to_string(patchBank) + "/" + std::to_string(patchProg) + " : " +
                (bank ? bank->name : std::string("(N/A)")) + " / " + (patch ? patch->name : std::string("(N/A)"));
     }
     if (fpe::isPcmWaveformVoicePatchType(type)) {
@@ -777,7 +777,7 @@ bool drumSourcePatchHasEditor(fpe::VoicePatchType type) {
     return !fpe::isPcmWaveformVoicePatchType(type) && !fpe::isSampleBasedVoicePatchType(type);
 }
 
-// Opens the referenced source patch's own editor (native or device,
+// Opens the referenced source patch's own editor (layered or device,
 // whichever voice_patch_type indicates) - the drum-note editor's "編集"
 // button next to its source-patch label, mirroring ToneLayer's hw_bank
 // "編集" button (renderToneLayerEditor()). No-op if the reference doesn't
@@ -789,8 +789,8 @@ bool drumSourcePatchHasEditor(fpe::VoicePatchType type) {
 // to grey the button out instead of leaving it a silent no-op.
 void openDrumSourcePatchEditor(AppContext& ctx, fpe::VoicePatchType type, int patchBank, int patchProg) {
     if (type == fpe::VoicePatchType::None) {
-        auto idx = findNativePatchBankVectorIndex(ctx.workspace, patchBank);
-        if (idx) openNativePatchEditor(ctx, *idx, patchProg);
+        auto idx = findLayeredPatchBankVectorIndex(ctx.workspace, patchBank);
+        if (idx) openLayeredPatchEditor(ctx, *idx, patchProg);
     } else if (drumSourcePatchHasEditor(type)) {
         auto idx = findDeviceBankVectorIndex(ctx.workspace, type, patchBank);
         if (idx) openPatchEditor(ctx, *idx, patchProg);
@@ -845,7 +845,7 @@ int nextDrumProg(const std::vector<fpe::DrumKit>& kits) {
 std::string buildRelativeBankFile(const NewBankDialogState& d) {
     const std::string stem = d.fileStem;
     switch (d.type) {
-        case NewBankType::Native:
+        case NewBankType::Layered:
             return "patches/" + stem + ".patchbank.json";
         case NewBankType::Performance:
             return "sw/" + stem + ".swbank.json";
@@ -877,8 +877,8 @@ bool tryCreateBank(AppContext& ctx) {
     const std::string relFile = buildRelativeBankFile(d);
     try {
         switch (d.type) {
-            case NewBankType::Native:
-                ws.createNativePatchBank(nextBankIndex(ws.nativePatchBanks()), name, relFile);
+            case NewBankType::Layered:
+                ws.createLayeredPatchBank(nextBankIndex(ws.layeredPatchBanks()), name, relFile);
                 break;
             case NewBankType::Performance:
                 ws.createPerformanceBank(nextBankIndex(ws.performanceBanks()), name, relFile);
@@ -909,7 +909,7 @@ void renderNewBankDialog(AppContext& ctx) {
     ImGui::OpenPopup("新規バンク作成");
     bool stayOpen = true;
     if (ImGui::BeginPopupModal("新規バンク作成", &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
-        static const char* kTypeLabels[] = {"ネイティブパッチ", "デバイスパッチ", "パフォーマンスパッチ", "ドラムキット"};
+        static const char* kTypeLabels[] = {"レイヤードパッチ", "デバイスパッチ", "パフォーマンスパッチ", "ドラムキット"};
         int typeIdx = static_cast<int>(d.type);
         if (ImGui::Combo("バンク種別", &typeIdx, kTypeLabels, IM_ARRAYSIZE(kTypeLabels))) {
             d.type = static_cast<NewBankType>(typeIdx);
@@ -1079,13 +1079,13 @@ void openSwPatchPicker(AppContext& ctx, size_t deviceBankIndex, int devicePatchP
     ctx.swPatchPicker.open = true;
 }
 
-// Same picker, repointed at a native fpe::Patch's own sw_bank/sw_prog
-// (D-036) instead of a HwPatch's. Called from renderNativePatchEditor()
+// Same picker, repointed at a layered fpe::Patch's own sw_bank/sw_prog
+// (D-036) instead of a HwPatch's. Called from renderLayeredPatchEditor()
 // when the user clicks that patch's sw_bank/sw_prog label.
-void openNativeSwPatchPicker(AppContext& ctx, size_t nativeBankIndex, int nativePatchProg) {
-    ctx.swPatchPicker.target = SwPatchPickerTarget::Native;
-    ctx.swPatchPicker.nativeBankIndex = nativeBankIndex;
-    ctx.swPatchPicker.nativePatchProg = nativePatchProg;
+void openLayeredSwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatchProg) {
+    ctx.swPatchPicker.target = SwPatchPickerTarget::Layered;
+    ctx.swPatchPicker.layeredBankIndex = layeredBankIndex;
+    ctx.swPatchPicker.layeredPatchProg = layeredPatchProg;
     ctx.swPatchPicker.open = true;
 }
 
@@ -1127,19 +1127,19 @@ void renderSwPatchPicker(AppContext& ctx) {
         }
         targetSwBank = &hwPatch->sw_bank;
         targetSwProg = &hwPatch->sw_prog;
-    } else if (p.target == SwPatchPickerTarget::Native) {
-        auto& nativeBanks = ctx.workspace.nativePatchBanks();
-        if (p.nativeBankIndex >= nativeBanks.size()) {
+    } else if (p.target == SwPatchPickerTarget::Layered) {
+        auto& layeredBanks = ctx.workspace.layeredPatchBanks();
+        if (p.layeredBankIndex >= layeredBanks.size()) {
             p.open = false;
             return;
         }
-        fpe::Patch* nativePatch = nativeBanks[p.nativeBankIndex].findByProg(p.nativePatchProg);
-        if (!nativePatch) {
+        fpe::Patch* layeredPatch = layeredBanks[p.layeredBankIndex].findByProg(p.layeredPatchProg);
+        if (!layeredPatch) {
             p.open = false;
             return;
         }
-        targetSwBank = &nativePatch->sw_bank;
-        targetSwProg = &nativePatch->sw_prog;
+        targetSwBank = &layeredPatch->sw_bank;
+        targetSwProg = &layeredPatch->sw_prog;
     } else {
         auto& kits = ctx.workspace.drumKits();
         if (p.drumKitIndex >= kits.size()) {
@@ -1205,12 +1205,12 @@ void renderSwPatchPicker(AppContext& ctx) {
 }
 
 // Points the shared HwPatchPickerState at the ToneLayer identified by
-// {nativeBankIndex, nativePatchProg, layerIndex} and opens the picker.
+// {layeredBankIndex, layeredPatchProg, layerIndex} and opens the picker.
 // Called from renderToneLayerEditor() when the user clicks the
 // hw_bank/hw_prog label.
-void openHwPatchPicker(AppContext& ctx, size_t nativeBankIndex, int nativePatchProg, int layerIndex) {
-    ctx.hwPatchPicker.nativeBankIndex = nativeBankIndex;
-    ctx.hwPatchPicker.nativePatchProg = nativePatchProg;
+void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatchProg, int layerIndex) {
+    ctx.hwPatchPicker.layeredBankIndex = layeredBankIndex;
+    ctx.hwPatchPicker.layeredPatchProg = layeredPatchProg;
     ctx.hwPatchPicker.layerIndex = layerIndex;
     ctx.hwPatchPicker.open = true;
 }
@@ -1220,7 +1220,7 @@ void openHwPatchPicker(AppContext& ctx, size_t nativeBankIndex, int nativePatchP
 // prog} into the target ToneLayer's fields. Scoped to HW/device patches
 // only (per the project owner's request - ToneLayer's other reference kind,
 // Patch::sw_bank/sw_prog, is not this picker). Re-resolves the target
-// ToneLayer* every frame from {nativeBankIndex, nativePatchProg,
+// ToneLayer* every frame from {layeredBankIndex, layeredPatchProg,
 // layerIndex} rather than holding a pointer captured at open time (same
 // reasoning as renderSwPatchPicker()) - if the target patch/layer has since
 // vanished, the picker just closes itself quietly.
@@ -1228,12 +1228,12 @@ void renderHwPatchPicker(AppContext& ctx) {
     HwPatchPickerState& p = ctx.hwPatchPicker;
     if (!p.open) return;
 
-    auto& nativeBanks = ctx.workspace.nativePatchBanks();
-    if (p.nativeBankIndex >= nativeBanks.size()) {
+    auto& layeredBanks = ctx.workspace.layeredPatchBanks();
+    if (p.layeredBankIndex >= layeredBanks.size()) {
         p.open = false;
         return;
     }
-    fpe::Patch* patch = nativeBanks[p.nativeBankIndex].findByProg(p.nativePatchProg);
+    fpe::Patch* patch = layeredBanks[p.layeredBankIndex].findByProg(p.layeredPatchProg);
     if (!patch || p.layerIndex < 0 || static_cast<size_t>(p.layerIndex) >= patch->layers.size()) {
         p.open = false;
         return;
@@ -1303,15 +1303,15 @@ void openDrumSourcePatchPickerDirect(AppContext& ctx, size_t kitIndex) {
     ctx.drumSourcePatchPicker.open = true;
 }
 
-// Modal listing BOTH the native-patch tree and the device-voice-patch tree
+// Modal listing BOTH the layered-patch tree and the device-voice-patch tree
 // in one popup (D-038) - a DrumNote's source patch has the same "normal
 // mode vs direct mode" duality as CC#0 itself (see
 // DrumSourcePatchPickerState's comment), so unlike renderHwPatchPicker()
-// (device patches only) this picker has to offer both. Picking a native
-// patch writes {None, nativeBank.bankIndex, patch.prog}; picking a device
+// (device patches only) this picker has to offer both. Picking a layered
+// patch writes {None, layeredBank.bankIndex, patch.prog}; picking a device
 // patch writes {bank.voicePatchType, bank.bankIndex, hwPatch.prog} - either
 // way into the same three target fields, resolved to pointers up front
-// exactly like renderSwPatchPicker()'s Device/Native/DrumNote branching.
+// exactly like renderSwPatchPicker()'s Device/Layered/DrumNote branching.
 void renderDrumSourcePatchPicker(AppContext& ctx) {
     DrumSourcePatchPickerState& p = ctx.drumSourcePatchPicker;
     if (!p.open) return;
@@ -1346,12 +1346,12 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted(
-            "発音元パッチを選択してください(ネイティブパッチ、またはデバイスボイスパッチ/PCM波形/サンプルゾーンを直接指定)。");
+            "発音元パッチを選択してください(レイヤードパッチ、またはデバイスボイスパッチ/PCM波形/サンプルゾーンを直接指定)。");
         ImGui::Separator();
 
         ImGui::BeginChild("drumsourcepatchpickerlist", ImVec2(560, 460), true);
-        if (ImGui::TreeNodeEx("native", ImGuiTreeNodeFlags_DefaultOpen, "ネイティブパッチ (normal mode)")) {
-            for (auto& bank : ctx.workspace.nativePatchBanks()) {
+        if (ImGui::TreeNodeEx("layered", ImGuiTreeNodeFlags_DefaultOpen, "レイヤードパッチ (normal mode)")) {
+            for (auto& bank : ctx.workspace.layeredPatchBanks()) {
                 ImGui::PushID(bank.bankIndex);
                 const bool isCurrentBank = *targetType == fpe::VoicePatchType::None && bank.bankIndex == *targetBank;
                 if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[bank %d] %s", bank.bankIndex,
@@ -1372,7 +1372,7 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 }
                 ImGui::PopID();
             }
-            if (ctx.workspace.nativePatchBanks().empty()) ImGui::TextDisabled("(ネイティブパッチバンクがありません)");
+            if (ctx.workspace.layeredPatchBanks().empty()) ImGui::TextDisabled("(レイヤードパッチバンクがありません)");
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("device", ImGuiTreeNodeFlags_DefaultOpen, "デバイスボイスパッチ (direct)")) {
@@ -1693,7 +1693,7 @@ void renderFileBrowser(AppContext& ctx) {
     }
 }
 
-// Renders one editable ToneLayer row inside renderNativePatchEditor():
+// Renders one editable ToneLayer row inside renderLayeredPatchEditor():
 // enabled checkbox, note range, transpose/volume/pan offsets, and the
 // hw_bank/hw_prog device-voice-patch reference. Per the project owner's
 // request, that reference is shown as a resolved "group/bank/patch name"
@@ -1704,7 +1704,7 @@ void renderFileBrowser(AppContext& ctx) {
 // (openPatchEditor()/renderPatchEditor()) - reusing that existing modeless
 // window as the "overlay" the project owner said was an acceptable
 // alternative to a true modal.
-void renderToneLayerEditor(AppContext& ctx, size_t nativeBankIndex, int nativePatchProg, int layerIndex,
+void renderToneLayerEditor(AppContext& ctx, size_t layeredBankIndex, int layeredPatchProg, int layerIndex,
                            fpe::ToneLayer& layer) {
     fpe::PatchWorkspace& ws = ctx.workspace;
     ImGui::PushID(layerIndex);
@@ -1744,7 +1744,7 @@ void renderToneLayerEditor(AppContext& ctx, size_t nativeBankIndex, int nativePa
                                  (hwBank ? hwBank->name : std::string("(N/A)")) + " / " +
                                  (hwPatch ? hwPatch->name : std::string("(N/A)"));
     if (ImGui::Selectable(hwLabel.c_str(), false, 0, ImVec2(560, 0))) {
-        openHwPatchPicker(ctx, nativeBankIndex, nativePatchProg, layerIndex);
+        openHwPatchPicker(ctx, layeredBankIndex, layeredPatchProg, layerIndex);
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてデバイスボイスパッチ(HW)を選択");
     ImGui::SameLine();
@@ -3134,17 +3134,17 @@ void renderPatchEditors(AppContext& ctx) {
         ctx.openEditors.end());
 }
 
-// --- Native patch editor ---------------------------------------------------
-// Opened via openNativePatchEditor() from renderBankDetail()'s Native case,
+// --- Layered patch editor ---------------------------------------------------
+// Opened via openLayeredPatchEditor() from renderBankDetail()'s Layered case,
 // mirroring how a Device row opens renderPatchEditor() (D-015/D-034
 // precedent). Edits name/poly and each ToneLayer (see
 // renderToneLayerEditor()). No realtime preview/SysEx streaming here (unlike
-// the HwPatch editor, D-027) - a native Patch has no synthesis parameters of
+// the HwPatch editor, D-027) - a layered Patch has no synthesis parameters of
 // its own to preview, only references to HwPatches that already have their
 // own preview-capable editor (reachable via each layer's "編集" button).
-void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
+void renderLayeredPatchEditor(AppContext& ctx, LayeredPatchEditorWindow& editor) {
     fpe::PatchWorkspace& ws = ctx.workspace;
-    auto& banks = ws.nativePatchBanks();
+    auto& banks = ws.layeredPatchBanks();
     if (editor.bankIndex >= banks.size()) {
         ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "このバンクは既に存在しません。");
         return;
@@ -3156,7 +3156,7 @@ void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
         return;
     }
 
-    ImGui::Text("[native bank %d prog %d]", bank.bankIndex, patch->prog);
+    ImGui::Text("[layered bank %d prog %d]", bank.bankIndex, patch->prog);
     ImGui::SameLine();
     {
         // Top-right placement, matching renderPatchEditor()'s "登録" button
@@ -3185,10 +3185,10 @@ void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
 
     // sw_bank/sw_prog: patch-level performance-patch override (falls back to
     // each layer's own HwPatch::sw_bank/sw_prog when unset, see
-    // NativePatch.h). Same resolved-label + picker treatment as HwPatch's
+    // LayeredPatch.h). Same resolved-label + picker treatment as HwPatch's
     // own sw_bank/sw_prog in renderPatchEditor() (D-034), via the shared
     // SwPatchPickerState/renderSwPatchPicker() repointed at this Patch
-    // directly (openNativeSwPatchPicker(), D-036) instead of at a HwPatch.
+    // directly (openLayeredSwPatchPicker(), D-036) instead of at a HwPatch.
     {
         std::string swLabel;
         const fpe::SwPatch* swPatch = nullptr;
@@ -3203,7 +3203,7 @@ void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
             swLabel = "パフォーマンス: (N/A)";
         }
         if (ImGui::Selectable(swLabel.c_str(), false, 0, ImVec2(640, 0))) {
-            openNativeSwPatchPicker(ctx, editor.bankIndex, patch->prog);
+            openLayeredSwPatchPicker(ctx, editor.bankIndex, patch->prog);
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックしてパフォーマンスパッチを選択");
         ImGui::SameLine();
@@ -3227,27 +3227,27 @@ void renderNativePatchEditor(AppContext& ctx, NativePatchEditorWindow& editor) {
     }
 }
 
-constexpr ImVec2 kNativePatchEditorInitialSize(700.0f, 600.0f);
+constexpr ImVec2 kLayeredPatchEditorInitialSize(700.0f, 600.0f);
 
-void renderNativePatchEditors(AppContext& ctx) {
-    for (auto& editor : ctx.openNativeEditors) {
+void renderLayeredPatchEditors(AppContext& ctx) {
+    for (auto& editor : ctx.openLayeredEditors) {
         if (!editor.open) continue;
-        const std::string title = "ネイティブパッチ編集##nativeeditor" + std::to_string(editor.id);
-        ImGui::SetNextWindowSize(kNativePatchEditorInitialSize, ImGuiCond_FirstUseEver);
+        const std::string title = "レイヤードパッチ編集##layerededitor" + std::to_string(editor.id);
+        ImGui::SetNextWindowSize(kLayeredPatchEditorInitialSize, ImGuiCond_FirstUseEver);
         if (ImGui::Begin(title.c_str(), &editor.open)) {
-            renderNativePatchEditor(ctx, editor);
+            renderLayeredPatchEditor(ctx, editor);
         }
         ImGui::End();
     }
-    ctx.openNativeEditors.erase(
-        std::remove_if(ctx.openNativeEditors.begin(), ctx.openNativeEditors.end(),
-                        [](const NativePatchEditorWindow& e) { return !e.open; }),
-        ctx.openNativeEditors.end());
+    ctx.openLayeredEditors.erase(
+        std::remove_if(ctx.openLayeredEditors.begin(), ctx.openLayeredEditors.end(),
+                        [](const LayeredPatchEditorWindow& e) { return !e.open; }),
+        ctx.openLayeredEditors.end());
 }
 
 // --- Performance patch editor ----------------------------------------------
 // Opened via openPerformancePatchEditor() from renderBankDetail()'s
-// Performance case, mirroring how Device/Native rows open their own modeless
+// Performance case, mirroring how Device/Layered rows open their own modeless
 // editors (D-015/D-036 precedent). Edits a fpe::SwPatch's name, channel-level
 // vibrato (FmSwVoice) and per-operator velocity-sensitivity/tremolo
 // (FmSwOp x4, see include/fpe/SwPatch.h). Per the project owner's explicit
@@ -3370,7 +3370,7 @@ void renderPerformancePatchEditor(AppContext& ctx, PerformancePatchEditorWindow&
     ImGui::SameLine();
     {
         // Top-right "登録" placement, matching renderPatchEditor()/
-        // renderNativePatchEditor()'s convention - SwBank has no narrower
+        // renderLayeredPatchEditor()'s convention - SwBank has no narrower
         // single-bank save API either, so this persists the whole workspace.
         const float buttonW = 90.0f;
         const float avail = ImGui::GetContentRegionAvail().x;
@@ -3422,7 +3422,7 @@ void renderPerformancePatchEditors(AppContext& ctx) {
 
 // --- Drum note editor -------------------------------------------------------
 // Opened via openDrumNoteEditor() from renderBankDetail()'s Drum/routed
-// case, mirroring how Device/Native/Performance rows open their own
+// case, mirroring how Device/Layered/Performance rows open their own
 // modeless editors (D-015/D-036/D-037 precedent). Edits one fpe::DrumNote:
 // name, its source patch (voice_patch_type/patch_bank/patch_prog - a
 // picker rather than raw numbers, same rationale as every other patch
@@ -3431,10 +3431,10 @@ void renderPerformancePatchEditors(AppContext& ctx) {
 // owner's request), fine_tune/pan/gate_time (plain sliders/input - exact
 // register widths unconfirmed, same "human narrows later" treatment as
 // SwPatch's own unconfirmed fields, D-037), and its own sw_bank/sw_prog
-// override. Unlike NativePatchEditorWindow/PerformancePatchEditorWindow,
+// override. Unlike LayeredPatchEditorWindow/PerformancePatchEditorWindow,
 // this DOES support realtime preview (selectDevice + note on/off on a
 // press-and-hold button) per the project owner's explicit "登録前に
-// プレビュー発音可能とする" requirement - a DrumNote, unlike a native Patch
+// プレビュー発音可能とする" requirement - a DrumNote, unlike a layered Patch
 // or SwPatch, fully determines what would sound (source patch + play note)
 // on its own, so there's a real "would this sound right" question to answer
 // before saving.
@@ -3484,7 +3484,7 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
         if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(640, 0))) {
             openDrumSourcePatchPicker(ctx, editor.kitIndex, note->note);
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(ネイティブ/デバイス/PCM波形/サンプルゾーン)を選択");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(レイヤード/デバイス/PCM波形/サンプルゾーン)を選択");
         ImGui::SameLine();
         ImGui::BeginDisabled(!drumSourcePatchHasEditor(note->voice_patch_type));
         if (ImGui::Button("編集##srcedit")) {
@@ -3647,13 +3647,13 @@ void renderOutline(AppContext& ctx) {
 
     ImGui::BeginChild("outline", ImVec2(0, 0), true);
 
-    if (ImGui::TreeNode("native", "ネイティブパッチバンク (%zu)", ws.nativePatchBanks().size())) {
-        auto& banks = ws.nativePatchBanks();
+    if (ImGui::TreeNode("layered", "レイヤードパッチバンク (%zu)", ws.layeredPatchBanks().size())) {
+        auto& banks = ws.layeredPatchBanks();
         for (size_t i = 0; i < banks.size(); ++i) {
             const auto& bank = banks[i];
             std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
                                  " (" + std::to_string(bank.patches.size()) + " patches)";
-            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Native, i);
+            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Layered, i);
         }
         ImGui::TreePop();
     }
@@ -3722,7 +3722,7 @@ void renderOutline(AppContext& ctx) {
 
 // The patch/note list for the single bank or drum kit selected in
 // renderOutline(). Deliberately shallow (name/prog/basic refs only, plus
-// ToneLayer for native patches since that's the bank's own on-disk shape) -
+// ToneLayer for layered patches since that's the bank's own on-disk shape) -
 // per-parameter editing is future work (see docs/STATUS.md).
 void renderBankDetail(AppContext& ctx) {
     fpe::PatchWorkspace& ws = ctx.workspace;
@@ -3736,16 +3736,16 @@ void renderBankDetail(AppContext& ctx) {
     ImGui::BeginChild("bankdetail", ImVec2(0, 0), true);
 
     switch (ctx.selectedCategory) {
-        case BankCategory::Native: {
-            auto& banks = ws.nativePatchBanks();
+        case BankCategory::Layered: {
+            auto& banks = ws.layeredPatchBanks();
             if (ctx.selectedIndex >= banks.size()) break;
             auto& bank = banks[ctx.selectedIndex];
-            ImGui::Text("ネイティブパッチバンク [bank %d] %s", bank.bankIndex, bank.name.c_str());
+            ImGui::Text("レイヤードパッチバンク [bank %d] %s", bank.bankIndex, bank.name.c_str());
             ImGui::Separator();
             for (auto& patch : bank.patches) {
                 std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name + " (" +
                                      std::to_string(patch.layers.size()) + " layers)";
-                if (ImGui::Selectable(label.c_str())) openNativePatchEditor(ctx, ctx.selectedIndex, patch.prog);
+                if (ImGui::Selectable(label.c_str())) openLayeredPatchEditor(ctx, ctx.selectedIndex, patch.prog);
             }
             break;
         }
@@ -3906,7 +3906,7 @@ void renderBankDetail(AppContext& ctx) {
                 if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(640, 0))) {
                     openDrumSourcePatchPickerDirect(ctx, ctx.selectedIndex);
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(ネイティブ/デバイス/PCM波形/サンプルゾーン)を選択");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(レイヤード/デバイス/PCM波形/サンプルゾーン)を選択");
                 ImGui::SameLine();
                 ImGui::BeginDisabled(!drumSourcePatchHasEditor(kit.voice_patch_type));
                 if (ImGui::Button("編集##srcedit")) {
@@ -4144,7 +4144,7 @@ int main(int argc, char** argv) {
             }
             renderPatchEditors(ctx);
             renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()/openDrumNoteSwPatchPicker()
-            renderNativePatchEditors(ctx);
+            renderLayeredPatchEditors(ctx);
             renderPerformancePatchEditors(ctx);
             renderDrumNoteEditors(ctx);
             renderHwPatchPicker(ctx); // ToneLayer hw_bank/hw_prog label click, see openHwPatchPicker()

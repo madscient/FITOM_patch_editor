@@ -8,12 +8,12 @@
 
 #include "fpe/VoicePatchType.h"
 
-// Native patch: the "normal mode" (CC#0=0) multi-layer patch format.
-// Source: docs/native-patch-reference.md, docs/patch-structure-design.md.
+// Layered patch: the "normal mode" (CC#0=0) multi-layer patch format.
+// Source: docs/layered-patch-reference.md, docs/patch-structure-design.md.
 
 namespace fpe {
 
-// One sounding layer within a native Patch. Up to 4 layers (indices 0-3,
+// One sounding layer within a layered Patch. Up to 4 layers (indices 0-3,
 // the user-facing "ToneLayer 0..3") may be stacked; overlapping note
 // ranges sound simultaneously (layered, not exclusive).
 struct ToneLayer {
@@ -34,7 +34,7 @@ struct ToneLayer {
 void to_json(nlohmann::json& j, const ToneLayer& v);
 void from_json(const nlohmann::json& j, ToneLayer& v);
 
-// One native patch ("program"), 1-4 ToneLayers.
+// One layered patch ("program"), 1-4 ToneLayers.
 struct Patch {
     int prog = 0;
     std::string name;
@@ -50,7 +50,7 @@ struct Patch {
 void to_json(nlohmann::json& j, const Patch& v);
 void from_json(const nlohmann::json& j, Patch& v);
 
-// A native patch bank (*.patchbank.json), selected via CC#32 in normal mode.
+// A layered patch bank (*.patchbank.json), selected via CC#32 in normal mode.
 struct PatchBank {
     std::string name;
     std::vector<Patch> patches;
