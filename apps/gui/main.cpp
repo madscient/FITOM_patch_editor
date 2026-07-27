@@ -17,15 +17,26 @@
 // load failure, falls back to the normal MainMenu + error popup (see
 // main()).
 //
-// Kiosk mode (D-026): `fitom_patch_editor_gui.exe <profile.json>
-// <hwbank-file> <prog>` (exactly 3 arguments) skips MainMenu/Outline/
-// BankDetail entirely and opens a single, full-viewport patch editor for
-// that bank+prog - no menu ever shown, and closing that one editor window
-// exits the whole process. Also meant for launching from FITOM_X, but for
-// the narrower "jump straight into editing this one patch" case rather
-// than "open this profile". A bad kiosk invocation (missing profile,
-// bank/prog not found) fails fast via stderr + a nonzero exit code before
-// any window is created - see main().
+// Kiosk mode (D-026; argument format extended in D-039, Performance/Drum
+// kinds added D-040): `fitom_patch_editor_gui.exe <profile.json> <kind>
+// <bank-file> <prog>` (exactly 4 arguments) skips MainMenu/Outline/
+// BankDetail entirely and opens a single, full-viewport editor for that
+// patch - no menu ever shown, and closing that one editor window exits the
+// whole process. `kind` is "device" (bank-file = *.hwbank.json), "layered"
+// (bank-file = *.patchbank.json), "performance" (bank-file = *.swbank.json),
+// or "drum" (bank-file = *.drumkit.json) - parseKioskKind() selects which
+// editor screen actually opens (renderPatchEditor()/
+// renderLayeredPatchEditor()/renderPerformancePatchEditor()/
+// renderDrumKitDetail() respectively), so e.g. a MIDI channel that's playing
+// a layered patch opens the layered patch editor instead of reusing the
+// Device screen regardless of what's actually selected. "pcmbank"/
+// "samplezonebank" are reserved kind keywords for future work
+// (kioskKindImplemented()) but not yet backed by an editor screen. Also
+// meant for launching from FITOM_X, but for the narrower "jump straight into
+// editing this one patch" case rather than "open this profile". A bad kiosk
+// invocation (missing profile, unknown/not-yet-implemented kind, bank/prog
+// not found) fails fast via stderr + a nonzero exit code before any window
+// is created - see main().
 //
 // Outline also has a "新規バンク作成" button (renderNewBankDialog()) that
 // creates a new layered/device/performance bank or drum kit - bank
@@ -526,6 +537,23 @@ struct PreferencesDialogState {
     std::string errorMessage;           // e.g. save failure, shown inline
 };
 
+// Kiosk-only "the whole drum kit is the top-level screen" state (D-040).
+// Unlike the other three kiosk kinds, this doesn't reuse a pre-existing
+// modeless-editor-window struct (PatchEditorWindow/LayeredPatchEditorWindow/
+// PerformancePatchEditorWindow) - BankDetail's Drum case never had one of its
+// own, since a DrumKit's routed-note-list/direct-inline content was rendered
+// straight into renderBankDetail() itself rather than through a separate
+// window (see renderDrumKitDetail(), factored out of that switch case so
+// kiosk mode can reuse the exact same content). No `prog` field either: a
+// *.drumkit.json file already is one whole DrumKit (unlike HwBank/PatchBank/
+// SwBank, which hold several patches keyed by prog within one file), so
+// resolving the file alone (findDrumKitIndexByFile()) fully identifies the
+// kiosk target.
+struct KioskDrumKitWindow {
+    bool open = true;
+    size_t kitIndex = 0; // index into ws.drumKits()
+};
+
 struct AppContext {
     fpe::PatchWorkspace workspace;
     AppState state = AppState::MainMenu;
@@ -562,15 +590,27 @@ struct AppContext {
     BankCategory selectedCategory = BankCategory::Layered;
     size_t selectedIndex = 0;
 
-    // Kiosk mode (D-026): launched with a profile + hwbank file + prog CLI
-    // triple instead of just a profile path. When true, the main loop skips
-    // MainMenu/Outline/BankDetail/dialogs entirely and renders only
-    // kioskEditor, full-viewport - see main()'s render loop. Closing it
-    // (its own title-bar X) exits the whole process immediately, matching
-    // "パッチ編集を終了したらそのまま終了する" - there is no menu to fall
-    // back to in this mode.
+    // Kiosk mode (D-026, kind argument added D-039, Performance/Drum kinds
+    // added D-040): launched with a profile + kind + bank file + prog CLI
+    // quadruple instead of just a profile path. When true, the main loop
+    // skips MainMenu/Outline/BankDetail/dialogs entirely and renders only
+    // the one editor matching kioskKind, full-viewport - see main()'s render
+    // loop. Closing it (its own title-bar X) exits the whole process
+    // immediately, matching "パッチ編集を終了したらそのまま終了する" -
+    // there is no menu to fall back to in this mode.
+    // kioskKind selects which of the four dedicated editor slots below is
+    // actually live (only one is ever populated per run); restricted to
+    // Device/Layered/Performance/Drum (the kinds a CLI caller can currently
+    // name and get an actual screen for - see parseKioskKind()/
+    // kioskKindImplemented()) even though BankCategory itself also has
+    // Pcm/SampleZone, reserved as kind keywords but not wired to a screen
+    // yet since those patch types have no edit form at all (D-040).
     bool kioskMode = false;
+    BankCategory kioskKind = BankCategory::Device;
     PatchEditorWindow kioskEditor;
+    LayeredPatchEditorWindow kioskLayeredEditor;
+    PerformancePatchEditorWindow kioskPerformanceEditor;
+    KioskDrumKitWindow kioskDrumEditor;
 };
 
 void tryLoadProfile(AppContext& ctx, const fs::path& file) {
@@ -595,6 +635,49 @@ std::optional<size_t> findDeviceBankIndexByFile(fpe::PatchWorkspace& ws, const f
     std::error_code ec;
     for (size_t i = 0; i < ws.deviceBanks().size(); ++i) {
         if (fs::equivalent(ws.deviceBanks()[i].sourceFile, hwbankFile, ec) && !ec) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+// Same idea as findDeviceBankIndexByFile(), but for a layered patch bank
+// (*.patchbank.json) - added for kiosk mode's "layered" kind (D-039), which
+// needs to locate the PatchBank a CLI-given file path refers to the same way
+// the pre-existing "device" kind locates a HwBank.
+std::optional<size_t> findLayeredBankIndexByFile(fpe::PatchWorkspace& ws, const fs::path& patchbankFile) {
+    std::error_code ec;
+    for (size_t i = 0; i < ws.layeredPatchBanks().size(); ++i) {
+        if (fs::equivalent(ws.layeredPatchBanks()[i].sourceFile, patchbankFile, ec) && !ec) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+// Same idea again, for a performance-patch bank (*.swbank.json) - kiosk
+// mode's "performance" kind (D-040).
+std::optional<size_t> findPerformanceBankIndexByFile(fpe::PatchWorkspace& ws, const fs::path& swbankFile) {
+    std::error_code ec;
+    for (size_t i = 0; i < ws.performanceBanks().size(); ++i) {
+        if (fs::equivalent(ws.performanceBanks()[i].sourceFile, swbankFile, ec) && !ec) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+// Same idea again, for a drum kit (*.drumkit.json) - kiosk mode's "drum"
+// kind (D-040). Unlike the three above, the file alone already identifies
+// one whole DrumKit (there is no further "patch within this bank" step - see
+// KioskDrumKitWindow's comment), so this is the only one of the four the
+// caller doesn't also need a findByProg()-style lookup for; main() still
+// requires the CLI's `prog` argument to match DrumKit::prog as a sanity
+// check against a stale/mismatched caller (docs/DESIGN.md D-040).
+std::optional<size_t> findDrumKitIndexByFile(fpe::PatchWorkspace& ws, const fs::path& drumkitFile) {
+    std::error_code ec;
+    for (size_t i = 0; i < ws.drumKits().size(); ++i) {
+        if (fs::equivalent(ws.drumKits()[i].sourceFile, drumkitFile, ec) && !ec) {
             return i;
         }
     }
@@ -3720,6 +3803,136 @@ void renderOutline(AppContext& ctx) {
     ImGui::EndChild();
 }
 
+// The routed-kit note list, or the direct-kit inline editor, for
+// ws.drumKits()[kitIndex]. Factored out of renderBankDetail()'s
+// BankCategory::Drum case (D-040) so kiosk mode's "drum" kind can render the
+// exact same content as its own full-viewport top-level screen - the same
+// way renderPatchEditor()/renderLayeredPatchEditor()/
+// renderPerformancePatchEditor() are already shared between BankDetail and
+// kiosk mode. Unlike those three, this was never behind its own modeless
+// editor-window struct (see KioskDrumKitWindow's comment), so there was
+// nothing to reuse until now.
+void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
+    fpe::PatchWorkspace& ws = ctx.workspace;
+    auto& kits = ws.drumKits();
+    if (kitIndex >= kits.size()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "このドラムキットは既に存在しません。");
+        return;
+    }
+    auto& kit = kits[kitIndex];
+    const char* typeStr = (kit.type == fpe::DrumKitType::Routed) ? "routed" : "direct";
+    ImGui::Text("ドラムキット [prog %d] %s (%s)", kit.prog, kit.name.c_str(), typeStr);
+    ImGui::Separator();
+
+    if (kit.type == fpe::DrumKitType::Routed) {
+        // ドラムノート選択画面 (D-038): 0-127の全MIDIノートを表示し、
+        // 未割当のノートも一覧できるようにする(依頼通り)。割当済みの
+        // 行はクリックでドラムノート編集画面(モードレス、
+        // openDrumNoteEditor())を開き、末尾に複製・削除ボタンを
+        // 用意する。未割当の行は「作成」ボタンでデフォルト値の
+        // DrumNoteを追加した上で編集画面を開く。複製・削除は
+        // バンク作成(D-014)と同様、即座にws.save()する構造的な
+        // 変更として扱う(登録ボタンでの明示保存が必要な、
+        // 各ノートのフィールド編集そのものとは区別する)。
+        ImGui::TextUnformatted("ドラムノート一覧 (0-127、未割当も表示)");
+        ImGui::Separator();
+        for (int n = 0; n < 128; ++n) {
+            ImGui::PushID(n);
+            fpe::DrumNote* note = kit.findNote(static_cast<uint8_t>(n));
+            if (note) {
+                const std::string label = "note " + std::to_string(n) + " (" + midiNoteName(n) + "): " +
+                                           note->name + "  -> play " + midiNoteName(note->play_note) + " (" +
+                                           std::to_string(note->play_note) + ")";
+                if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(560, 0))) {
+                    openDrumNoteEditor(ctx, kitIndex, static_cast<uint8_t>(n));
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("複製")) {
+                    const int toNote = nextFreeDrumNote(kit, static_cast<uint8_t>(n));
+                    if (toNote >= 0) {
+                        fpe::DrumNote copy = *note;
+                        copy.note = static_cast<uint8_t>(toNote);
+                        try {
+                            ws.upsertDrumNote(kit, copy);
+                            ws.save();
+                        } catch (const std::exception& e) {
+                            ctx.errorMessage = std::string("複製に失敗しました:\n") + e.what();
+                        }
+                    } else {
+                        ctx.errorMessage = "複製に失敗しました:\n空いているノート番号がありません。";
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("削除")) {
+                    try {
+                        ws.deleteDrumNote(kit, static_cast<uint8_t>(n));
+                        ws.save();
+                    } catch (const std::exception& e) {
+                        ctx.errorMessage = std::string("削除に失敗しました:\n") + e.what();
+                    }
+                }
+            } else {
+                ImGui::TextDisabled("note %d (%s): (未割当)", n, midiNoteName(n).c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("作成")) {
+                    fpe::DrumNote fresh;
+                    fresh.note = static_cast<uint8_t>(n);
+                    fresh.play_note = static_cast<uint8_t>(n);
+                    try {
+                        ws.upsertDrumNote(kit, fresh);
+                        ws.save();
+                        openDrumNoteEditor(ctx, kitIndex, static_cast<uint8_t>(n));
+                    } catch (const std::exception& e) {
+                        ctx.errorMessage = std::string("作成に失敗しました:\n") + e.what();
+                    }
+                }
+            }
+            ImGui::PopID();
+        }
+    } else {
+        // "direct"キットは個別ノートのリストを持たず(DrumKit.h
+        // effectiveNotes()参照)、note_min-note_max全体に単一の
+        // ソースパッチをpassthroughで割り当てる形なので、
+        // ドラムノート選択画面/編集画面の階層は適用されない
+        // (未割当・複製・削除の概念自体が存在しない)。この場に
+        // インラインでソースパッチピッカー+音域+登録ボタンのみを
+        // 用意する(D-038、スコープ限定 - sw_bank/sw_prog・
+        // fine_tune/pan/gate_timeは今回未対応、docs/STATUS.md参照)。
+        {
+            const float buttonW = 90.0f;
+            const float avail = ImGui::GetContentRegionAvail().x;
+            if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
+            if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+                try {
+                    ws.save();
+                } catch (const std::exception& e) {
+                    ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
+                }
+            }
+        }
+
+        const std::string label =
+            "ソースパッチ: " + describeDrumSourcePatch(ws, kit.voice_patch_type, kit.patch_bank, kit.patch_prog);
+        if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(640, 0))) {
+            openDrumSourcePatchPickerDirect(ctx, kitIndex);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(レイヤード/デバイス/PCM波形/サンプルゾーン)を選択");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!drumSourcePatchHasEditor(kit.voice_patch_type));
+        if (ImGui::Button("編集##srcedit")) {
+            openDrumSourcePatchEditor(ctx, kit.voice_patch_type, kit.patch_bank, kit.patch_prog);
+        }
+        ImGui::EndDisabled();
+
+        int noteRange[2] = {kit.note_min, kit.note_max};
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::InputInt2("音域(lo-hi)", noteRange)) {
+            kit.note_min = static_cast<uint8_t>(std::clamp(noteRange[0], 0, 127));
+            kit.note_max = static_cast<uint8_t>(std::clamp(noteRange[1], 0, 127));
+        }
+    }
+}
+
 // The patch/note list for the single bank or drum kit selected in
 // renderOutline(). Deliberately shallow (name/prog/basic refs only, plus
 // ToneLayer for layered patches since that's the bank's own on-disk shape) -
@@ -3807,120 +4020,7 @@ void renderBankDetail(AppContext& ctx) {
             break;
         }
         case BankCategory::Drum: {
-            auto& kits = ws.drumKits();
-            if (ctx.selectedIndex >= kits.size()) break;
-            auto& kit = kits[ctx.selectedIndex];
-            const char* typeStr = (kit.type == fpe::DrumKitType::Routed) ? "routed" : "direct";
-            ImGui::Text("ドラムキット [prog %d] %s (%s)", kit.prog, kit.name.c_str(), typeStr);
-            ImGui::Separator();
-
-            if (kit.type == fpe::DrumKitType::Routed) {
-                // ドラムノート選択画面 (D-038): 0-127の全MIDIノートを表示し、
-                // 未割当のノートも一覧できるようにする(依頼通り)。割当済みの
-                // 行はクリックでドラムノート編集画面(モードレス、
-                // openDrumNoteEditor())を開き、末尾に複製・削除ボタンを
-                // 用意する。未割当の行は「作成」ボタンでデフォルト値の
-                // DrumNoteを追加した上で編集画面を開く。複製・削除は
-                // バンク作成(D-014)と同様、即座にws.save()する構造的な
-                // 変更として扱う(登録ボタンでの明示保存が必要な、
-                // 各ノートのフィールド編集そのものとは区別する)。
-                ImGui::TextUnformatted("ドラムノート一覧 (0-127、未割当も表示)");
-                ImGui::Separator();
-                for (int n = 0; n < 128; ++n) {
-                    ImGui::PushID(n);
-                    fpe::DrumNote* note = kit.findNote(static_cast<uint8_t>(n));
-                    if (note) {
-                        const std::string label = "note " + std::to_string(n) + " (" + midiNoteName(n) + "): " +
-                                                   note->name + "  -> play " + midiNoteName(note->play_note) + " (" +
-                                                   std::to_string(note->play_note) + ")";
-                        if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(560, 0))) {
-                            openDrumNoteEditor(ctx, ctx.selectedIndex, static_cast<uint8_t>(n));
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("複製")) {
-                            const int toNote = nextFreeDrumNote(kit, static_cast<uint8_t>(n));
-                            if (toNote >= 0) {
-                                fpe::DrumNote copy = *note;
-                                copy.note = static_cast<uint8_t>(toNote);
-                                try {
-                                    ws.upsertDrumNote(kit, copy);
-                                    ws.save();
-                                } catch (const std::exception& e) {
-                                    ctx.errorMessage = std::string("複製に失敗しました:\n") + e.what();
-                                }
-                            } else {
-                                ctx.errorMessage = "複製に失敗しました:\n空いているノート番号がありません。";
-                            }
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("削除")) {
-                            try {
-                                ws.deleteDrumNote(kit, static_cast<uint8_t>(n));
-                                ws.save();
-                            } catch (const std::exception& e) {
-                                ctx.errorMessage = std::string("削除に失敗しました:\n") + e.what();
-                            }
-                        }
-                    } else {
-                        ImGui::TextDisabled("note %d (%s): (未割当)", n, midiNoteName(n).c_str());
-                        ImGui::SameLine();
-                        if (ImGui::SmallButton("作成")) {
-                            fpe::DrumNote fresh;
-                            fresh.note = static_cast<uint8_t>(n);
-                            fresh.play_note = static_cast<uint8_t>(n);
-                            try {
-                                ws.upsertDrumNote(kit, fresh);
-                                ws.save();
-                                openDrumNoteEditor(ctx, ctx.selectedIndex, static_cast<uint8_t>(n));
-                            } catch (const std::exception& e) {
-                                ctx.errorMessage = std::string("作成に失敗しました:\n") + e.what();
-                            }
-                        }
-                    }
-                    ImGui::PopID();
-                }
-            } else {
-                // "direct"キットは個別ノートのリストを持たず(DrumKit.h
-                // effectiveNotes()参照)、note_min-note_max全体に単一の
-                // ソースパッチをpassthroughで割り当てる形なので、
-                // ドラムノート選択画面/編集画面の階層は適用されない
-                // (未割当・複製・削除の概念自体が存在しない)。この場に
-                // インラインでソースパッチピッカー+音域+登録ボタンのみを
-                // 用意する(D-038、スコープ限定 - sw_bank/sw_prog・
-                // fine_tune/pan/gate_timeは今回未対応、docs/STATUS.md参照)。
-                {
-                    const float buttonW = 90.0f;
-                    const float avail = ImGui::GetContentRegionAvail().x;
-                    if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
-                    if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
-                        try {
-                            ws.save();
-                        } catch (const std::exception& e) {
-                            ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
-                        }
-                    }
-                }
-
-                const std::string label =
-                    "ソースパッチ: " + describeDrumSourcePatch(ws, kit.voice_patch_type, kit.patch_bank, kit.patch_prog);
-                if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(640, 0))) {
-                    openDrumSourcePatchPickerDirect(ctx, ctx.selectedIndex);
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックして発音元パッチ(レイヤード/デバイス/PCM波形/サンプルゾーン)を選択");
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!drumSourcePatchHasEditor(kit.voice_patch_type));
-                if (ImGui::Button("編集##srcedit")) {
-                    openDrumSourcePatchEditor(ctx, kit.voice_patch_type, kit.patch_bank, kit.patch_prog);
-                }
-                ImGui::EndDisabled();
-
-                int noteRange[2] = {kit.note_min, kit.note_max};
-                ImGui::SetNextItemWidth(160);
-                if (ImGui::InputInt2("音域(lo-hi)", noteRange)) {
-                    kit.note_min = static_cast<uint8_t>(std::clamp(noteRange[0], 0, 127));
-                    kit.note_max = static_cast<uint8_t>(std::clamp(noteRange[1], 0, 127));
-                }
-            }
+            renderDrumKitDetail(ctx, ctx.selectedIndex);
             break;
         }
     }
@@ -3974,31 +4074,97 @@ void showFatalErrorBox(const std::string& message) {
 #endif
 }
 
+// Kiosk mode's second CLI argument (D-039, extended D-040) names which
+// patch-kind editor to open. Kept as a stable lowercase English token
+// independent of BankCategory's enumerator spelling, so FITOM_X's launch
+// code has a fixed contract to target regardless of internal renames on
+// this side. All six BankCategory values have a reserved token here, even
+// though two of them ("pcmbank"/"samplezonebank") aren't wired to an actual
+// editor screen yet - see kioskKindImplemented() - so FITOM_X's caller code
+// can already standardize on the full keyword set instead of inventing its
+// own placeholder strings for the two not-yet-supported kinds (D-040).
+std::optional<BankCategory> parseKioskKind(const std::string& s) {
+    if (s == "device") return BankCategory::Device;
+    if (s == "layered") return BankCategory::Layered;
+    if (s == "performance") return BankCategory::Performance;
+    if (s == "drum") return BankCategory::Drum;
+    if (s == "pcmbank") return BankCategory::Pcm;
+    if (s == "samplezonebank") return BankCategory::SampleZone;
+    return std::nullopt;
+}
+
+// Whether parseKioskKind() having recognized the token also means kiosk mode
+// can actually open something for it. "pcmbank"/"samplezonebank" parse
+// successfully (they're reserved keywords, D-040) but have no editor screen
+// to open at all in this codebase yet - fpe::PcmBank/fpe::SampleZone have no
+// per-patch edit form anywhere (see PcmBank.h/SampleZone.h's own comments
+// and docs/STATUS.md's known-gaps list), unlike Device/Layered/Performance/
+// Drum which all do.
+bool kioskKindImplemented(BankCategory kind) {
+    switch (kind) {
+        case BankCategory::Device:
+        case BankCategory::Layered:
+        case BankCategory::Performance:
+        case BankCategory::Drum:
+            return true;
+        case BankCategory::Pcm:
+        case BankCategory::SampleZone:
+            return false;
+    }
+    return false;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    // Kiosk mode (D-026): `fitom_patch_editor_gui.exe <profile.json>
-    // <hwbank-file> <prog>` (argc==4) launches directly into a single,
-    // full-viewport patch editor for that bank+prog and exits the whole
-    // process as soon as it's closed - no menu, no outline. Meant to be
-    // spawned by a running FITOM_X instance as a focused "edit this one
-    // patch" child process. The plain `<profile.json>` form (argc==2,
-    // D-010) is unchanged and still opens the normal windowed UI at
-    // Outline. Resolved and validated before glfwInit()/any window
-    // creation, so a bad kiosk invocation fails fast - via
-    // showFatalErrorBox() (D-029), not just stderr + a nonzero exit code,
-    // since FITOM_X never waits for or observes this process's exit code.
+    // Kiosk mode (D-026; argument format extended to carry a kind in D-039,
+    // Performance/Drum kinds added D-040):
+    // `fitom_patch_editor_gui.exe <profile.json> <kind> <bank-file> <prog>`
+    // (argc==5) launches directly into a single, full-viewport editor for
+    // that patch and exits the whole process as soon as it's closed - no
+    // menu, no outline. `kind` is one of "device" (bank-file =
+    // *.hwbank.json, prog = HW prog), "layered" (bank-file =
+    // *.patchbank.json, prog = layered Patch prog), "performance" (bank-file
+    // = *.swbank.json, prog = SwPatch prog), or "drum" (bank-file =
+    // *.drumkit.json, prog = DrumKit::prog - a *.drumkit.json file already
+    // is one whole kit, so this is a sanity check against the profile's own
+    // drum_banks[].prog registration rather than a lookup key) - see
+    // parseKioskKind()/kioskKindImplemented(). "pcmbank"/"samplezonebank"
+    // are recognized as reserved kind keywords but not yet implemented
+    // (D-040) since PcmBank/SampleZone have no edit form of their own at
+    // all yet. Meant to be spawned by a running FITOM_X instance as a
+    // focused "edit this one patch" child process. The plain
+    // `<profile.json>` form (argc==2, D-010) is unchanged and still opens
+    // the normal windowed UI at Outline. Resolved and validated before
+    // glfwInit()/any window creation, so a bad kiosk invocation fails fast -
+    // via showFatalErrorBox() (D-029), not just stderr + a nonzero exit
+    // code, since FITOM_X never waits for or observes this process's exit
+    // code.
     fpe::PatchWorkspace kioskWorkspace;
+    BankCategory kioskKind = BankCategory::Device;
     std::optional<size_t> kioskBankIndex;
     int kioskProg = 0;
-    const bool kioskRequested = (argc == 4);
+    const bool kioskRequested = (argc == 5);
     if (kioskRequested) {
         const fs::path profilePath = argv[1];
-        const fs::path hwbankFile = argv[2];
+        const std::optional<BankCategory> parsedKind = parseKioskKind(argv[2]);
+        const fs::path bankFile = argv[3];
+        if (!parsedKind) {
+            showFatalErrorBox(std::string("キオスクモード: 不明な種別 '") + argv[2] +
+                               "' です。'device'/'layered'/'performance'/'drum'/'pcmbank'/'samplezonebank' の"
+                               "いずれかを指定してください。");
+            return 1;
+        }
+        if (!kioskKindImplemented(*parsedKind)) {
+            showFatalErrorBox(std::string("キオスクモード: 種別 '") + argv[2] +
+                               "' はキーワードとして予約されていますが、まだ編集画面を実装していません。");
+            return 1;
+        }
+        kioskKind = *parsedKind;
         try {
-            kioskProg = std::stoi(argv[3]);
+            kioskProg = std::stoi(argv[4]);
         } catch (const std::exception&) {
-            showFatalErrorBox(std::string("キオスクモード: prog番号 '") + argv[3] + "' を解釈できません。");
+            showFatalErrorBox(std::string("キオスクモード: prog番号 '") + argv[4] + "' を解釈できません。");
             return 1;
         }
         try {
@@ -4008,13 +4174,50 @@ int main(int argc, char** argv) {
                                "\n\n" + e.what());
             return 1;
         }
-        kioskBankIndex = findDeviceBankIndexByFile(kioskWorkspace, hwbankFile);
-        if (!kioskBankIndex || !kioskWorkspace.deviceBanks()[*kioskBankIndex].findByProg(kioskProg)) {
-            showFatalErrorBox("キオスクモード: 指定されたhwbankファイル/progに一致するデバイスパッチが"
-                               "プロファイル内に見つかりません:\n" +
-                               hwbankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
-                               profilePath.string());
-            return 1;
+        switch (kioskKind) {
+            case BankCategory::Device:
+                kioskBankIndex = findDeviceBankIndexByFile(kioskWorkspace, bankFile);
+                if (!kioskBankIndex || !kioskWorkspace.deviceBanks()[*kioskBankIndex].findByProg(kioskProg)) {
+                    showFatalErrorBox("キオスクモード: 指定されたhwbankファイル/progに一致するデバイスパッチが"
+                                       "プロファイル内に見つかりません:\n" +
+                                       bankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
+                                       profilePath.string());
+                    return 1;
+                }
+                break;
+            case BankCategory::Layered:
+                kioskBankIndex = findLayeredBankIndexByFile(kioskWorkspace, bankFile);
+                if (!kioskBankIndex || !kioskWorkspace.layeredPatchBanks()[*kioskBankIndex].findByProg(kioskProg)) {
+                    showFatalErrorBox("キオスクモード: 指定されたpatchbankファイル/progに一致するレイヤードパッチが"
+                                       "プロファイル内に見つかりません:\n" +
+                                       bankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
+                                       profilePath.string());
+                    return 1;
+                }
+                break;
+            case BankCategory::Performance:
+                kioskBankIndex = findPerformanceBankIndexByFile(kioskWorkspace, bankFile);
+                if (!kioskBankIndex || !kioskWorkspace.performanceBanks()[*kioskBankIndex].findByProg(kioskProg)) {
+                    showFatalErrorBox("キオスクモード: 指定されたswbankファイル/progに一致するパフォーマンスパッチが"
+                                       "プロファイル内に見つかりません:\n" +
+                                       bankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
+                                       profilePath.string());
+                    return 1;
+                }
+                break;
+            case BankCategory::Drum:
+                kioskBankIndex = findDrumKitIndexByFile(kioskWorkspace, bankFile);
+                if (!kioskBankIndex || kioskWorkspace.drumKits()[*kioskBankIndex].prog != kioskProg) {
+                    showFatalErrorBox("キオスクモード: 指定されたdrumkitファイル/progに一致するドラムキットが"
+                                       "プロファイル内に見つかりません:\n" +
+                                       bankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
+                                       profilePath.string());
+                    return 1;
+                }
+                break;
+            case BankCategory::Pcm:
+            case BankCategory::SampleZone:
+                break; // unreachable - kioskKindImplemented() already rejected these above
         }
     }
 
@@ -4074,10 +4277,32 @@ int main(int argc, char** argv) {
 
     if (kioskRequested) {
         ctx.kioskMode = true;
+        ctx.kioskKind = kioskKind;
         ctx.workspace = std::move(kioskWorkspace);
-        ctx.kioskEditor.bankIndex = *kioskBankIndex;
-        ctx.kioskEditor.prog = kioskProg;
-        ctx.kioskEditor.open = true;
+        switch (kioskKind) {
+            case BankCategory::Device:
+                ctx.kioskEditor.bankIndex = *kioskBankIndex;
+                ctx.kioskEditor.prog = kioskProg;
+                ctx.kioskEditor.open = true;
+                break;
+            case BankCategory::Layered:
+                ctx.kioskLayeredEditor.bankIndex = *kioskBankIndex;
+                ctx.kioskLayeredEditor.prog = kioskProg;
+                ctx.kioskLayeredEditor.open = true;
+                break;
+            case BankCategory::Performance:
+                ctx.kioskPerformanceEditor.bankIndex = *kioskBankIndex;
+                ctx.kioskPerformanceEditor.prog = kioskProg;
+                ctx.kioskPerformanceEditor.open = true;
+                break;
+            case BankCategory::Drum:
+                ctx.kioskDrumEditor.kitIndex = *kioskBankIndex;
+                ctx.kioskDrumEditor.open = true;
+                break;
+            case BankCategory::Pcm:
+            case BankCategory::SampleZone:
+                break; // unreachable - kioskKindImplemented() already rejected these above
+        }
     } else if (argc > 1) {
         // argv[1], if given, is the path to the profile that should already
         // be "open" on startup (see file-level comment above). Loading
@@ -4099,29 +4324,75 @@ int main(int argc, char** argv) {
 
         if (ctx.kioskMode) {
             // No outer "FITOM_X Patch Editor" menu/outline frame at all in
-            // this mode (D-026) - just the one patch editor, forced to
+            // this mode (D-026) - just the one editor (Device/Layered/
+            // Performance/Drum, per ctx.kioskKind - D-039/D-040), forced to
             // fill the whole viewport every frame (so it reads as "docked
             // full-size" rather than a movable/resizable floating window,
             // per the project owner's fallback if a truly chrome-less
             // window turned out to be more complex than it's worth). It
-            // keeps its own title bar/close-X (unlike the borderless
-            // ideal) specifically so there's still an obvious, discoverable
-            // way to finish editing - closing it exits the whole process.
+            // keeps its own title bar/close-X (unlike the borderless ideal)
+            // specifically so there's still an obvious, discoverable way to
+            // finish editing - closing it exits the whole process.
+            bool* kioskOpen = &ctx.kioskEditor.open; // default covers unreachable Pcm/SampleZone below
+            switch (ctx.kioskKind) {
+                case BankCategory::Device:      kioskOpen = &ctx.kioskEditor.open; break;
+                case BankCategory::Layered:     kioskOpen = &ctx.kioskLayeredEditor.open; break;
+                case BankCategory::Performance: kioskOpen = &ctx.kioskPerformanceEditor.open; break;
+                case BankCategory::Drum:        kioskOpen = &ctx.kioskDrumEditor.open; break;
+                case BankCategory::Pcm:
+                case BankCategory::SampleZone:  break; // unreachable - kioskKindImplemented() rejects these at startup
+            }
             ImGui::SetNextWindowPos(ImVec2(0, 0));
             ImGui::SetNextWindowSize(io.DisplaySize);
-            ImGui::Begin("パッチ編集", &ctx.kioskEditor.open,
+            ImGui::Begin("パッチ編集", kioskOpen,
                          ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
-            renderPatchEditor(ctx, ctx.kioskEditor);
+            switch (ctx.kioskKind) {
+                case BankCategory::Device:      renderPatchEditor(ctx, ctx.kioskEditor); break;
+                case BankCategory::Layered:     renderLayeredPatchEditor(ctx, ctx.kioskLayeredEditor); break;
+                case BankCategory::Performance: renderPerformancePatchEditor(ctx, ctx.kioskPerformanceEditor); break;
+                case BankCategory::Drum:        renderDrumKitDetail(ctx, ctx.kioskDrumEditor.kitIndex); break;
+                case BankCategory::Pcm:
+                case BankCategory::SampleZone:  break; // unreachable, see above
+            }
+            // Rendered unconditionally regardless of kind, same as the
+            // non-kiosk branch below - each of these popups is a no-op
+            // unless the content above actually opened the one it belongs
+            // to (e.g. the ToneLayer hw_bank picker only exists for the
+            // Layered kind, and the drum-note pickers only for the Drum
+            // kind, but rendering all of them here regardless of kind is
+            // harmless since nothing ever populates the unrelated ones).
             renderSwPatchPicker(ctx); // sw_bank/sw_prog label click, see openSwPatchPicker()
+            renderHwPatchPicker(ctx); // ToneLayer hw_bank/hw_prog label click, see openHwPatchPicker()
+            renderDrumSourcePatchPicker(ctx); // drum-note source-patch label click, see openDrumSourcePatchPicker()
+            renderDrumNoteKeyboardPicker(ctx); // drum-note "キーボードで選択" click, see openDrumNoteKeyboardPicker()
             renderErrorPopup(ctx); // e.g. "登録" save failures - kiosk mode has no menu to show them elsewhere
             ImGui::End();
-            // The kiosk editor's own sw_bank/sw_prog row (above) can now open a
-            // PerformancePatchEditorWindow via its "編集" button - render those
-            // as their own sibling windows (not nested inside "パッチ編集"),
-            // same as the non-kiosk branch below.
+            // Any of the four kinds' content above can have opened nested
+            // modeless editor windows via a "編集"/note-selection click
+            // (Device's own sw_bank row, a Layered patch's ToneLayer/sw_bank
+            // rows, a Drum kit's per-note rows or direct-kit source-patch
+            // row) - render those as their own sibling windows (not nested
+            // inside "パッチ編集"), same as the non-kiosk branch below. Each
+            // already handles its own D-027 close-time SysEx flush
+            // internally where relevant, so nothing extra is needed here
+            // for them.
+            renderPatchEditors(ctx);
+            renderLayeredPatchEditors(ctx);
             renderPerformancePatchEditors(ctx);
-            if (!ctx.kioskEditor.open) {
-                sendFullRegisteredOverride(ctx, ctx.kioskEditor); // D-027, same as the normal editor windows' close handling
+            renderDrumNoteEditors(ctx);
+            if (!*kioskOpen) {
+                // Only the Device kind itself streams live SysEx (D-027) -
+                // Layered/Performance/Drum have no synthesis parameters of
+                // their own to preview at the top level (see
+                // renderLayeredPatchEditor()'s comment; the Drum screen's
+                // note-level preview button doesn't stream differential
+                // SysEx either, see D-038), so there is nothing to flush for
+                // them here; any nested Device editor they opened already
+                // flushed itself via renderPatchEditors() above when it was
+                // closed.
+                if (ctx.kioskKind == BankCategory::Device) {
+                    sendFullRegisteredOverride(ctx, ctx.kioskEditor); // D-027, same as the normal editor windows' close handling
+                }
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
         } else {

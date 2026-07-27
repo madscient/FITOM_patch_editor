@@ -2585,6 +2585,224 @@ PcmBankすべてが`voicePatchType=0(None)`と表示されていたのに対し�
 `ctest`(119項目、全通過)を確認済み。クリック確認は引き続き利用者の
 目視確認待ち。
 
+### D-039: キオスクモードにレイヤードパッチを追加(起動引数に種別を追加、Device専用の制約を解消)
+
+利用者から、FITOM_X本体側のスクリーンショット付きで以下の報告を受けた。
+
+> FITOM_Xから、レイヤードパッチをキオスクモードで開いたのにデバイスパッチ
+> 編集画面が開いている。キオスクモードでも指定されたパッチに対応する
+> 適切な編集画面を開いてほしい。
+
+**原因調査**: このリポジトリだけでなく、`../FITOM_X`(実リポジトリ)側も
+調査した。原因は2箇所にまたがっていた。
+
+1. FITOM_X本体側 `gui/bridge/FITOMBridge.cpp` の`resolveChannelHwPatch()`は、
+   MIDIチャンネルが「通常モード」(CC#0=0、レイヤードパッチ選択)で発音中
+   でも`pm.resolve(bankNo, prog, cfg)`でいったんレイヤードパッチを解決した
+   上で、`resolved.layers[0]`(先頭のToneLayerのみ)のHwPatchが由来する
+   `*.hwbank.json`ファイル名+prog番号だけを呼び出し元へ返す設計になって
+   いた。つまりFITOM_X側で「レイヤードパッチ経由だった」という情報が
+   キオスク起動引数を組み立てる前段階で既に失われていた。
+2. このリポジトリのキオスクモード(D-026)自体は、そのDevice専用の3引数
+   (`<profile> <hwbank-file> <prog>`)を受け取ってDeviceパッチ編集画面を
+   開くだけの、当初からの仕様通りの実装だった(D-037執筆時点で「パフォー
+   マンスパッチを直接キオスク起動する経路が無い」と既知の制約として
+   記録済みだったのと同根)。
+
+利用者の判断で、FITOM_X側(1)は別リポジトリ側のセッションで対応し、この
+リポジトリでは(2)の側 - キオスク起動引数の仕様策定+実装 - を担当する
+ことになった。
+
+**引数仕様の決定**: 既存の3引数(`<profile.json> <hwbank-file> <prog>`、
+D-026)を、種別を挟んだ4引数に変更した。
+
+```
+fitom_patch_editor_gui.exe <profile.json> <kind> <bank-file> <prog>
+```
+
+- `kind`は`"device"`(`bank-file`=`*.hwbank.json`、`prog`=HW prog)または
+  `"layered"`(`bank-file`=`*.patchbank.json`、`prog`=レイヤードPatchの
+  prog)のいずれか。`BankCategory`の列挙子名(`Layered`/`Performance`/
+  `Device`/...)とは別に、小文字の安定した英単語トークンとして独立させた
+  (`parseKioskKind()`) - こちらの内部命名(enum名)が将来変わっても、
+  FITOM_X側が対象にする文字列契約は変わらないようにするため。
+- `Performance`(パフォーマンスパッチ)・`Drum`は今回`kind`に含めていない。
+  パフォーマンスパッチはDevice/Layeredいずれかから常に参照される側で、
+  それ自体が「チャンネルの現在のパッチ」になることが無い
+  (`FITOMBridge::resolveChannelHwPatch()`の解決先にも現れない)ため、
+  FITOM_X側がこの`kind`を指定する場面が無い。ドラムキットも
+  `resolveChannelHwPatch()`自身がリズムチャンネルを明示的に除外している
+  (`midich->isRhythm()`)ため同様。将来FITOM_X側に別の呼び出し経路が
+  でき次第、`kind`に追加すればよい(既存の`BankCategory`分岐パターンで
+  拡張は容易)。
+- 旧3引数形式との後方互換は意図的に持たせていない。FITOM_X側の呼び出し
+  コード(`apps/fitom_gui/main.cpp`の`launchPatchEditorForChannel()`)も
+  この変更に合わせて同時に更新される前提のため(このリポジトリの
+  `CLAUDE.md`「サードパーティ依存」節と同じ「不要な後方互換シムは
+  持たない」方針を、FITOM_Xとの引数契約にも適用した)。
+
+**実装**: D-036で新設済みの`LayeredPatchEditorWindow`/
+`renderLayeredPatchEditor()`をキオスクモードでもそのまま再利用した(新規の
+編集画面は起こしていない)。
+
+- `AppContext`に`kioskKind`(`BankCategory::Device`/`Layered`のいずれかに
+  制限)と、Device用`kioskEditor`とは別枠の`kioskLayeredEditor`
+  (`LayeredPatchEditorWindow`)を追加。1回の起動でどちらか一方だけが
+  実際に使われる。
+- `findDeviceBankIndexByFile()`(D-026)と対になる
+  `findLayeredBankIndexByFile()`を新設し、`ws.layeredPatchBanks()`を
+  `PatchBank::sourceFile`で線形探索する(`fs::equivalent()`比較、同じ
+  「安定キーで探す」方針)。
+- `main()`の起動時引数検証を`kind`で分岐(不明な`kind`文字列は
+  `showFatalErrorBox()`で「'device' または 'layered' を指定してください」
+  と即終了、D-029の流儀を踏襲)。
+- メインループのキオスク分岐も`ctx.kioskKind`で表示する編集画面本体を
+  切り替えるが、そこから開きうる補助ウィンドウ/ピッカー
+  (`renderPatchEditors()`・`renderPerformancePatchEditors()`・
+  `renderSwPatchPicker()`・`renderHwPatchPicker()`)は**種別に関わらず
+  常に全部レンダリングする**ようにした(非キオスクの通常メインループが
+  現在の画面に関わらず全editor/pickerを毎フレーム描画しているのと同じ
+  発想)。Device種別ではLayered側のToneLayer picker等は単に何も無い状態
+  (no-op)になるだけで、種別ごとに分岐を増やすより単純。
+- 「登録」を押さずに閉じた際の全パラメータ再送信(`sendFullRegisteredOverride()`、
+  D-027)は、キオスク画面自身が`Device`の場合のみ呼ぶようにした。
+  `Layered`のキオスク画面自体は(D-036で既に確立済みの判断通り)合成
+  パラメータを持たず試聴・SysEx送信もしないため不要 - そこから開いた
+  ネストしたDevice/Performanceエディタは、それぞれ`renderPatchEditors()`/
+  `renderPerformancePatchEditors()`が閉じた瞬間に自分自身で処理済み
+  (D-027のまま変更無し)。
+
+**実機確認**: ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、
+データモデル層に変更なしのため回帰なし)を確認。非対話的なコマンドライン
+実行で、(1)不明な`kind`("badkind")→「不明な種別」エラー+終了コード1、
+(2)`layered`でprog番号のパース失敗→エラー+終了コード1、(3)`layered`で
+存在しない`patchbank-file`/prog組み合わせ→「レイヤードパッチが見つかり
+ません」エラー+終了コード1、(4)`device`/`layered`ともに正常系の実データ
+(`fixtures/`)で`timeout`経由で数秒間クラッシュせず稼働し続けることを確認
+した。加えて`CLAUDE.md`の方針(クリック操作は利用者の明示的指示が無い限り
+実施しない)に沿って、クリックを伴わない受動的なスクリーンショット1枚を
+`layered`キオスク起動で取得し、Device編集画面ではなく`renderLayeredPatchEditor()`
+の内容(`[layered bank 0 prog 0]`・ToneLayer一覧・パフォーマンス参照)が
+実際に表示されることを目視確認した。
+
+**未完了・引き続きの課題**: FITOM_X本体側(`launchPatchEditorForChannel()`/
+`resolveChannelHwPatch()`)の対応は、利用者が別リポジトリのセッションで
+実施する前提でこのセッションでは着手していない。FITOM_X側が実際にこの
+新しい4引数形式で呼び出すようになるまでは、既存の呼び出しコード
+(3引数のまま)は**動かなくなる**点に注意 - 両リポジトリの変更は対で
+デプロイする必要がある。
+
+### D-040: キオスクモードにパフォーマンスパッチ・ドラムキットを追加、pcmbank/samplezonebankを予約キーワード化
+
+D-039に続けて、利用者から次の依頼を受けた。
+
+> パフォーマンスパッチ、ドラムキットについてもキオスクモードで動作可能と
+> したいです。将来的にはpcmbank, samplezonebankも編集対象とするので、
+> 対応するキーワードを予約しておいてください。
+
+**`kind`をBankCategory全体(6種)に対応させた**: D-039時点では
+`parseKioskKind()`が`"device"`/`"layered"`の2語しか受け付けなかったが、
+ちょうど既存の`BankCategory`列挙型が`Layered`/`Performance`/`Device`/
+`SampleZone`/`Pcm`/`Drum`の6値を持っていたため、これに1:1で対応する6つの
+キーワード(`"device"`/`"layered"`/`"performance"`/`"drum"`/`"pcmbank"`/
+`"samplezonebank"`)全てを`parseKioskKind()`に登録した。ただし
+`"pcmbank"`/`"samplezonebank"`は依頼通り「予約」に留め、実際に編集画面を
+持つのは残り4種だけ - この区別を`kioskKindImplemented(BankCategory)`という
+別関数に分離した。`parseKioskKind()`が`nullopt`を返す(=綴りミス等の
+不明な文字列)場合と、`kioskKindImplemented()`が`false`を返す(=綴りは
+正しいが未実装)場合とで、`main()`のエラーメッセージを打ち分けている
+(前者「不明な種別」、後者「予約されていますが、まだ編集画面を実装して
+いません」) - FITOM_X側が先に`pcmbank`/`samplezonebank`を使い始めても、
+「実装忘れ」と「そもそも綴りが違う」を区別できるようにするため。
+
+**パフォーマンスパッチ(`kind="performance"`)**: D-037で実装済みの
+`PerformancePatchEditorWindow`/`renderPerformancePatchEditor()`をそのまま
+キオスクの最上位画面として再利用した。`findLayeredBankIndexByFile()`
+(D-039)と対になる`findPerformanceBankIndexByFile()`を新設し、
+`ws.performanceBanks()`(*.swbank.json)を`sourceFile`で線形探索する。
+`AppContext`に`kioskPerformanceEditor`を追加。D-037の時点で既に
+「SwPatch自体は合成パラメータを持たないため試聴・SysEx送信を実装しない」
+という判断がされているため、D-039のLayered同様、キオスク終了時の
+`sendFullRegisteredOverride()`は不要(Deviceキオストのみ引き続き必要)。
+
+**ドラムキット(`kind="drum"`)**: 他の3種と異なり、DrumKitは
+「1ファイル=1バンク(複数patch)」ではなく「1ファイル=1キット(1patchその
+もの)」という粒度の違いがある(`DrumKit.h`参照、`*.drumkit.json`1つが
+すでに1つの「パッチ」)。そのため:
+
+- `bank-file`(*.drumkit.json)だけで対象キットが一意に決まる
+  (`findDrumKitIndexByFile()`を新設、他3つのfindXxxIndexByFile()と同じ
+  `fs::equivalent()`探索)。
+- 4番目のCLI引数(他の3種では「バンク内のpatch prog」)は、ドラムキットの
+  場合`DrumKit::prog`(=`profile.json`の`drum_banks[].prog`、そのキットを
+  選択するプログラムチェンジ番号)との一致を確認する**整合性チェック**
+  としてのみ使う(「探すためのキー」ではなく「FITOM_X側とプロファイル
+  側で認識がずれていないかの検証」)。不一致ならDevice/Layered/
+  Performanceと同じ形式のエラーメッセージで即終了する。
+- キオスクの最上位画面は、これまで`renderBankDetail()`の
+  `BankCategory::Drum`ケースにインラインで実装されていた「routed
+  キットのノート一覧(0-127、未割当込み、複製・削除・作成ボタン付き)」
+  「directキットのソースパッチピッカー+音域インライン編集」をそのまま
+  流用したいが、他の3種と違ってこの内容はそもそも独立した関数になって
+  いなかった(モードレスな`XxxEditorWindow`が無く、BankDetailのswitch
+  case本体に直書きされていた)。**このケース本体を`renderDrumKitDetail
+  (AppContext&, size_t kitIndex)`として切り出し**、`renderBankDetail()`
+  側はこれを`ctx.selectedIndex`付きで呼ぶだけにし、キオスク側は
+  `ctx.kioskDrumEditor.kitIndex`付きで同じ関数を呼ぶようにした
+  (renderPatchEditor()/renderLayeredPatchEditor()/
+  renderPerformancePatchEditor()が既にBankDetailとキオスクの両方から
+  呼ばれているのと同じパターンに揃えた形)。
+- キオスク専用の`KioskDrumKitWindow`(`open`+`kitIndex`のみ、`prog`
+  フィールドは持たない - 上記の通りファイル自体が1パッチのため不要)を
+  新設し、`AppContext::kioskDrumEditor`とした。
+- routedキットのノート行から開く個別`DrumNoteEditorWindow`
+  (`openDrumNoteEditor()`)、directキットのソースパッチ「編集」ボタンから
+  開きうる`PatchEditorWindow`/`LayeredPatchEditorWindow`
+  (`openDrumSourcePatchEditor()`)は、いずれも既存のネスト済みモードレス
+  ウィンドウの仕組みにそのまま乗る。キオスクのメインループ分岐に
+  `renderDrumNoteEditors()`と、まだ入れていなかった
+  `renderLayeredPatchEditors()`(複数形、`ctx.openLayeredEditors`用 -
+  D-039時点ではLayeredキオスク自身が`ctx.kioskLayeredEditor`という別枠を
+  使うため入れ忘れていたが、Drum経由でネストして開かれる場合はこちら
+  経由になるため今回追加)、`renderDrumSourcePatchPicker()`/
+  `renderDrumNoteKeyboardPicker()`を追加した。
+
+**キオスクのメインループ分岐を種別網羅の`switch`に整理**: D-039時点では
+Device/Layeredの2値だけだったのでif/elseで足りていたが、4種になった
+ため`switch (ctx.kioskKind)`に書き直した(トップレベル画面の選択、
+`kioskOpen`ポインタの選択、閉じた際の`sendFullRegisteredOverride()`要否
+判定の3箇所)。`BankCategory::Pcm`/`SampleZone`のcaseは`default`ではなく
+明示的に空`break`(到達しないことをコメントで明記 -
+`kioskKindImplemented()`が起動時に弾いているため)にして、将来
+`BankCategory`に値が増えた際にコンパイラの網羅性チェック(`-Wswitch`)が
+効くようにした。
+
+**実機確認**: ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、
+回帰なし)を確認。非対話コマンドラインで、(1)予約キーワード
+(`pcmbank`/`samplezonebank`)が「まだ編集画面を実装していません」の
+専用メッセージ+終了コード1になること、(2)`performance`でprogが
+一致しないケースがエラー+終了コード1になること、(3)`drum`でprogが
+`DrumKit::prog`と一致しないケース、および存在しないファイルを指定した
+ケースがいずれもエラー+終了コード1になること、(4)`performance`・
+`drum`(routedキット`std_kit.drumkit.json`・directキット
+`direct_kit.drumkit.json`の両方)の正常系が`timeout`経由で数秒間
+クラッシュせず稼働することを確認した。さらに`drum`(routedキット)の
+キオスク起動を受動的なスクリーンショット1枚で確認し、
+`renderDrumKitDetail()`の内容(`ドラムキット [prog 0] Standard Kit
+(routed)`、0-127のノート一覧、未割当ノートへの「作成」ボタン)が
+正しく表示されることを目視確認した。
+
+**未完了・引き続きの課題**: D-039と同じく、FITOM_X本体側
+(`launchPatchEditorForChannel()`)がこの拡張された`kind`語彙(特に
+`performance`/`drum`)を実際にいつ・どう使うかは、このセッションでは
+検討していない(現状の`resolveChannelHwPatch()`はDrumチャンネルを
+明示的に除外しており、`performance`単体が「チャンネルの現在のパッチ」に
+なることも無いため、そもそもどんな呼び出し元コードがこれらの`kind`を
+使うのかはFITOM_X側の今後の設計次第)。`pcmbank`/`samplezonebank`は
+キーワードの予約のみで、対応する編集画面(`fpe::PcmBank`/
+`fpe::SampleZone`の per-patch 編集フォーム自体)はデータモデル層・GUI
+とも引き続き未実装(docs/STATUS.mdの既知の未対応課題を参照)。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
