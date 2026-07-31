@@ -95,6 +95,73 @@ void copyPcmBankSidecar(const std::string& relRef, const std::filesystem::path& 
     std::filesystem::copy_file(oldPath, newPath, std::filesystem::copy_options::overwrite_existing, ec);
 }
 
+// --- "banks" / "bank_overrides" merge (D-041) --------------------------
+//
+// profile.schema.json's bank_overrides description: entries are matched
+// against the base by an array-specific identity key; a match replaces,
+// no match appends, and deletion cannot be expressed at all.
+bool sameKey(const HwBankRef& a, const HwBankRef& b) { return a.group == b.group && a.bank == b.bank; }
+bool sameKey(const PatchBankRef& a, const PatchBankRef& b) { return a.bank == b.bank; }
+bool sameKey(const SwBankRef& a, const SwBankRef& b) { return a.bank == b.bank; }
+bool sameKey(const DrumBankRef& a, const DrumBankRef& b) { return a.prog == b.prog; }
+bool sameKey(const SccWaveBankRef& a, const SccWaveBankRef& b) { return a.bank == b.bank; }
+bool sameKey(const PcmBankRef& a, const PcmBankRef& b) { return a.bank == b.bank && a.chip == b.chip; }
+
+template <typename T>
+std::vector<T> mergeByKey(const std::vector<T>& base, const std::vector<T>& overrides) {
+    std::vector<T> result = base;
+    for (const auto& ov : overrides) {
+        auto it = std::find_if(result.begin(), result.end(), [&](const T& b) { return sameKey(b, ov); });
+        if (it != result.end()) {
+            *it = ov;
+        } else {
+            result.push_back(ov);
+        }
+    }
+    return result;
+}
+
+BanksObject mergeBanksObjects(const BanksObject& base, const BanksObject& overrides) {
+    BanksObject out;
+    out.hw_banks = mergeByKey(base.hw_banks, overrides.hw_banks);
+    out.patch_banks = mergeByKey(base.patch_banks, overrides.patch_banks);
+    out.sw_banks = mergeByKey(base.sw_banks, overrides.sw_banks);
+    out.drum_banks = mergeByKey(base.drum_banks, overrides.drum_banks);
+    out.scc_wave_banks = mergeByKey(base.scc_wave_banks, overrides.scc_wave_banks);
+    out.pcm_banks = mergeByKey(base.pcm_banks, overrides.pcm_banks);
+    out.sf2_banks = base.sf2_banks; // never mutated by this editor - see BanksObject's comment
+    return out;
+}
+
+// The save-time inverse of mergeByKey(): everything in `effective` that
+// isn't identical to what `base` already says for the same key becomes an
+// override entry (new key -> append, changed value -> replace, matches
+// mergeByKey()'s own semantics so a round-trip through save+load is
+// idempotent). A base entry that vanished from `effective` (deleted this
+// session) can't be expressed here at all - flagged via `warnings` since it
+// will silently reappear on the next load.
+template <typename T>
+std::vector<T> diffAgainstBase(const std::vector<T>& base, const std::vector<T>& effective, const char* label,
+                                std::vector<std::string>& warnings) {
+    std::vector<T> result;
+    for (const auto& cur : effective) {
+        auto it = std::find_if(base.begin(), base.end(), [&](const T& b) { return sameKey(b, cur); });
+        if (it == base.end() || !(nlohmann::json(*it) == nlohmann::json(cur))) {
+            result.push_back(cur);
+        }
+    }
+    for (const auto& b : base) {
+        bool stillPresent = std::any_of(effective.begin(), effective.end(),
+                                         [&](const T& cur) { return sameKey(cur, b); });
+        if (!stillPresent) {
+            warnings.push_back(std::string(label) +
+                                ": a shared-bankset (banks) entry was removed locally, but bank_overrides "
+                                "cannot express a deletion - it will reappear after the next reload");
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 std::filesystem::path PatchWorkspace::resolve(const std::string& relativeFile) const {
@@ -109,7 +176,69 @@ void PatchWorkspace::load(const std::filesystem::path& profileJsonPath) {
     warnings_.clear();
 
     profile_ = loadJsonFile<Profile>(profileJsonPath);
+
+    // D-041: resolve "banks"/"bank_overrides" (either may be an external
+    // file reference) and merge them into the effective registry that the
+    // rest of this class (loadBanks(), the CRUD methods, findXxx()) reads
+    // and mutates exactly as it did before D-041 existed.
+    resolveBanksSource(profile_.banks);
+    resolveBanksSource(profile_.bank_overrides);
+    BanksObject merged = mergeBanksObjects(profile_.banks.data, profile_.bank_overrides.data);
+    profile_.hw_banks = std::move(merged.hw_banks);
+    profile_.patch_banks = std::move(merged.patch_banks);
+    profile_.sw_banks = std::move(merged.sw_banks);
+    profile_.drum_banks = std::move(merged.drum_banks);
+    profile_.scc_wave_banks = std::move(merged.scc_wave_banks);
+    profile_.pcm_banks = std::move(merged.pcm_banks);
+
     loadBanks();
+}
+
+void PatchWorkspace::resolveBanksSource(BanksSource& src) {
+    if (!src.present || src.externalFile.empty()) return;
+    try {
+        src.data = loadJsonFile<BanksObject>(resolve(src.externalFile));
+    } catch (const std::exception& e) {
+        warnings_.push_back("banks(\"" + src.externalFile + "\"): " + e.what());
+    }
+}
+
+void PatchWorkspace::syncBanksSourceForSave() {
+    if (profile_.banks.externalFile.empty()) {
+        // "banks" was never an external reference (absent, or an inline
+        // object already - pre-D-041 behavior): just mirror the current
+        // effective registry straight back into it. Any (real-world
+        // unseen) inline "bank_overrides" is left exactly as loaded.
+        profile_.banks.present = true;
+        profile_.banks.data.hw_banks = profile_.hw_banks;
+        profile_.banks.data.patch_banks = profile_.patch_banks;
+        profile_.banks.data.sw_banks = profile_.sw_banks;
+        profile_.banks.data.drum_banks = profile_.drum_banks;
+        profile_.banks.data.scc_wave_banks = profile_.scc_wave_banks;
+        profile_.banks.data.pcm_banks = profile_.pcm_banks;
+        return;
+    }
+
+    // "banks" is an external reference (e.g. a shared unified.bankset.json)
+    // - it is NEVER rewritten, so other profiles pointing at the same file
+    // aren't affected by edits made through this one. Diff the effective
+    // registry against the base as loaded; anything new or changed becomes
+    // a bank_overrides entry instead.
+    BanksObject ov;
+    ov.hw_banks = diffAgainstBase(profile_.banks.data.hw_banks, profile_.hw_banks, "hw_banks", warnings_);
+    ov.patch_banks = diffAgainstBase(profile_.banks.data.patch_banks, profile_.patch_banks, "patch_banks", warnings_);
+    ov.sw_banks = diffAgainstBase(profile_.banks.data.sw_banks, profile_.sw_banks, "sw_banks", warnings_);
+    ov.drum_banks = diffAgainstBase(profile_.banks.data.drum_banks, profile_.drum_banks, "drum_banks", warnings_);
+    ov.scc_wave_banks =
+        diffAgainstBase(profile_.banks.data.scc_wave_banks, profile_.scc_wave_banks, "scc_wave_banks", warnings_);
+    ov.pcm_banks = diffAgainstBase(profile_.banks.data.pcm_banks, profile_.pcm_banks, "pcm_banks", warnings_);
+
+    profile_.bank_overrides.data = std::move(ov);
+    // Keep a "bank_overrides": "<file>" reference even if the diff came out
+    // empty (don't silently drop a reference the user/FITOM_X set up); for
+    // a freshly-created inline bank_overrides, only write it if there's
+    // actually something to say.
+    profile_.bank_overrides.present = !profile_.bank_overrides.externalFile.empty() || !profile_.bank_overrides.data.empty();
 }
 
 void PatchWorkspace::loadBanks() {
@@ -226,7 +355,15 @@ void PatchWorkspace::save() {
     if (profilePath_.empty()) {
         throw JsonError("PatchWorkspace::save() called with no path set - use saveAs() first");
     }
+    syncBanksSourceForSave();
     saveJsonFile(profilePath_, profile_);
+    // "banks" is deliberately never written back here (see
+    // syncBanksSourceForSave()) even when it's an external reference; only
+    // "bank_overrides" gets a physical file of its own, and only if it was
+    // itself an external reference to begin with.
+    if (!profile_.bank_overrides.externalFile.empty()) {
+        saveJsonFile(resolve(profile_.bank_overrides.externalFile), profile_.bank_overrides.data);
+    }
     for (auto& b : patchBanks_) saveJsonFile(b.sourceFile, b);
     for (auto& b : swBanks_) saveJsonFile(b.sourceFile, b);
     for (auto& b : hwBanks_) saveJsonFile(b.sourceFile, b);

@@ -1900,3 +1900,57 @@
   加えて`performance`/`drum`の`kind`をどう・いつ使うか(呼び出し元の
   設計)を検討してもらう。両リポジトリの変更が揃った時点で、利用者に
   FITOM_X実機からの一連の動作を確認してもらう。
+
+### 2026-08-01 (同マシン、profile.jsonの"banks"外部ファイル参照+"bank_overrides"に対応、D-041)
+- やったこと: 利用者から、キオスクモードで`../FITOM_staging`の
+  `emu_opl.profile.json`を`drum`種別で開くと「指定されたdrumkitファイル/
+  progに一致するドラムキットがプロファイル内に見つかりません」になる、
+  という実機バグ報告(スクリーンショット付き)を受けて調査した。原因は
+  FITOM_X側が2026-07-29に`"banks"`を外部ファイル参照(複数プロファイルで
+  共有する`unified.bankset.json`)+`"bank_overrides"`(プロファイル固有の
+  差分)という新方式に変更していたのに、このリポジトリの`Profile`が
+  まだ旧方式(`"banks"`は常にインラインオブジェクト)しか読めなかった
+  こと。詳細な調査経緯・設計判断は`docs/DESIGN.md` D-041参照。
+  利用者にAskUserQuestionで方針を確認し、読み込み・保存の両方に対応する
+  ことになった。`fpe::BanksObject`/`fpe::BanksSource`を新設し、
+  `Profile::from_json`/`to_json`はJSON⇔構造体変換のみ(`"banks"`/
+  `"bank_overrides"`をそれぞれ文字列参照か否かの形で保持するだけ)に
+  とどめ、実際のファイルI/O・マージ・保存時の差分再構成は
+  `PatchWorkspace::resolveBanksSource()`/`syncBanksSourceForSave()`
+  (新設)に担わせた。特に保存側は、`"banks"`が外部参照だった場合に
+  それを書き換えてしまうと共有バンクセットがプロファイルごとに
+  フォークしてしまうため、**`"banks"`は絶対に書き戻さず**、実効
+  レジストリとロード時点の`"banks"`の差分だけを`"bank_overrides"`に
+  書く設計にした。既存のバンクCRUD(新規バンク作成等)は無改造のまま
+  (`Profile::hw_banks`等のフラットなvectorを従来通り直接読み書き)。
+  副作用として、上記の読み込み対応だけでは実機のエラーが直らず、
+  `findDrumKitIndexByFile()`(D-040)の別バグ(ファイルパスのみで
+  一意特定できるという前提が、同じ`*.drumkit.json`が`unified.bankset.json`
+  では`prog 13`、`bank_overrides`では`prog 0`という2つのprogに同時に
+  登録されるケースで崩れる)も発見・修正した(ファイル+progの両方一致で
+  検索するよう変更)。
+  ビルド(`cmake --build build/vs2026`)・`ctest`(137項目、既存分は回帰
+  なし、新規`fixtures/shared.bankset.json`+`fixtures/profile_shared.json`+
+  `testSharedBankset()`で外部`banks`参照+インライン`bank_overrides`の
+  マージ・CRUDでの新規追加・保存(ベースファイル不変・`"banks"`文字列
+  不変・`"bank_overrides"`に差分のみ反映)・再読み込みの往復を確認)を
+  確認。実データでは、報告された手順(`emu_opl.profile.json`を`drum`
+  `opl_builtin_rhythm.drumkit.json` `prog 0`でキオスク起動)でエラーが
+  解消し、`ドラムキット [prog 0] OPL Built-in Rhythm (GM2 mapped)
+  (routed)`が正しく表示されることをスクリーンショットで確認した。同様に
+  `device`(`std_opl2.hwbank.json` prog 0)・`layered`
+  (`gm_layered_opl2.patchbank.json` prog 0)・`performance`
+  (`performance_presets.swbank.json` prog 0)も`timeout`経由でエラー無く
+  数秒間稼働することを確認した(D-041は全キオスク種別に影響していた)。
+- 未完了・既知の問題: `PatchWorkspace::saveAs()`は、`"banks"`/
+  `"bank_overrides"`が外部参照の場合、参照先ファイル自体(
+  `unified.bankset.json`等)を新しい保存先にコピーしない(通常のバンク/
+  キットファイルは正しく再配置される)。そのため外部参照ありのプロファ
+  イルを「名前を付けて保存」で別ディレクトリへ保存すると参照が壊れる。
+  今回のバグ報告の経路(キオスクモードの`save()`)には影響しないため
+  今回は対応していない。クリック操作を伴う実機確認は引き続き利用者の
+  目視確認待ち(D-041自体はクリックを伴わないキオスク起動確認のみ)。
+- 次にやること: 利用者に、実際にFITOM_Xから`../FITOM_staging`の各
+  プロファイル(共有バンクセットを使う6本)経由でこのエディタをキオスク
+  起動する一連の動作を確認してもらう。`saveAs()`の外部参照コピー対応は
+  次にこの経路を触るセッションで検討する。

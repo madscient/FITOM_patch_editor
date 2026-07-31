@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -293,6 +295,87 @@ static void testCrudAndRoundTrip(fpe::PatchWorkspace& ws, const fs::path& outDir
     }
 }
 
+// Exercises the "banks" (external file reference) / "bank_overrides"
+// mechanism added by FITOM_X on 2026-07-29 (docs/DESIGN.md D-041):
+// fixtures/profile_shared.json points "banks" at fixtures/shared.bankset.json
+// and inline-overrides its drum_banks[prog=0] entry. Loads into a scratch
+// copy (so save() below doesn't dirty the checked-in fixtures), edits, saves,
+// and checks that (a) the merge is right, (b) "banks" and its target file are
+// never rewritten, and (c) a fresh reload sees the same effective state.
+static void testSharedBankset(const fs::path& scratchDir) {
+    if (fs::exists(scratchDir)) fs::remove_all(scratchDir);
+    fs::create_directories(scratchDir);
+    for (const auto& entry : fs::directory_iterator(fixturesDir())) {
+        fs::copy(entry.path(), scratchDir / entry.path().filename(),
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+    }
+    const fs::path profilePath = scratchDir / "profile_shared.json";
+    const fs::path bankset = scratchDir / "shared.bankset.json";
+    const std::string bankSetContentBefore = [&] {
+        std::ifstream in(bankset, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    }();
+
+    fpe::PatchWorkspace ws;
+    ws.load(profilePath);
+    for (const auto& w : ws.warnings()) std::fprintf(stderr, "shared-bankset load warning: %s\n", w.c_str());
+    CHECK(ws.warnings().empty());
+
+    CHECK(ws.profile().banks.externalFile == "shared.bankset.json");
+    CHECK(ws.profile().bank_overrides.externalFile.empty()); // inline in the profile
+
+    // Merge: prog0 replaced by the override (direct_kit, not std_kit), prog1
+    // passed through unchanged from the base.
+    CHECK(ws.drumKits().size() == 2);
+    auto* kit0 = ws.findDrumKit(0);
+    CHECK(kit0 != nullptr);
+    if (kit0) CHECK(kit0->sourceFile.filename() == "direct_kit.drumkit.json");
+    auto* kit1 = ws.findDrumKit(1); // untouched base entry, not mentioned by bank_overrides at all
+    CHECK(kit1 != nullptr);
+    if (kit1) CHECK(kit1->sourceFile.filename() == "direct_kit.drumkit.json");
+
+    // A brand-new kit, added purely through the ordinary CRUD path (it has
+    // no idea "banks" is external) - save() must route it into
+    // bank_overrides, not into the (untouchable) base file.
+    ws.createDrumKit(2, "Extra Kit", "drums/extra.drumkit.json");
+    ws.save();
+
+    // The base file must be byte-for-byte unchanged.
+    const std::string bankSetContentAfter = [&] {
+        std::ifstream in(bankset, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    }();
+    CHECK(bankSetContentAfter == bankSetContentBefore);
+
+    // profile.json's own "banks" key must still be the plain string.
+    nlohmann::json raw;
+    {
+        std::ifstream in(profilePath, std::ios::binary);
+        in >> raw;
+    }
+    CHECK(raw.contains("banks") && raw["banks"].is_string() && raw["banks"] == "shared.bankset.json");
+    CHECK(raw.contains("bank_overrides") && raw["bank_overrides"].is_object());
+    if (raw.contains("bank_overrides") && raw["bank_overrides"].is_object() &&
+        raw["bank_overrides"].contains("drum_banks")) {
+        CHECK(raw["bank_overrides"]["drum_banks"].size() == 2); // prog0 (changed) + prog2 (new)
+    }
+
+    fpe::PatchWorkspace reloaded;
+    reloaded.load(profilePath);
+    for (const auto& w : reloaded.warnings()) std::fprintf(stderr, "shared-bankset reload warning: %s\n", w.c_str());
+    CHECK(reloaded.warnings().empty());
+    CHECK(reloaded.drumKits().size() == 3);
+    CHECK(reloaded.findDrumKit(0) != nullptr);
+    CHECK(reloaded.findDrumKit(1) != nullptr);
+    auto* reloadedKit2 = reloaded.findDrumKit(2);
+    CHECK(reloadedKit2 != nullptr);
+    if (reloadedKit2) CHECK(reloadedKit2->name == "Extra Kit");
+}
+
 static void testDefaults() {
     // Fields not present in the JSON must fall back to the documented
     // defaults rather than erroring.
@@ -324,6 +407,8 @@ int main() {
     fs::path scratch = fs::temp_directory_path() / "fpe_smoke_test_out";
     if (fs::exists(scratch)) fs::remove_all(scratch);
     testCrudAndRoundTrip(ws, scratch);
+
+    testSharedBankset(fs::temp_directory_path() / "fpe_smoke_test_shared_bankset");
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     if (g_failures > 0) {

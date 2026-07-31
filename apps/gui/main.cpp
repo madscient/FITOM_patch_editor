@@ -546,9 +546,13 @@ struct PreferencesDialogState {
 // window (see renderDrumKitDetail(), factored out of that switch case so
 // kiosk mode can reuse the exact same content). No `prog` field either: a
 // *.drumkit.json file already is one whole DrumKit (unlike HwBank/PatchBank/
-// SwBank, which hold several patches keyed by prog within one file), so
-// resolving the file alone (findDrumKitIndexByFile()) fully identifies the
-// kiosk target.
+// SwBank, which hold several patches keyed by prog within one file). Note
+// that the file alone is NOT enough to pick a kiosk target, though - since
+// D-041 (shared "banks" + "bank_overrides"), the exact same *.drumkit.json
+// can legitimately be registered at two different prog numbers at once (the
+// shared base registers it at its usual prog, and a profile's
+// bank_overrides additionally/separately maps it onto a different prog for
+// that one profile) - findDrumKitIndexByFile() takes both file and prog.
 struct KioskDrumKitWindow {
     bool open = true;
     size_t kitIndex = 0; // index into ws.drumKits()
@@ -668,16 +672,24 @@ std::optional<size_t> findPerformanceBankIndexByFile(fpe::PatchWorkspace& ws, co
 }
 
 // Same idea again, for a drum kit (*.drumkit.json) - kiosk mode's "drum"
-// kind (D-040). Unlike the three above, the file alone already identifies
-// one whole DrumKit (there is no further "patch within this bank" step - see
-// KioskDrumKitWindow's comment), so this is the only one of the four the
-// caller doesn't also need a findByProg()-style lookup for; main() still
-// requires the CLI's `prog` argument to match DrumKit::prog as a sanity
-// check against a stale/mismatched caller (docs/DESIGN.md D-040).
-std::optional<size_t> findDrumKitIndexByFile(fpe::PatchWorkspace& ws, const fs::path& drumkitFile) {
+// kind (D-040). Unlike the three above, there's no further "patch within
+// this bank" step (there is no findByProg()-shaped lookup - see
+// KioskDrumKitWindow's comment): one *.drumkit.json is already one whole
+// DrumKit. But `prog` still has to be part of the match itself, not just a
+// post-hoc sanity check against a stale caller as originally assumed
+// (D-040) - D-041's "banks"/"bank_overrides" mechanism lets the very same
+// file legitimately back two different prog slots at once within one
+// profile's effective registry (e.g. FITOM_staging's
+// opl_builtin_rhythm.drumkit.json, registered at its usual prog 13 by the
+// shared unified.bankset.json AND separately mapped onto prog 0 by
+// emu_opl.profile.json's own bank_overrides - both entries coexist in
+// ws.drumKits()). Matching by file alone would nondeterministically grab
+// whichever of the two happens to come first in ws.drumKits(), independent
+// of which prog the caller actually asked for.
+std::optional<size_t> findDrumKitIndexByFile(fpe::PatchWorkspace& ws, const fs::path& drumkitFile, int prog) {
     std::error_code ec;
     for (size_t i = 0; i < ws.drumKits().size(); ++i) {
-        if (fs::equivalent(ws.drumKits()[i].sourceFile, drumkitFile, ec) && !ec) {
+        if (ws.drumKits()[i].prog == prog && fs::equivalent(ws.drumKits()[i].sourceFile, drumkitFile, ec) && !ec) {
             return i;
         }
     }
@@ -4206,8 +4218,8 @@ int main(int argc, char** argv) {
                 }
                 break;
             case BankCategory::Drum:
-                kioskBankIndex = findDrumKitIndexByFile(kioskWorkspace, bankFile);
-                if (!kioskBankIndex || kioskWorkspace.drumKits()[*kioskBankIndex].prog != kioskProg) {
+                kioskBankIndex = findDrumKitIndexByFile(kioskWorkspace, bankFile, kioskProg);
+                if (!kioskBankIndex) {
                     showFatalErrorBox("キオスクモード: 指定されたdrumkitファイル/progに一致するドラムキットが"
                                        "プロファイル内に見つかりません:\n" +
                                        bankFile.string() + " prog " + std::to_string(kioskProg) + "\nプロファイル: " +
