@@ -1,0 +1,9 @@
+{
+  "profile_name": "Shared Bankset Test Profile",
+  "banks": "shared.bankset.json",
+  "bank_overrides": {
+    "drum_banks": [
+      { "prog": 0, "name": "Overridden Kit", "file": "drums/direct_kit.drumkit.json" }
+    ]
+  }
+}

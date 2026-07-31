@@ -125,6 +125,21 @@ private:
     std::vector<std::string> warnings_;
 
     void loadBanks();
+    // Loads `src.externalFile` (if non-empty) into `src.data`, resolved
+    // relative to rootDir_; records a warning and leaves `src.data` empty
+    // on failure rather than throwing (matches this library's soft-fail
+    // philosophy for referenced-but-broken files - see load()'s doc
+    // comment). No-op if `src` wasn't an external reference. D-041.
+    void resolveBanksSource(BanksSource& src);
+    // Rebuilds profile_.banks/profile_.bank_overrides from the current
+    // (possibly-edited) effective registry (profile_.hw_banks etc) ahead of
+    // writing profile.json. If "banks" was never an external reference,
+    // this just mirrors the effective registry into it (pre-D-041
+    // behavior, unchanged). If it was, "banks" itself is left untouched
+    // (never rewritten - it may be shared by other profiles) and the diff
+    // against the loaded base is written into "bank_overrides" instead.
+    // D-041.
+    void syncBanksSourceForSave();
     std::filesystem::path resolve(const std::string& relativeFile) const;
     // Rebases every loaded bank's sourceFile onto newRoot, preserving each
     // file's path relative to the current rootDir_. Used by saveAs() so

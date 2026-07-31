@@ -2803,6 +2803,140 @@ Device/Layeredの2値だけだったのでif/elseで足りていたが、4種に
 `fpe::SampleZone`の per-patch 編集フォーム自体)はデータモデル層・GUI
 とも引き続き未実装(docs/STATUS.mdの既知の未対応課題を参照)。
 
+### D-041: profile.jsonの"banks"外部ファイル参照+"bank_overrides"機構に対応(共有バンクセット)
+
+**経緯**: 利用者から、キオスクモードで`../FITOM_staging`の
+`emu_opl.profile.json`をドラムキット種別(`drum`)で開こうとすると
+「指定されたdrumkitファイル/progに一致するドラムキットがプロファイル内に
+見つかりません」というエラーになる、という実機バグ報告(スクリーン
+ショット付き)を受けた。
+
+調査の結果、`FITOM_staging`側が2026-07-29のコミット(`5f2d080`
+「banksセクションを外部ファイル化し全プロファイルで共有参照するよう
+変更」、`8764119`「bank_overridesで6プロファイルのレイヤードバンク0/
+ドラムキット0の無音を解消」)で、`profile.json`の`"banks"`の書式を拡張
+していたことが原因と判明した。`config_schema/profile.schema.json`の
+`"banks"`/`"bank_overrides"`の説明を確認したところ:
+
+- `"banks"`は、従来通りの(`hw_banks`/`patch_banks`/`sw_banks`/
+  `drum_banks`/`scc_wave_banks`/`pcm_banks`を持つ)オブジェクト直書きに
+  加えて、**外部JSONファイルへのパスを表す文字列**も取れるようになった
+  (`unified.bankset.json`のような、複数プロファイルで共有する1つの
+  バンク登録テーブル)。
+- 新設の`"bank_overrides"`キー(同じくオブジェクト直書き/文字列参照の
+  どちらも可)で、共有された`"banks"`の一部エントリだけをプロファイル
+  ごとに上書き・追加できる。マッチングは配列ごとに決まった識別キー
+  (`hw_banks`は`group`+`bank`、`drum_banks`は`prog`、`pcm_banks`は
+  `bank`+`chip`、その他は`bank`)で行い、一致すれば置き換え、しなければ
+  追加。**削除は表現できない**。
+
+このリポジトリの`fpe::Profile::from_json`(`src/Profile.cpp`)は、
+D-041以前は`"banks"`がオブジェクトの場合しか中身を読んでおらず、文字列
+(外部参照)のケースでは`hw_banks`等が全部空のまま読み込まれていた。
+さらに`"bank_overrides"`キー自体を一切知らず、未知フィールド保存用の
+`Profile::extra`に埋もれて黙って無視されていた。結果、
+`unified.bankset.json`を`"banks"`から参照する実プロファイル(FITOM_staging
+の`emu_opl`/`emu_opn`/`emu_opm`/`emu_opll`/`emu_fmgen_opn`/`fmall`の6本
+すべて)は、このエディタで開くと**バンク登録が(ドラムキットに限らず
+デバイス/レイヤード/パフォーマンス全種別で)ゼロ件**になっていた
+(`unified_preset.profile.json`のみ`bank_overrides`を持たないが、`banks`
+は同様に外部参照)。
+
+**決定**: 読み込み・保存の両方に対応する(利用者にAskUserQuestionで確認
+済み)。ただし保存側には設計上の論点があった。既存の
+`PatchWorkspace::save()`は常に`profile_`をそのまま`profilePath_`へ
+書き戻すため、素朴に「`"banks"`の中身をマージ結果でインライン展開して
+書く」実装にすると、**キオスクモードの「登録」ボタンを1回押すだけで、
+6プロファイルが共有していたはずの`unified.bankset.json`への参照が
+失われ、そのプロファイルだけに丸ごと複製されてしまう**(共有化した
+設計そのものを壊す)。そこで:
+
+- `fpe::BanksObject`(`hw_banks`/`patch_banks`/`sw_banks`/`drum_banks`/
+  `scc_wave_banks`/`pcm_banks`の6配列。`sf2_banks`はこのライブラリが
+  一切対応していないため、往復保存のためだけに生JSONとして保持し、
+  マージ/差分の対象にはしない)と、`fpe::BanksSource`(`present`/
+  外部ファイル参照だった場合の`externalFile`文字列/中身の`BanksObject`)
+  を`include/fpe/Profile.h`に新設。`Profile::from_json`/`to_json`は
+  純粋なJSON⇔構造体変換のみを担当し(このライブラリの既存方針通り、
+  ファイルI/Oはしない)、`"banks"`/`"bank_overrides"`をそれぞれ
+  `BanksSource`として読み書きするだけにとどめる。
+- 実際にファイルを読む(外部参照の場合)・マージする・保存時に元の
+  `"banks"`との差分を取って`"bank_overrides"`を再構成する、という
+  ファイルI/Oを伴う処理は全て`PatchWorkspace`側
+  (`resolveBanksSource()`/`syncBanksSourceForSave()`、
+  `src/PatchWorkspace.cpp`)に置いた。
+- `Profile::hw_banks`/`patch_banks`/...(既存のフラットなvector)は、
+  「`"banks"`と`"bank_overrides"`をマージした実効レジストリ」という
+  意味に据え置いた。`PatchWorkspace`の新規バンク作成・削除等の既存CRUD
+  コードは一切変更せずこのフラットなvectorを直接読み書きし続けられる
+  (呼び出し元は「今どのレイヤーにいるか」を意識しなくてよい)。
+- 保存時(`syncBanksSourceForSave()`): `"banks"`が外部参照でなかった
+  場合(未設定、またはD-041以前どおりインラインオブジェクト)は、
+  従来通り実効レジストリをそのまま`"banks"`に書き戻す(後方互換、
+  `fixtures/profile.json`はこの経路のまま)。`"banks"`が外部参照だった
+  場合は**その文字列参照を書き換えない**(該当ファイルへは一切
+  書き込まない)。代わりに、読み込み時点の`"banks"`(ベース)の内容と、
+  現在の実効レジストリを識別キーで突き合わせ、新規または内容が変わった
+  エントリだけを`"bank_overrides"`として書き出す(`"bank_overrides"`が
+  それ自体外部参照だった場合はその外部ファイルへ、そうでなければ
+  `profile.json`にインラインで)。ベース由来のエントリがセッション中に
+  削除された場合は`bank_overrides`機構では削除を表現できないため、
+  警告(`warnings()`)を出す(次回読み込みで復活することを利用者に伝える
+  ため)。
+
+**副作用として見つかったバグ**: 上記の読み込み対応をビルドして実機
+(`../FITOM_staging`)で試したところ、マージ自体は正しく動作した
+(`emu_opl.profile.json`の`drum_banks`が23件に増え、`bank_overrides`の
+`prog 0 -> opl_builtin_rhythm.drumkit.json`も正しく反映されていた)にも
+関わらず、キオスク起動はまだ同じエラーで失敗した。原因は
+`findDrumKitIndexByFile()`(D-040、`apps/gui/main.cpp`)側の別バグ:
+「`*.drumkit.json`ファイル1つ=DrumKit1つなので、ファイルパスだけで
+一意に特定できる(progは念のための整合性チェックに過ぎない)」という
+前提が、`unified.bankset.json`が`opl_builtin_rhythm.drumkit.json`を
+`prog 13`で登録し、`emu_opl.profile.json`の`bank_overrides`が**同じ
+ファイル**を`prog 0`にも追加登録する、という今回のような構成では
+成り立たなくなっていた(ファイル一致だけで検索すると`ws.drumKits()`内で
+先に見つかる方(`prog 13`)を返してしまい、その後の`prog`チェックで
+弾かれる)。`findDrumKitIndexByFile()`にファイルと`prog`の両方を渡し、
+両方一致するエントリを検索するよう修正した。他3種
+(`findDeviceBankIndexByFile()`等)は「ファイルでバンクを特定→バンク内で
+`findByProg()`」という2段階なので理論上は同種の曖昧さが起こりうるが、
+実データでは未観測かつCLI引数(`<bank-file> <prog>`)にはそもそも
+バンク番号自体が含まれないため呼び出し元からは原理的に解決不能であり、
+今回は対応していない(将来同様の報告があれば要検討)。
+
+**実機確認**: ビルド(`cmake --build build/vs2026`)・`ctest`
+(137項目、既存分は回帰なし、新規追加した
+`fixtures/shared.bankset.json`+`fixtures/profile_shared.json`+
+`testSharedBankset()`による「外部`banks`参照+インライン
+`bank_overrides`のマージ→CRUDで新規キット追加→保存→ベースファイルが
+バイト単位で不変なこと・`"banks"`が文字列のまま・`"bank_overrides"`に
+差分だけが書かれること→再読み込みで同じ実効状態になること」の一連の
+往復確認を含む)を確認。実データでは、`emu_opl.profile.json`をキオスク
+モード(`drum`、`opl_builtin_rhythm.drumkit.json`、`prog 0`)で開くと
+修正前と同じ手順で再現していたエラーが解消し、`renderDrumKitDetail()`の
+内容(`ドラムキット [prog 0] OPL Built-in Rhythm (GM2 mapped) (routed)`)
+が正しく表示されることをスクリーンショットで確認した。同様に`device`
+(`std_opl2.hwbank.json` prog 0)・`layered`
+(`gm_layered_opl2.patchbank.json` prog 0、こちらは
+`emu_opl.profile.json`の`bank_overrides.patch_banks`が指す先そのもの)・
+`performance`(`performance_presets.swbank.json` prog 0)の3種も、
+`timeout`経由でエラー無く数秒間稼働することを確認した(D-041は
+ドラムキットに限らず全キオスク種別に影響する不具合だったため)。
+
+**未完了・既知の課題**:
+- `PatchWorkspace::saveAs()`は、通常のバンク/キットファイル(`hwBanks_`/
+  `patchBanks_`/`drumKits_`等、実際に読み込み済みのもの)は新しい保存先へ
+  正しく再配置・コピーするが、`"banks"`/`"bank_overrides"`が外部参照
+  だった場合、参照先ファイル自体(`unified.bankset.json`等)は新しい
+  保存先にコピーされない。そのため、外部`"banks"`参照を持つプロファイル
+  を「名前を付けて保存」で別ディレクトリに保存すると、移動後の
+  `"banks"`文字列参照が壊れる(存在しないパスを指す)。今回のバグ報告
+  (キオスクモードの`save()`、`saveAs()`は経由しない)には影響しない
+  ため未対応。次にこの経路を触るセッションで解決すること。
+- FITOM_X本体側で、この`bank_overrides`機構をさらに他プロファイルに
+  広げる/変更する予定があるかは未確認。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に

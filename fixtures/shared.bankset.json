@@ -1,0 +1,9 @@
+{
+  "patch_banks": [
+    { "bank": 0, "file": "patches/00_general.patchbank.json", "name": "General" }
+  ],
+  "drum_banks": [
+    { "prog": 0, "name": "Standard Kit", "file": "drums/std_kit.drumkit.json" },
+    { "prog": 1, "name": "OPL4 AWM GM std kit", "file": "drums/direct_kit.drumkit.json" }
+  ]
+}
