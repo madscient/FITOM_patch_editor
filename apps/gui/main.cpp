@@ -384,6 +384,20 @@ struct PatchEditorWindow {
     bool deviceSelected = false; // selectDevice() sent at least once this editor's lifetime
 };
 
+// Navigation level within a patch-picker popup - mirrors FITOM_X本体's own
+// PatchPickerDialog (apps/fitom_gui/PatchPickerDialog.h/.cpp in the FITOM_X
+// repo): Category(チップファミリー、任意) -> Bank -> Program, one level shown
+// per frame with a "上へ" button to go back, instead of one giant
+// always-expanded tree. Requested explicitly ("FITOM_X本体と同じ構造に
+// してほしい") because a real profile's banks can number in the dozens
+// (device banks especially, spread across a dozen+ chip families - see
+// ../FITOM_staging/banks/), and a flat always-open tree became hard to
+// browse. Not every picker uses all three levels - SwPatchPickerState below
+// has no chip-family axis (performance banks aren't chip-tagged in FITOM_X
+// either - PatchPickerDialog itself has no equivalent picker for them) so it
+// only ever uses Bank/Program.
+enum class PatchPickerLevel { Category, Bank, Program };
+
 // Shared "SW (performance) patch picker" popup for a `sw_bank`/`sw_prog`
 // reference - opened either from renderPatchEditor() (a HwPatch's own
 // sw_bank/sw_prog) or renderLayeredPatchEditor() (a layered fpe::Patch's own
@@ -420,6 +434,11 @@ struct SwPatchPickerState {
     int layeredPatchProg = 0;    // Target::Layered: Patch::prog within that bank
     size_t drumKitIndex = 0;    // Target::DrumNote: index into ws.drumKits()
     uint8_t drumNote = 0;       // Target::DrumNote: DrumNote::note within that kit (routed kits only)
+
+    // Drill-down navigation state (see PatchPickerLevel) - Bank/Program only,
+    // no Category level (performance banks have no chip-family axis).
+    PatchPickerLevel level = PatchPickerLevel::Bank;
+    int bank = 0; // chosen SwBank::bankIndex
 };
 
 // A single modeless "layered patch editor" window
@@ -488,6 +507,13 @@ struct HwPatchPickerState {
     size_t layeredBankIndex = 0; // index into ws.layeredPatchBanks()
     int layeredPatchProg = 0;    // Patch::prog within that bank
     int layerIndex = 0;         // index into Patch::layers
+
+    // Drill-down navigation state (see PatchPickerLevel). No "レイヤード"
+    // category here (unlike DrumSourcePatchPickerState) - a ToneLayer's
+    // hw_bank/hw_prog can only ever reference a device voice patch.
+    PatchPickerLevel level = PatchPickerLevel::Category;
+    fpe::VoicePatchType category = fpe::VoicePatchType::None; // chosen chip family
+    int bank = 0; // chosen HwBank::bankIndex within that category
 };
 
 // "ソースパッチ" picker for a DrumNote's (or, when isDirect, a whole "direct"
@@ -505,6 +531,15 @@ struct DrumSourcePatchPickerState {
     size_t kitIndex = 0; // index into ws.drumKits()
     bool isDirect = false; // true: target is the DrumKit's own fields (kit.patch_bank etc); false: target is a DrumNote
     uint8_t note = 0;     // when !isDirect: DrumNote::note within that kit
+
+    // Drill-down navigation state (see PatchPickerLevel). category==None IS
+    // a real, meaningful Category-level choice here ("レイヤード"), not an
+    // "unset" sentinel like HwPatchPickerState's - this exactly mirrors
+    // FITOM_X本体's PatchPickerDialog's own kCategories[0] ("レイヤード",
+    // CC#0=0).
+    PatchPickerLevel level = PatchPickerLevel::Program;
+    fpe::VoicePatchType category = fpe::VoicePatchType::None;
+    int bank = 0;
 };
 
 // On-screen keyboard popup for a DrumNote's play_note field (D-038),
@@ -1164,24 +1199,49 @@ void renderPathPicker(AppContext& ctx) {
     if (!stayOpen) p.open = false;
 }
 
+// Primes a SwPatchPickerState's Bank/Program drill-down state from the
+// reference's *current* bank value, mirroring FITOM_X本体's own
+// PatchPickerDialog::open(): jump straight to the Program level showing the
+// bank already referenced (if any), rather than forcing the user back
+// through the Bank level every time they reopen the picker on an
+// already-set reference. -1 (not set yet, HwPatch/Patch/DrumNote's own
+// convention) starts at the Bank level instead, same as if none had been
+// picked.
+void primeSwPatchPickerLevel(SwPatchPickerState& p, int currentBank) {
+    if (currentBank >= 0) {
+        p.bank = currentBank;
+        p.level = PatchPickerLevel::Program;
+    } else {
+        p.level = PatchPickerLevel::Bank;
+    }
+}
+
 // Points the shared SwPatchPickerState at the HwPatch identified by
 // {deviceBankIndex, devicePatchProg} and opens the picker. Called from
 // renderPatchEditor() when the user clicks the sw_bank/sw_prog label.
 void openSwPatchPicker(AppContext& ctx, size_t deviceBankIndex, int devicePatchProg) {
-    ctx.swPatchPicker.target = SwPatchPickerTarget::Device;
-    ctx.swPatchPicker.deviceBankIndex = deviceBankIndex;
-    ctx.swPatchPicker.devicePatchProg = devicePatchProg;
-    ctx.swPatchPicker.open = true;
+    SwPatchPickerState& p = ctx.swPatchPicker;
+    p.target = SwPatchPickerTarget::Device;
+    p.deviceBankIndex = deviceBankIndex;
+    p.devicePatchProg = devicePatchProg;
+    auto& deviceBanks = ctx.workspace.deviceBanks();
+    fpe::HwPatch* hwPatch = deviceBankIndex < deviceBanks.size() ? deviceBanks[deviceBankIndex].findByProg(devicePatchProg) : nullptr;
+    primeSwPatchPickerLevel(p, hwPatch ? hwPatch->sw_bank : -1);
+    p.open = true;
 }
 
 // Same picker, repointed at a layered fpe::Patch's own sw_bank/sw_prog
 // (D-036) instead of a HwPatch's. Called from renderLayeredPatchEditor()
 // when the user clicks that patch's sw_bank/sw_prog label.
 void openLayeredSwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatchProg) {
-    ctx.swPatchPicker.target = SwPatchPickerTarget::Layered;
-    ctx.swPatchPicker.layeredBankIndex = layeredBankIndex;
-    ctx.swPatchPicker.layeredPatchProg = layeredPatchProg;
-    ctx.swPatchPicker.open = true;
+    SwPatchPickerState& p = ctx.swPatchPicker;
+    p.target = SwPatchPickerTarget::Layered;
+    p.layeredBankIndex = layeredBankIndex;
+    p.layeredPatchProg = layeredPatchProg;
+    auto& layeredBanks = ctx.workspace.layeredPatchBanks();
+    fpe::Patch* patch = layeredBankIndex < layeredBanks.size() ? layeredBanks[layeredBankIndex].findByProg(layeredPatchProg) : nullptr;
+    primeSwPatchPickerLevel(p, patch ? patch->sw_bank : -1);
+    p.open = true;
 }
 
 // Same picker again, repointed at a DrumNote's own sw_bank/sw_prog override
@@ -1190,19 +1250,31 @@ void openLayeredSwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int laye
 // a "direct" kit's own sw_bank/sw_prog isn't wired to this picker (see
 // docs/DESIGN.md D-038's scope note).
 void openDrumNoteSwPatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
-    ctx.swPatchPicker.target = SwPatchPickerTarget::DrumNote;
-    ctx.swPatchPicker.drumKitIndex = kitIndex;
-    ctx.swPatchPicker.drumNote = note;
-    ctx.swPatchPicker.open = true;
+    SwPatchPickerState& p = ctx.swPatchPicker;
+    p.target = SwPatchPickerTarget::DrumNote;
+    p.drumKitIndex = kitIndex;
+    p.drumNote = note;
+    auto& kits = ctx.workspace.drumKits();
+    fpe::DrumNote* drumNote = kitIndex < kits.size() ? kits[kitIndex].findNote(note) : nullptr;
+    primeSwPatchPickerLevel(p, drumNote ? drumNote->sw_bank : -1);
+    p.open = true;
 }
 
-// Modal listing every performance (SW) bank/patch, grouped by bank -
-// clicking a patch writes its {bank,prog} into the target's sw_bank/sw_prog
-// fields. Re-resolves the target sw_bank/sw_prog int fields every frame
-// from the indices in SwPatchPickerState (per its `target`) rather than
-// holding a pointer captured at open time - if the target patch has since
-// vanished (bank/patch deleted while the picker was open), the picker just
-// closes itself quietly rather than dereferencing something stale.
+// Modal picking a performance (SW) bank/patch - clicking a patch writes its
+// {bank,prog} into the target's sw_bank/sw_prog fields.
+//
+// Drills down Bank->Program one level per frame, mirroring FITOM_X本体's own
+// PatchPickerDialog UX (apps/fitom_gui/PatchPickerDialog.cpp in the FITOM_X
+// repo) - no Category level here, since FITOM_X本体 itself has no chip-family
+// grouping for performance banks (they're not chip-tagged, and FITOM_X's own
+// picker has no equivalent screen for this reference kind at all - see
+// docs/DESIGN.md).
+//
+// Re-resolves the target sw_bank/sw_prog int fields every frame from the
+// indices in SwPatchPickerState (per its `target`) rather than holding a
+// pointer captured at open time - if the target patch has since vanished
+// (bank/patch deleted while the picker was open), the picker just closes
+// itself quietly rather than dereferencing something stale.
 void renderSwPatchPicker(AppContext& ctx) {
     SwPatchPickerState& p = ctx.swPatchPicker;
     if (!p.open) return;
@@ -1249,37 +1321,51 @@ void renderSwPatchPicker(AppContext& ctx) {
         targetSwBank = &note->sw_bank;
         targetSwProg = &note->sw_prog;
     }
+    auto& swBanks = ctx.workspace.performanceBanks();
 
     const char* title = "パッチピッカー (SW)";
     ImGui::OpenPopup(title);
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("参照するパフォーマンスパッチ(SW)を選択してください。");
-        ImGui::Separator();
+        if (p.level != PatchPickerLevel::Bank) {
+            if (ImGui::Button("↑ 上へ")) p.level = PatchPickerLevel::Bank;
+            ImGui::Separator();
+        }
 
         ImGui::BeginChild("swpatchpickerlist", ImVec2(420, 320), true);
-        auto& swBanks = ctx.workspace.performanceBanks();
-        for (auto& bank : swBanks) {
-            ImGui::PushID(bank.bankIndex);
-            const bool isCurrentBank = bank.bankIndex == *targetSwBank;
-            if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[bank %d] %s", bank.bankIndex,
-                                   bank.name.c_str())) {
-                for (auto& patch : bank.patches) {
+        if (p.level == PatchPickerLevel::Bank) {
+            ImGui::TextUnformatted("参照するパフォーマンスバンクを選択してください。");
+            for (auto& bank : swBanks) {
+                const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
+                if (ImGui::Selectable(label.c_str(), bank.bankIndex == *targetSwBank)) {
+                    p.bank = bank.bankIndex;
+                    p.level = PatchPickerLevel::Program;
+                }
+            }
+            if (swBanks.empty()) ImGui::TextDisabled("(パフォーマンスバンクがありません)");
+        } else {
+            ImGui::Text("パッチを選択してください: bank %d", p.bank);
+            fpe::SwBank* bank = nullptr;
+            for (auto& b : swBanks) {
+                if (b.bankIndex == p.bank) { bank = &b; break; }
+            }
+            if (bank) {
+                const bool isCurrentBank = bank->bankIndex == *targetSwBank;
+                for (auto& patch : bank->patches) {
                     const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
                     const bool selected = isCurrentBank && patch.prog == *targetSwProg;
                     if (ImGui::Selectable(label.c_str(), selected)) {
-                        *targetSwBank = bank.bankIndex;
+                        *targetSwBank = bank->bankIndex;
                         *targetSwProg = patch.prog;
                         p.open = false;
                         ImGui::CloseCurrentPopup();
                     }
                 }
-                if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
-                ImGui::TreePop();
+                if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
+            } else {
+                ImGui::TextDisabled("(このバンクは見つかりません)");
             }
-            ImGui::PopID();
         }
-        if (swBanks.empty()) ImGui::TextDisabled("(パフォーマンスバンクがありません)");
         ImGui::EndChild();
 
         ImGui::Separator();
@@ -1302,23 +1388,52 @@ void renderSwPatchPicker(AppContext& ctx) {
 // Points the shared HwPatchPickerState at the ToneLayer identified by
 // {layeredBankIndex, layeredPatchProg, layerIndex} and opens the picker.
 // Called from renderToneLayerEditor() when the user clicks the
-// hw_bank/hw_prog label.
+// hw_bank/hw_prog label. Primes the drill-down navigation state
+// (PatchPickerLevel) from the ToneLayer's *current* value, same as FITOM_X本体's
+// PatchPickerDialog::open() - if it already has a real chip-family tag, jump
+// straight to the Program level showing that bank's contents (so re-opening
+// the picker on an already-set reference doesn't force reselecting
+// category/bank); otherwise (freshly created ToneLayer, voice_patch_type
+// still the None default) start at the top, Category level.
 void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatchProg, int layerIndex) {
-    ctx.hwPatchPicker.layeredBankIndex = layeredBankIndex;
-    ctx.hwPatchPicker.layeredPatchProg = layeredPatchProg;
-    ctx.hwPatchPicker.layerIndex = layerIndex;
-    ctx.hwPatchPicker.open = true;
+    HwPatchPickerState& p = ctx.hwPatchPicker;
+    p.layeredBankIndex = layeredBankIndex;
+    p.layeredPatchProg = layeredPatchProg;
+    p.layerIndex = layerIndex;
+
+    p.level = PatchPickerLevel::Category;
+    auto& layeredBanks = ctx.workspace.layeredPatchBanks();
+    if (layeredBankIndex < layeredBanks.size()) {
+        fpe::Patch* patch = layeredBanks[layeredBankIndex].findByProg(layeredPatchProg);
+        if (patch && layerIndex >= 0 && static_cast<size_t>(layerIndex) < patch->layers.size()) {
+            const fpe::ToneLayer& layer = patch->layers[static_cast<size_t>(layerIndex)];
+            if (layer.voice_patch_type != fpe::VoicePatchType::None) {
+                p.category = layer.voice_patch_type;
+                p.bank = layer.hw_bank;
+                p.level = PatchPickerLevel::Program;
+            }
+        }
+    }
+    p.open = true;
 }
 
-// Modal listing every device (HW) bank/patch across all chip families,
-// grouped by bank - clicking a patch writes its {voice_patch_type, bank,
-// prog} into the target ToneLayer's fields. Scoped to HW/device patches
-// only (per the project owner's request - ToneLayer's other reference kind,
-// Patch::sw_bank/sw_prog, is not this picker). Re-resolves the target
-// ToneLayer* every frame from {layeredBankIndex, layeredPatchProg,
-// layerIndex} rather than holding a pointer captured at open time (same
-// reasoning as renderSwPatchPicker()) - if the target patch/layer has since
-// vanished, the picker just closes itself quietly.
+// Modal picking a device (HW) voice patch for a ToneLayer's hw_bank/hw_prog -
+// clicking a patch writes its {voice_patch_type, bank, prog} into the target
+// ToneLayer's fields. Scoped to HW/device patches only (per the project
+// owner's request - ToneLayer's other reference kind, Patch::sw_bank/sw_prog,
+// is not this picker).
+//
+// Drills down Category(チップファミリー)->Bank->Program one level per frame,
+// mirroring FITOM_X本体's own PatchPickerDialog (apps/fitom_gui/
+// PatchPickerDialog.cpp in the FITOM_X repo) rather than showing every bank's
+// patches in one always-expanded tree - real profiles can have dozens of
+// device banks spread across a dozen+ chip families (see
+// ../FITOM_staging/banks/), which made the old flat tree hard to browse.
+//
+// Re-resolves the target ToneLayer* every frame from {layeredBankIndex,
+// layeredPatchProg, layerIndex} rather than holding a pointer captured at
+// open time (same reasoning as renderSwPatchPicker()) - if the target
+// patch/layer has since vanished, the picker just closes itself quietly.
 void renderHwPatchPicker(AppContext& ctx) {
     HwPatchPickerState& p = ctx.hwPatchPicker;
     if (!p.open) return;
@@ -1334,39 +1449,75 @@ void renderHwPatchPicker(AppContext& ctx) {
         return;
     }
     fpe::ToneLayer& target = patch->layers[static_cast<size_t>(p.layerIndex)];
+    auto& hwBanks = ctx.workspace.deviceBanks();
 
     const char* title = "パッチピッカー (HW)";
     ImGui::OpenPopup(title);
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted("参照するデバイスボイスパッチ(HW)を選択してください。");
-        ImGui::Separator();
+        if (p.level != PatchPickerLevel::Category) {
+            if (ImGui::Button("↑ 上へ")) {
+                p.level = (p.level == PatchPickerLevel::Program) ? PatchPickerLevel::Bank : PatchPickerLevel::Category;
+            }
+            ImGui::Separator();
+        }
 
         ImGui::BeginChild("hwpatchpickerlist", ImVec2(480, 360), true);
-        auto& hwBanks = ctx.workspace.deviceBanks();
-        for (auto& bank : hwBanks) {
-            ImGui::PushID(&bank);
-            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-            const bool isCurrentBank = bank.voicePatchType == target.voice_patch_type && bank.bankIndex == target.hw_bank;
-            if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
-                                   bank.bankIndex, bank.name.c_str())) {
-                for (auto& hwPatch : bank.patches) {
+        if (p.level == PatchPickerLevel::Category) {
+            ImGui::TextUnformatted("チップファミリーを選択してください。");
+            std::vector<fpe::VoicePatchType> categories;
+            for (auto& bank : hwBanks) {
+                if (std::find(categories.begin(), categories.end(), bank.voicePatchType) == categories.end())
+                    categories.push_back(bank.voicePatchType);
+            }
+            std::sort(categories.begin(), categories.end());
+            for (fpe::VoicePatchType c : categories) {
+                const std::string label = fpe::voicePatchTypeToString(c);
+                if (ImGui::Selectable(label.c_str(), c == target.voice_patch_type)) {
+                    p.category = c;
+                    p.bank = 0;
+                    p.level = PatchPickerLevel::Bank;
+                }
+            }
+            if (categories.empty()) ImGui::TextDisabled("(デバイスパッチバンクがありません)");
+        } else if (p.level == PatchPickerLevel::Bank) {
+            ImGui::Text("バンクを選択してください: [%s]", fpe::voicePatchTypeToString(p.category).c_str());
+            bool any = false;
+            for (auto& bank : hwBanks) {
+                if (bank.voicePatchType != p.category) continue;
+                any = true;
+                const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
+                const bool selected = bank.voicePatchType == target.voice_patch_type && bank.bankIndex == target.hw_bank;
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    p.bank = bank.bankIndex;
+                    p.level = PatchPickerLevel::Program;
+                }
+            }
+            if (!any) ImGui::TextDisabled("(このチップファミリーのバンクがありません)");
+        } else {
+            ImGui::Text("パッチを選択してください: [%s] bank %d", fpe::voicePatchTypeToString(p.category).c_str(), p.bank);
+            fpe::HwBank* bank = nullptr;
+            for (auto& b : hwBanks) {
+                if (b.voicePatchType == p.category && b.bankIndex == p.bank) { bank = &b; break; }
+            }
+            if (bank) {
+                const bool isCurrentBank = bank->voicePatchType == target.voice_patch_type && bank->bankIndex == target.hw_bank;
+                for (auto& hwPatch : bank->patches) {
                     const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
                     const bool selected = isCurrentBank && hwPatch.prog == target.hw_prog;
                     if (ImGui::Selectable(label.c_str(), selected)) {
-                        target.voice_patch_type = bank.voicePatchType;
-                        target.hw_bank = bank.bankIndex;
+                        target.voice_patch_type = bank->voicePatchType;
+                        target.hw_bank = bank->bankIndex;
                         target.hw_prog = hwPatch.prog;
                         p.open = false;
                         ImGui::CloseCurrentPopup();
                     }
                 }
-                if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
-                ImGui::TreePop();
+                if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
+            } else {
+                ImGui::TextDisabled("(このバンクは見つかりません)");
             }
-            ImGui::PopID();
         }
-        if (hwBanks.empty()) ImGui::TextDisabled("(デバイスパッチバンクがありません)");
         ImGui::EndChild();
 
         ImGui::Separator();
@@ -1381,32 +1532,80 @@ void renderHwPatchPicker(AppContext& ctx) {
 
 // Points the shared DrumSourcePatchPickerState at a specific DrumNote and
 // opens the picker - called from renderDrumNoteEditor() when the user
-// clicks the resolved source-patch label.
+// clicks the resolved source-patch label. Primes the drill-down navigation
+// state from the note's *current* {voice_patch_type,patch_bank,patch_prog}
+// - unlike HwPatchPickerState/SwPatchPickerState there's no "unset" sentinel
+// for this reference (a fresh DrumNote defaults to {None,0,0}, itself a
+// legitimate "レイヤードパッチバンク0番prog0" selection, not a marker
+// meaning "nothing chosen yet"), so this always starts at Program level -
+// same as FITOM_X本体's own PatchPickerDialog::open().
 void openDrumSourcePatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
-    ctx.drumSourcePatchPicker.kitIndex = kitIndex;
-    ctx.drumSourcePatchPicker.isDirect = false;
-    ctx.drumSourcePatchPicker.note = note;
-    ctx.drumSourcePatchPicker.open = true;
+    DrumSourcePatchPickerState& p = ctx.drumSourcePatchPicker;
+    p.kitIndex = kitIndex;
+    p.isDirect = false;
+    p.note = note;
+    auto& kits = ctx.workspace.drumKits();
+    fpe::DrumNote* drumNote = kitIndex < kits.size() ? kits[kitIndex].findNote(note) : nullptr;
+    p.category = drumNote ? drumNote->voice_patch_type : fpe::VoicePatchType::None;
+    p.bank = drumNote ? drumNote->patch_bank : 0;
+    p.level = PatchPickerLevel::Program;
+    p.open = true;
 }
 
 // Same picker, repointed at a "direct" DrumKit's own patch_bank/patch_prog/
 // voice_patch_type triple instead of one of its notes' - called from
 // renderBankDetail()'s Drum/direct case.
 void openDrumSourcePatchPickerDirect(AppContext& ctx, size_t kitIndex) {
-    ctx.drumSourcePatchPicker.kitIndex = kitIndex;
-    ctx.drumSourcePatchPicker.isDirect = true;
-    ctx.drumSourcePatchPicker.open = true;
+    DrumSourcePatchPickerState& p = ctx.drumSourcePatchPicker;
+    p.kitIndex = kitIndex;
+    p.isDirect = true;
+    auto& kits = ctx.workspace.drumKits();
+    if (kitIndex < kits.size()) {
+        p.category = kits[kitIndex].voice_patch_type;
+        p.bank = kits[kitIndex].patch_bank;
+    } else {
+        p.category = fpe::VoicePatchType::None;
+        p.bank = 0;
+    }
+    p.level = PatchPickerLevel::Program;
+    p.open = true;
 }
 
-// Modal listing BOTH the layered-patch tree and the device-voice-patch tree
-// in one popup (D-038) - a DrumNote's source patch has the same "normal
-// mode vs direct mode" duality as CC#0 itself (see
-// DrumSourcePatchPickerState's comment), so unlike renderHwPatchPicker()
-// (device patches only) this picker has to offer both. Picking a layered
-// patch writes {None, layeredBank.bankIndex, patch.prog}; picking a device
-// patch writes {bank.voicePatchType, bank.bankIndex, hwPatch.prog} - either
-// way into the same three target fields, resolved to pointers up front
-// exactly like renderSwPatchPicker()'s Device/Layered/DrumNote branching.
+namespace {
+// レイヤードパッチバンク以外の3つの発音元(デバイス/PCM波形/サンプル
+// ゾーン)はいずれもfpe::VoicePatchTypeでタグ付けされており、タグの値
+// 空間が重複しないため(D-011/D-013 - PCM波形/AWMは通常のHwBankとは別の
+// PatchWorkspaceベクタ・別JSON形状を持つ)、カテゴリ値1つからどの
+// ベクタを見ればよいかを一意に判定できる。FITOM_X本体側もこれらを
+// 同じCC#0カテゴリ空間の一部として扱っている(config_schema/
+// profile.schema.jsonのpcm_banks[].group注記 - PCMバンクのentries[]は
+// 「パッチピッカー等で選択可能なnamed patchとして自動的にHwBankRegistry
+// 側にも公開される」)。
+enum class DrumSourceKind { Layered, Device, Pcm, SampleZone };
+DrumSourceKind classifyDrumSourceCategory(fpe::VoicePatchType category) {
+    if (category == fpe::VoicePatchType::None) return DrumSourceKind::Layered;
+    if (fpe::isPcmWaveformVoicePatchType(category)) return DrumSourceKind::Pcm;
+    if (fpe::isSampleBasedVoicePatchType(category)) return DrumSourceKind::SampleZone;
+    return DrumSourceKind::Device;
+}
+} // namespace
+
+// Modal picking a DrumNote's (or "direct" DrumKit's) source patch - the same
+// dual "normal mode vs direct mode" semantics as CC#0 itself (see
+// DrumSourcePatchPickerState's comment): normal mode indexes a layered
+// PatchBank/Patch, direct mode indexes one of three differently-shaped
+// "device" registries (regular HwBank/HwPatch, PCM波形 PcmBank/
+// PcmBankEntry, or AWM SampleZoneBank/SampleZonePatch - D-011/D-013).
+//
+// Drills down Category->Bank->Program one level per frame, mirroring
+// FITOM_X本体's own PatchPickerDialog UX (apps/fitom_gui/
+// PatchPickerDialog.cpp in the FITOM_X repo) - the Category level unifies
+// "レイヤード" with every チップファミリー across all three direct-mode
+// registries into one list (classifyDrumSourceCategory() picks the right
+// registry once a category is chosen), same as FITOM_X本体 treats
+// ADPCM-B/A・PCM-D8・AWM as just more CC#0 category values alongside the
+// regular chip families (see FITOM_X's config_schema/profile.schema.json,
+// referenced above).
 void renderDrumSourcePatchPicker(AppContext& ctx) {
     DrumSourcePatchPickerState& p = ctx.drumSourcePatchPicker;
     if (!p.open) return;
@@ -1440,119 +1639,193 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
     ImGui::OpenPopup(title);
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(
-            "発音元パッチを選択してください(レイヤードパッチ、またはデバイスボイスパッチ/PCM波形/サンプルゾーンを直接指定)。");
-        ImGui::Separator();
+        if (p.level != PatchPickerLevel::Category) {
+            if (ImGui::Button("↑ 上へ")) {
+                p.level = (p.level == PatchPickerLevel::Program) ? PatchPickerLevel::Bank : PatchPickerLevel::Category;
+            }
+            ImGui::Separator();
+        }
 
         ImGui::BeginChild("drumsourcepatchpickerlist", ImVec2(560, 460), true);
-        if (ImGui::TreeNodeEx("layered", ImGuiTreeNodeFlags_DefaultOpen, "レイヤードパッチ (normal mode)")) {
-            for (auto& bank : ctx.workspace.layeredPatchBanks()) {
-                ImGui::PushID(bank.bankIndex);
-                const bool isCurrentBank = *targetType == fpe::VoicePatchType::None && bank.bankIndex == *targetBank;
-                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[bank %d] %s", bank.bankIndex,
-                                       bank.name.c_str())) {
-                    for (auto& patch : bank.patches) {
+        if (p.level == PatchPickerLevel::Category) {
+            ImGui::TextUnformatted(
+                "発音元(レイヤードパッチ、またはデバイスボイスパッチ/PCM波形/サンプルゾーン)を選択してください。");
+            std::vector<fpe::VoicePatchType> categories = { fpe::VoicePatchType::None };
+            auto collect = [&categories](const auto& banks) {
+                for (auto& bank : banks) {
+                    if (std::find(categories.begin(), categories.end(), bank.voicePatchType) == categories.end())
+                        categories.push_back(bank.voicePatchType);
+                }
+            };
+            collect(ctx.workspace.deviceBanks());
+            collect(ctx.workspace.pcmBanks());
+            collect(ctx.workspace.sampleZoneBanks());
+            for (fpe::VoicePatchType c : categories) {
+                const std::string label =
+                    (c == fpe::VoicePatchType::None) ? "レイヤード (normal mode)" : fpe::voicePatchTypeToString(c);
+                if (ImGui::Selectable(label.c_str(), c == *targetType)) {
+                    p.category = c;
+                    p.bank = 0;
+                    p.level = PatchPickerLevel::Bank;
+                }
+            }
+        } else if (p.level == PatchPickerLevel::Bank) {
+            const std::string categoryLabel = (p.category == fpe::VoicePatchType::None)
+                ? "レイヤード"
+                : fpe::voicePatchTypeToString(p.category);
+            ImGui::Text("バンクを選択してください: [%s]", categoryLabel.c_str());
+            bool any = false;
+            switch (classifyDrumSourceCategory(p.category)) {
+            case DrumSourceKind::Layered:
+                for (auto& bank : ctx.workspace.layeredPatchBanks()) {
+                    any = true;
+                    const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
+                    const bool selected = *targetType == fpe::VoicePatchType::None && bank.bankIndex == *targetBank;
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        p.bank = bank.bankIndex;
+                        p.level = PatchPickerLevel::Program;
+                    }
+                }
+                break;
+            case DrumSourceKind::Device:
+                for (auto& bank : ctx.workspace.deviceBanks()) {
+                    if (bank.voicePatchType != p.category) continue;
+                    any = true;
+                    const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
+                    const bool selected = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        p.bank = bank.bankIndex;
+                        p.level = PatchPickerLevel::Program;
+                    }
+                }
+                break;
+            case DrumSourceKind::Pcm:
+                for (auto& bank : ctx.workspace.pcmBanks()) {
+                    if (bank.voicePatchType != p.category) continue;
+                    any = true;
+                    const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
+                    const bool selected = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        p.bank = bank.bankIndex;
+                        p.level = PatchPickerLevel::Program;
+                    }
+                }
+                break;
+            case DrumSourceKind::SampleZone:
+                for (auto& bank : ctx.workspace.sampleZoneBanks()) {
+                    if (bank.voicePatchType != p.category) continue;
+                    any = true;
+                    const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
+                    const bool selected = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                    if (ImGui::Selectable(label.c_str(), selected)) {
+                        p.bank = bank.bankIndex;
+                        p.level = PatchPickerLevel::Program;
+                    }
+                }
+                break;
+            }
+            if (!any) ImGui::TextDisabled("(このカテゴリのバンクがありません)");
+        } else {
+            const std::string categoryLabel = (p.category == fpe::VoicePatchType::None)
+                ? "レイヤード"
+                : fpe::voicePatchTypeToString(p.category);
+            ImGui::Text("パッチを選択してください: [%s] bank %d", categoryLabel.c_str(), p.bank);
+            bool found = false;
+            switch (classifyDrumSourceCategory(p.category)) {
+            case DrumSourceKind::Layered: {
+                fpe::PatchBank* bank = nullptr;
+                for (auto& b : ctx.workspace.layeredPatchBanks()) {
+                    if (b.bankIndex == p.bank) { bank = &b; break; }
+                }
+                if (bank) {
+                    found = true;
+                    const bool isCurrentBank = *targetType == fpe::VoicePatchType::None && bank->bankIndex == *targetBank;
+                    for (auto& patch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
                         const bool selected = isCurrentBank && patch.prog == *targetProg;
                         if (ImGui::Selectable(label.c_str(), selected)) {
                             *targetType = fpe::VoicePatchType::None;
-                            *targetBank = bank.bankIndex;
+                            *targetBank = bank->bankIndex;
                             *targetProg = patch.prog;
                             p.open = false;
                             ImGui::CloseCurrentPopup();
                         }
                     }
-                    if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
-                    ImGui::TreePop();
+                    if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
                 }
-                ImGui::PopID();
+                break;
             }
-            if (ctx.workspace.layeredPatchBanks().empty()) ImGui::TextDisabled("(レイヤードパッチバンクがありません)");
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNodeEx("device", ImGuiTreeNodeFlags_DefaultOpen, "デバイスボイスパッチ (direct)")) {
-            for (auto& bank : ctx.workspace.deviceBanks()) {
-                ImGui::PushID(&bank);
-                const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-                const bool isCurrentBank = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
-                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
-                                       bank.bankIndex, bank.name.c_str())) {
-                    for (auto& hwPatch : bank.patches) {
+            case DrumSourceKind::Device: {
+                fpe::HwBank* bank = nullptr;
+                for (auto& b : ctx.workspace.deviceBanks()) {
+                    if (b.voicePatchType == p.category && b.bankIndex == p.bank) { bank = &b; break; }
+                }
+                if (bank) {
+                    found = true;
+                    const bool isCurrentBank = bank->voicePatchType == *targetType && bank->bankIndex == *targetBank;
+                    for (auto& hwPatch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
                         const bool selected = isCurrentBank && hwPatch.prog == *targetProg;
                         if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = bank.voicePatchType;
-                            *targetBank = bank.bankIndex;
+                            *targetType = bank->voicePatchType;
+                            *targetBank = bank->bankIndex;
                             *targetProg = hwPatch.prog;
                             p.open = false;
                             ImGui::CloseCurrentPopup();
                         }
                     }
-                    if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
-                    ImGui::TreePop();
+                    if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
                 }
-                ImGui::PopID();
+                break;
             }
-            if (ctx.workspace.deviceBanks().empty()) ImGui::TextDisabled("(デバイスパッチバンクがありません)");
-            ImGui::TreePop();
-        }
-        // PCM波形バンク(ADPCM-B/A・PCM-D8、fpe::PcmBank)とサンプルゾーン
-        // バンク(AWM、fpe::SampleZoneBank)は、実際のドラムキットが
-        // よく参照する(例: OPL4AWM YRW801ドラムバンク)が、通常のHwBank/
-        // HwPatchとは別のPatchWorkspaceベクタ・別の形状を持つため
-        // (D-011/D-013)、上のdeviceツリーには出てこない - それぞれ専用の
-        // ツリーとして追加する。
-        if (ImGui::TreeNodeEx("pcm", ImGuiTreeNodeFlags_DefaultOpen, "PCM波形バンク (ADPCM-B/A, PCM-D8)")) {
-            for (auto& bank : ctx.workspace.pcmBanks()) {
-                ImGui::PushID(&bank);
-                const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-                const bool isCurrentBank = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
-                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
-                                       bank.bankIndex, bank.name.c_str())) {
-                    for (size_t i = 0; i < bank.entries.size(); ++i) {
-                        const std::string label = "[" + std::to_string(i) + "] " + bank.entries[i].name;
+            case DrumSourceKind::Pcm: {
+                fpe::PcmBank* bank = nullptr;
+                for (auto& b : ctx.workspace.pcmBanks()) {
+                    if (b.voicePatchType == p.category && b.bankIndex == p.bank) { bank = &b; break; }
+                }
+                if (bank) {
+                    found = true;
+                    const bool isCurrentBank = bank->voicePatchType == *targetType && bank->bankIndex == *targetBank;
+                    for (size_t i = 0; i < bank->entries.size(); ++i) {
+                        const std::string label = "[" + std::to_string(i) + "] " + bank->entries[i].name;
                         const bool selected = isCurrentBank && static_cast<int>(i) == *targetProg;
                         if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = bank.voicePatchType;
-                            *targetBank = bank.bankIndex;
+                            *targetType = bank->voicePatchType;
+                            *targetBank = bank->bankIndex;
                             *targetProg = static_cast<int>(i);
                             p.open = false;
                             ImGui::CloseCurrentPopup();
                         }
                     }
-                    if (bank.entries.empty()) ImGui::TextDisabled("(エントリがありません)");
-                    ImGui::TreePop();
+                    if (bank->entries.empty()) ImGui::TextDisabled("(エントリがありません)");
                 }
-                ImGui::PopID();
+                break;
             }
-            if (ctx.workspace.pcmBanks().empty()) ImGui::TextDisabled("(PCM波形バンクがありません)");
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNodeEx("samplezone", ImGuiTreeNodeFlags_DefaultOpen, "サンプルゾーンバンク (AWM)")) {
-            for (auto& bank : ctx.workspace.sampleZoneBanks()) {
-                ImGui::PushID(&bank);
-                const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-                const bool isCurrentBank = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
-                if (ImGui::TreeNodeEx("bank", ImGuiTreeNodeFlags_DefaultOpen, "[%s bank %d] %s", groupStr.c_str(),
-                                       bank.bankIndex, bank.name.c_str())) {
-                    for (auto& patch : bank.patches) {
+            case DrumSourceKind::SampleZone: {
+                fpe::SampleZoneBank* bank = nullptr;
+                for (auto& b : ctx.workspace.sampleZoneBanks()) {
+                    if (b.voicePatchType == p.category && b.bankIndex == p.bank) { bank = &b; break; }
+                }
+                if (bank) {
+                    found = true;
+                    const bool isCurrentBank = bank->voicePatchType == *targetType && bank->bankIndex == *targetBank;
+                    for (auto& patch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
                         const bool selected = isCurrentBank && patch.prog == *targetProg;
                         if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = bank.voicePatchType;
-                            *targetBank = bank.bankIndex;
+                            *targetType = bank->voicePatchType;
+                            *targetBank = bank->bankIndex;
                             *targetProg = patch.prog;
                             p.open = false;
                             ImGui::CloseCurrentPopup();
                         }
                     }
-                    if (bank.patches.empty()) ImGui::TextDisabled("(パッチがありません)");
-                    ImGui::TreePop();
+                    if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
                 }
-                ImGui::PopID();
+                break;
             }
-            if (ctx.workspace.sampleZoneBanks().empty()) ImGui::TextDisabled("(サンプルゾーンバンクがありません)");
-            ImGui::TreePop();
+            }
+            if (!found) ImGui::TextDisabled("(このバンクは見つかりません)");
         }
         ImGui::EndChild();
 
@@ -3764,39 +4037,50 @@ void renderOutline(AppContext& ctx) {
         ImGui::TreePop();
     }
 
-    if (ImGui::TreeNode("device", "デバイスパッチバンク (%zu)", ws.deviceBanks().size())) {
-        auto& banks = ws.deviceBanks();
-        for (size_t i = 0; i < banks.size(); ++i) {
-            const auto& bank = banks[i];
-            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-            std::string label = "[" + groupStr + " bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
-                                 " (" + std::to_string(bank.patches.size()) + " patches)";
-            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Device, i);
+    // デバイス/サンプルゾーン/PCM波形バンクは、実データでは1カテゴリ
+    // (voicePatchType、チップファミリー)あたり数十バンクに及ぶことがある
+    // ため(../FITOM_staging/banks/参照)、単なるフラット一覧ではなく
+    // チップファミリー単位でもう1段グルーピングする - FITOM_X本体自身の
+    // パッチピッカー(apps/fitom_gui/PatchPickerDialog、FITOM_Xリポジトリ)の
+    // Category階層と同じ軸(fpe::VoicePatchType)。3セクションとも同じ形の
+    // 処理なので、ここだけで使うローカルラムダにまとめてある。
+    auto renderCategorizedBankList = [&ctx](auto& banks, BankCategory category, auto&& countOf) {
+        std::vector<fpe::VoicePatchType> types;
+        for (auto& bank : banks) {
+            if (std::find(types.begin(), types.end(), bank.voicePatchType) == types.end())
+                types.push_back(bank.voicePatchType);
         }
+        std::sort(types.begin(), types.end());
+        for (fpe::VoicePatchType t : types) {
+            ImGui::PushID(static_cast<int>(t));
+            if (ImGui::TreeNode("group", "%s", fpe::voicePatchTypeToString(t).c_str())) {
+                for (size_t i = 0; i < banks.size(); ++i) {
+                    if (banks[i].voicePatchType != t) continue;
+                    std::string label = "[bank " + std::to_string(banks[i].bankIndex) + "] " + banks[i].name +
+                                         " (" + std::to_string(countOf(banks[i])) + " patches)";
+                    if (ImGui::Selectable(label.c_str())) selectBank(ctx, category, i);
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+    };
+
+    if (ImGui::TreeNode("device", "デバイスパッチバンク (%zu)", ws.deviceBanks().size())) {
+        renderCategorizedBankList(ws.deviceBanks(), BankCategory::Device,
+                                   [](const fpe::HwBank& b) { return b.patches.size(); });
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNode("samplezone", "サンプルゾーンバンク (%zu)", ws.sampleZoneBanks().size())) {
-        auto& banks = ws.sampleZoneBanks();
-        for (size_t i = 0; i < banks.size(); ++i) {
-            const auto& bank = banks[i];
-            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-            std::string label = "[" + groupStr + " bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
-                                 " (" + std::to_string(bank.patches.size()) + " patches)";
-            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::SampleZone, i);
-        }
+        renderCategorizedBankList(ws.sampleZoneBanks(), BankCategory::SampleZone,
+                                   [](const fpe::SampleZoneBank& b) { return b.patches.size(); });
         ImGui::TreePop();
     }
 
     if (ImGui::TreeNode("pcm", "PCM波形バンク (%zu)", ws.pcmBanks().size())) {
-        auto& banks = ws.pcmBanks();
-        for (size_t i = 0; i < banks.size(); ++i) {
-            const auto& bank = banks[i];
-            const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
-            std::string label = "[" + groupStr + " bank " + std::to_string(bank.bankIndex) + "] " + bank.name +
-                                 " (" + std::to_string(bank.entries.size()) + " patches)";
-            if (ImGui::Selectable(label.c_str())) selectBank(ctx, BankCategory::Pcm, i);
-        }
+        renderCategorizedBankList(ws.pcmBanks(), BankCategory::Pcm,
+                                   [](const fpe::PcmBank& b) { return b.entries.size(); });
         ImGui::TreePop();
     }
 

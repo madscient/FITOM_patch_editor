@@ -3007,6 +3007,95 @@ save()した場合、その1ファイルだけバイト列が変化し、無関�
 という問題が引き続き残る(D-042の対象外)。将来的にこの往復忠実性を
 上げたい場合は別途検討が必要。
 
+### D-043: 3つのパッチピッカー+Outlineのバンク一覧を、FITOM_X本体と同じCategory→Bank→Programドリルダウン構造に変更
+
+**経緯**: 利用者から「パッチピッカーのUI改善。現在はすべてのバンクを
+フラットなツリーで選択しているが、バンクが多いとパッチを探しにくいので、
+FITOM_X本体と同じようなフォルダ階層式にしてほしい」という依頼を受けた。
+
+「FITOM_X本体と同じ」が指す実体を特定するため、まず`../FITOM_staging/`
+(データのみのステージング領域)の実バンク配置を確認し、
+`banks/OPM/dx11/`のようなディレクトリ階層(デバイスバンクのみ、
+チップ種別+機種の2階層)を見つけたが、これは実データの置き場所であって
+FITOM_X本体のUI実装そのものではないため、AskUserQuestionで「sourceFileの
+実ディレクトリ構造をツリー化する」案と「他の分類軸を使う」案を提示した
+ところ、利用者は後者(かつ具体的な軸は口頭で追加説明)を選び、続けて
+「FITOM_X本体のリポジトリは`..\FITOM_X`にあるので自由に参照してください」
+との指示を受けた。実際に`../FITOM_X/apps/fitom_gui/PatchPickerDialog.h`/
+`.cpp`(CC#0/CC#32/Prog.chgのMIDIチャンネルパッチ選択ダイアログ、
+`ChSettingsDialog`から開かれる)を読んだところ、FITOM_X本体の「フォルダ
+階層式」はディレクトリツリーではなく、**Category(CC#0、チップファミリー。
+0=「レイヤード」を含む)→Bank(CC#32)→Program(Prog.chg)の3階層を、
+1階層ずつ画面を差し替えながらドリルダウンするナビゲーション**
+(「↑ 上へ」ボタンで1段戻る、常時展開のツリーではない)だと判明した。
+このリポジトリの`fpe::VoicePatchType`はFITOM_Xの当該Category値表と
+1:1対応する既存の分類軸であり、新規のJSONフィールドを追加する必要は
+なかった。
+
+**決定**: 3つの既存パッチピッカー(`renderHwPatchPicker()`/
+`renderSwPatchPicker()`/`renderDrumSourcePatchPicker()`)を、それぞれ
+FITOM_X本体のPatchPickerDialogと同じ「1フレームにつき1階層だけ表示、
+`PatchPickerLevel`(Category/Bank/Program、`apps/gui/main.cpp`で新設)
+enumで管理し、`↑ 上へ`ボタンで1段戻る」構造に書き換えた。
+
+- `renderHwPatchPicker()`(ToneLayerのhw_bank/hw_prog、デバイスパッチのみ):
+  Category=`fpe::VoicePatchType`(`ctx.workspace.deviceBanks()`に実在する
+  値のみ、`voicePatchTypeToString()`でラベル化)→Bank→Program。FITOM_Xの
+  「レイヤード」カテゴリ(CC#0=0)に相当するものはこの参照には存在しない
+  (ToneLayer自身がレイヤード側の構成要素なので自己参照になってしまう)
+  ため含めていない。
+- `renderSwPatchPicker()`(HwPatch/Patch/DrumNoteのsw_bank/sw_prog、
+  パフォーマンスパッチ参照): Bank→Programの2階層のみ。パフォーマンス
+  バンクはFITOM_X側でもチップファミリーによるタグ付けが無く
+  (`PatchPickerDialog`自体、この参照種別に相当する画面を持たない -
+  `FITOMBridge`に`getSwBankList()`相当のAPIが存在しないことで確認)、
+  Category階層を追加する根拠が無かったため省略した。
+- `renderDrumSourcePatchPicker()`(DrumNote/DrumKitのソースパッチ、
+  レイヤード/デバイス/PCM波形/サンプルゾーンの4種を束ねる、D-038):
+  Category=「レイヤード」(`VoicePatchType::None`)+
+  `deviceBanks()`/`pcmBanks()`/`sampleZoneBanks()`の3ベクタ全てに実在する
+  `VoicePatchType`値を統合した1つのリスト→Bank→Program。カテゴリ選択後は
+  `classifyDrumSourceCategory()`(新設、`isPcmWaveformVoicePatchType()`/
+  `isSampleBasedVoicePatchType()`で判定)でどのベクタを見るべきかを
+  一意に決定する。この4種統合はFITOM_X本体側の実際の挙動とも整合する -
+  `../FITOM_X/config_schema/profile.schema.json`の`pcm_banks[].group`
+  注記に「entries[]の各サンプルが、パッチピッカー等で選択可能な
+  named patchとして自動的にHwBankRegistry側にも公開される」とあり、
+  FITOM_X本体はPCM波形/AWMも同じCategory軸(ADPCM-B/ADPCM-A/PCMD8/AWMの
+  VoicePatchType値)上の選択肢として扱っている。
+
+いずれのピッカーも、開いた瞬間の初期階層はFITOM_X本体の
+`PatchPickerDialog::open()`と同じ方針にした - 参照が既に設定済み
+(sw_bank等が-1でない、ToneLayerのvoice_patch_typeがNoneでない)なら
+Categry/Bankを現在値から補完していきなりProgram階層を表示し、未設定
+なら一番上の階層(Category階層があるものはCategory、無いものはBank)
+から開始する。DrumNote/DrumKitのソースパッチだけは「未設定」を表す
+センチネル値が存在しない(`patch_bank`/`patch_prog`の既定値0/0は
+「レイヤードバンク0番prog0」という正当な選択そのもの)ため、常に
+Program階層から開始する(これもFITOM_X本体と同じ)。
+
+またOutline画面(`renderOutline()`)のデバイス/サンプルゾーン/PCM波形
+バンク一覧も、同じ`fpe::VoicePatchType`軸でチップファミリー単位の
+`ImGui::TreeNode`一段でグルーピングした(モーダルのドリルダウンとは
+異なり、Outlineは元々常設の展開式ツリーなので、そのパラダイムのまま
+一段追加する形にした)。レイヤード/パフォーマンス/ドラムキットマップは
+FITOM_X本体側にもチップファミリー軸が無いため変更していない。
+
+**実機確認**: ビルド(`cmake --build build/vs2026`)・`ctest`(既存
+`fpe_smoke_test`、回帰なし。今回の変更はGUI層のみでデータモデル層に
+変更は無いためテスト項目数自体も変わらず)を確認。キオスクモード
+(`layered`種別、`fixtures/profile.json` `fixtures/patches/
+00_general.patchbank.json` prog 0)を`timeout`経由で起動し、数秒間
+クラッシュせず稼働することを確認した。`CLAUDE.md`の方針により、
+ピッカー自体を実際にクリックして各階層(Category/Bank/Program)の
+表示・「↑ 上へ」での遷移を確認する作業は未実施(利用者の目視確認待ち)。
+
+**未完了・既知の課題**: ピッカーのクリック操作による実機確認は上記の
+通り利用者待ち。試聴(FITOM_X本体のPatchPickerDialogがProgram階層の
+行を押している間だけNote On/Offを送る機能)は今回のスコープ外として
+意図的に実装していない(依頼は「探しやすさ」のみで、試聴には既存の
+パッチ編集ウィンドウ自体のプレビュー鍵盤が別途ある)。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
