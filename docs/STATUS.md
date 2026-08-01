@@ -2178,3 +2178,43 @@
 - 次にやること: 利用者に今回の変更(Device/レイヤード/パフォーマンス
   編集画面の「登録」後の自動クローズ、キオスクモードでは変更なし)を
   実機で確認してもらう。
+
+### 2026-08-01 (同マシン・同セッション続き、FITOM_X本体新設のバンク直接編集(永続化)SysExを4種の「登録」に統合、D-047の制約を解消、D-049)
+- やったこと: 利用者から「FITOM_X側で、ドラムノートの永続化機能が
+  追加されました。ドキュメントを読んで、その他のパッチ編集画面にも
+  適用してください」という依頼を受けた。詳細はD-049参照。`..\FITOM_X`
+  のコミット`06a3127`(`docs/plugin-midi-pipe.md`5.6節、
+  `docs/manuals/midi-message-reference.md`8.1.1節)を確認し、D-047で
+  「本エディタ側では対応不可」としていた制約が、FITOM_X側の新機能
+  追加によって解消されたことを確認した。
+  新規SysEx: HwPatch/SwPatch用の既存プライベートSysExに
+  `target-type=0x01`(プリセットバンク直接編集)の実際の呼び出し方を
+  追加利用、レイヤードパッチ/ドラムキット用に新規`sub-cmd=0x06`/`0x07`
+  (target-type/layerの枠組みを持たない新形式)。いずれも「メモリ上のみ、
+  ディスク保存はしない」ため、本エディタの既存`ws.save()`と対にして
+  送る設計。
+  JSON形状は4種ともほぼ`fpe::to_json()`の出力そのままで足りた
+  (HwPatch: 既存`buildHwPatchOverrideJson()`再利用、SwPatch/
+  レイヤードパッチ: `nlohmann::json(*patch)`をそのまま使用、余分な
+  キーはFITOM_X側で無視される)が、ドラムキットだけ新規
+  `buildDrumKitOverrideJson(kit)`が必要だった。理由は(1)"routed"/
+  "direct"の形状差を`kit.effectiveNotes()`で統一する必要があったこと、
+  (2)より重要な点として、FITOM_Xの`DrumPatch::notes[128]`固定配列の
+  各要素が持つランタイム専用`enabled`フラグ(デフォルトfalse、
+  `drumkit.schema.json`/`fpe::DrumNote`には存在しない概念)を明示的に
+  `true`にして送らないと、新規追加したノートが正しいデータのまま一切
+  発音しなくなる(`DrumPatch::getNote()`が`enabled==false`のスロットに
+  `nullptr`を返すため)ことが判明したため。
+  4つの「登録」ボタン全て(Device/レイヤード/パフォーマンス/ドラム
+  ノート、および"direct"キットのインライン登録)に、`ws.save()`成功
+  直後の`ctx.previewOutput.sendXxxBankOverride()`呼び出しを追加した
+  (新規`MidiMessages.h`のビルダー4つ+対応する`PreviewOutput`メソッド
+  4つ)。
+  ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、データモデル
+  層に変更なしのため回帰なし)を確認した。
+- 未完了・既知の問題: 実際にFITOM_Xへ接続して「登録」後に再起動無しで
+  変更が聴こえることの実機確認は`CLAUDE.md`の方針により未実施。新規
+  バンク作成直後(FITOM_X未登録の状態)は依然再起動が必要という制約
+  (D-047)は変わっていない。
+- 次にやること: 利用者に今回の変更(4種のパッチ編集画面「登録」後、
+  FITOM_X再起動無しで反映されること)を実機で確認してもらう。
