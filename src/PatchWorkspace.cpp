@@ -38,6 +38,22 @@ void saveJsonFile(const std::filesystem::path& path, const T& value) {
     out << j.dump(2) << '\n';
 }
 
+// Like saveJsonFile(), but skips the write (and the baseline update) when
+// `value`'s current JSON is structurally identical to `original[path]` -
+// see PatchWorkspace::originalContent_'s comment for why this matters
+// (D-042). `original` is updated to the just-written content either way a
+// write happens, so the next call in the same session compares against
+// what's now actually on disk.
+template <typename T>
+void saveIfDirty(std::map<std::filesystem::path, nlohmann::json>& original, const std::filesystem::path& path,
+                  const T& value) {
+    nlohmann::json cur = value;
+    auto it = original.find(path);
+    if (it != original.end() && it->second == cur) return;
+    saveJsonFile(path, value);
+    original[path] = std::move(cur);
+}
+
 // Loads a *.pcmbank.json. If it has no entries[] of its own but does name
 // an adpcm_json (the usual case - see PcmBank.h), follows that reference,
 // resolved relative to `path`'s own parent directory (matches FITOM_X's
@@ -192,6 +208,26 @@ void PatchWorkspace::load(const std::filesystem::path& profileJsonPath) {
     profile_.pcm_banks = std::move(merged.pcm_banks);
 
     loadBanks();
+    captureOriginalContent();
+}
+
+// Establishes a fresh originalContent_ baseline from what's currently
+// loaded (D-042, see originalContent_'s comment). Called once by load();
+// save() itself keeps the baseline current incrementally via
+// saveIfDirty()'s own `original[path] = ...` as each file is written, so
+// this doesn't need to run again after every save().
+void PatchWorkspace::captureOriginalContent() {
+    originalContent_.clear();
+    originalContent_[profilePath_] = profile_;
+    if (!profile_.bank_overrides.externalFile.empty()) {
+        originalContent_[resolve(profile_.bank_overrides.externalFile)] = profile_.bank_overrides.data;
+    }
+    for (auto& b : patchBanks_) originalContent_[b.sourceFile] = b;
+    for (auto& b : swBanks_) originalContent_[b.sourceFile] = b;
+    for (auto& b : hwBanks_) originalContent_[b.sourceFile] = b;
+    for (auto& b : sampleZoneBanks_) originalContent_[b.sourceFile] = b;
+    for (auto& b : pcmBanks_) originalContent_[b.sourceFile] = b;
+    for (auto& k : drumKits_) originalContent_[k.sourceFile] = k;
 }
 
 void PatchWorkspace::resolveBanksSource(BanksSource& src) {
@@ -356,25 +392,38 @@ void PatchWorkspace::save() {
         throw JsonError("PatchWorkspace::save() called with no path set - use saveAs() first");
     }
     syncBanksSourceForSave();
-    saveJsonFile(profilePath_, profile_);
+    // Every write below goes through saveIfDirty() rather than
+    // saveJsonFile() directly (D-042): only files whose content actually
+    // changed since load()/the last save() get rewritten. Without this,
+    // every save() re-serialized the *entire* loaded reference tree
+    // (this project's "write explicitly" JSON philosophy re-emits the full
+    // canonical field set unconditionally), which for a profile built on a
+    // shared "banks" bankset (D-041) meant a single patch edit could touch
+    // dozens of files - including ones belonging to other profiles - that
+    // were never actually edited this session. A path with no
+    // originalContent_ entry (freshly created this session, or rebased by
+    // saveAs() to a location that's never been written to) is always
+    // treated as dirty, so this doesn't change saveAs()'s "always produces
+    // a complete, self-contained copy" behavior.
+    saveIfDirty(originalContent_, profilePath_, profile_);
     // "banks" is deliberately never written back here (see
     // syncBanksSourceForSave()) even when it's an external reference; only
     // "bank_overrides" gets a physical file of its own, and only if it was
     // itself an external reference to begin with.
     if (!profile_.bank_overrides.externalFile.empty()) {
-        saveJsonFile(resolve(profile_.bank_overrides.externalFile), profile_.bank_overrides.data);
+        saveIfDirty(originalContent_, resolve(profile_.bank_overrides.externalFile), profile_.bank_overrides.data);
     }
-    for (auto& b : patchBanks_) saveJsonFile(b.sourceFile, b);
-    for (auto& b : swBanks_) saveJsonFile(b.sourceFile, b);
-    for (auto& b : hwBanks_) saveJsonFile(b.sourceFile, b);
-    for (auto& b : sampleZoneBanks_) saveJsonFile(b.sourceFile, b);
+    for (auto& b : patchBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
+    for (auto& b : swBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
+    for (auto& b : hwBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
+    for (auto& b : sampleZoneBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
     // Re-serializes each pcmbank.json's own top-level fields; entries[]
     // read from a separate adpcm_json are NOT duplicated in here (PcmBank's
     // to_json omits them whenever adpcm_json is set) - copying that sidecar
     // file itself alongside is rebaseSourceFiles()'s job (saveAs() calls it
     // before save()), since it needs both the old and new sourceFile.
-    for (auto& b : pcmBanks_) saveJsonFile(b.sourceFile, b);
-    for (auto& k : drumKits_) saveJsonFile(k.sourceFile, k);
+    for (auto& b : pcmBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
+    for (auto& k : drumKits_) saveIfDirty(originalContent_, k.sourceFile, k);
 }
 
 void PatchWorkspace::rebaseSourceFiles(const std::filesystem::path& newRoot) {
@@ -419,6 +468,7 @@ void PatchWorkspace::createNew(const std::filesystem::path& dir, const std::stri
     pcmBanks_.clear();
     drumKits_.clear();
     warnings_.clear();
+    originalContent_.clear();
 }
 
 PatchBank* PatchWorkspace::findLayeredPatchBank(int bank) {

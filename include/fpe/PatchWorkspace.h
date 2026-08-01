@@ -1,7 +1,10 @@
 #pragma once
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "fpe/DrumKit.h"
 #include "fpe/HwPatch.h"
@@ -47,7 +50,12 @@ public:
     void load(const std::filesystem::path& profileJsonPath);
 
     // Writes profile.json and every loaded bank/kit back to their
-    // sourceFile path.
+    // sourceFile path - but only files whose in-memory content actually
+    // differs from what was last loaded from (or written to) disk, so
+    // pressing "save" doesn't rewrite the whole reference tree (which, for
+    // a profile built on a shared "banks" bankset, can be dozens of files
+    // belonging to other profiles too) just because one patch changed. See
+    // originalContent_'s comment.
     void save();
     void saveAs(const std::filesystem::path& profileJsonPath);
 
@@ -119,10 +127,25 @@ private:
     std::vector<SwBank> swBanks_;
     std::vector<HwBank> hwBanks_;
     std::vector<SampleZoneBank> sampleZoneBanks_;
-    std::vector<PcmBank> pcmBanks_; // browse-only, never written back on save() - see PcmBank.h
+    std::vector<PcmBank> pcmBanks_;
     std::vector<DrumKit> drumKits_;
 
     std::vector<std::string> warnings_;
+
+    // Snapshot of each loaded file's content (profile.json, every bank/kit,
+    // and bank_overrides' own file if it's external), taken right after
+    // load()/save() last touched it - keyed by resolved sourceFile path.
+    // save() compares each candidate write against this before actually
+    // writing, so an unedited file (e.g. one only reached transitively
+    // through a shared "banks" bankset) is left untouched rather than
+    // rewritten byte-for-byte-different (this project's "write explicitly"
+    // JSON philosophy re-emits the full canonical field set every time,
+    // which would otherwise turn every save() into a mass rewrite of the
+    // entire reference tree - reported as a bug, see docs/DESIGN.md D-042).
+    // A path with no entry here (freshly created this session, or a stale
+    // pre-rebase path after saveAs()) is always considered dirty.
+    std::map<std::filesystem::path, nlohmann::json> originalContent_;
+    void captureOriginalContent();
 
     void loadBanks();
     // Loads `src.externalFile` (if non-empty) into `src.data`, resolved

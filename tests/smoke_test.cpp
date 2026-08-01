@@ -51,6 +51,13 @@ static fs::path fixturesDir() {
 #endif
 }
 
+static std::string readFile(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
 static void testVoicePatchType() {
     using fpe::VoicePatchType;
     CHECK(fpe::stringToVoicePatchType("OPM") == VoicePatchType::OPM);
@@ -311,12 +318,7 @@ static void testSharedBankset(const fs::path& scratchDir) {
     }
     const fs::path profilePath = scratchDir / "profile_shared.json";
     const fs::path bankset = scratchDir / "shared.bankset.json";
-    const std::string bankSetContentBefore = [&] {
-        std::ifstream in(bankset, std::ios::binary);
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        return ss.str();
-    }();
+    const std::string bankSetContentBefore = readFile(bankset);
 
     fpe::PatchWorkspace ws;
     ws.load(profilePath);
@@ -343,13 +345,7 @@ static void testSharedBankset(const fs::path& scratchDir) {
     ws.save();
 
     // The base file must be byte-for-byte unchanged.
-    const std::string bankSetContentAfter = [&] {
-        std::ifstream in(bankset, std::ios::binary);
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        return ss.str();
-    }();
-    CHECK(bankSetContentAfter == bankSetContentBefore);
+    CHECK(readFile(bankset) == bankSetContentBefore);
 
     // profile.json's own "banks" key must still be the plain string.
     nlohmann::json raw;
@@ -374,6 +370,56 @@ static void testSharedBankset(const fs::path& scratchDir) {
     auto* reloadedKit2 = reloaded.findDrumKit(2);
     CHECK(reloadedKit2 != nullptr);
     if (reloadedKit2) CHECK(reloadedKit2->name == "Extra Kit");
+}
+
+// D-042: save() used to unconditionally re-serialize every loaded bank/kit,
+// even ones nothing this session touched (reported as a real-world bug -
+// pressing "register" rewrote the whole reference tree). Checks that an
+// untouched file's bytes survive a save() completely untouched, while a
+// file that genuinely changed does get rewritten - and that this doesn't
+// depend on *which* file changed (so the mechanism isn't just "save() is a
+// no-op now").
+static void testSaveOnlyRewritesChangedFiles(const fs::path& scratchDir) {
+    if (fs::exists(scratchDir)) fs::remove_all(scratchDir);
+    fs::create_directories(scratchDir);
+    for (const auto& entry : fs::directory_iterator(fixturesDir())) {
+        fs::copy(entry.path(), scratchDir / entry.path().filename(),
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+    }
+    const fs::path profilePath = scratchDir / "profile.json";
+    const fs::path patchBankFile = scratchDir / "patches" / "00_general.patchbank.json";
+    const fs::path swBankFile = scratchDir / "sw" / "default_gm.swbank.json";
+    const fs::path drumKitFile = scratchDir / "drums" / "std_kit.drumkit.json";
+
+    const std::string profileBefore = readFile(profilePath);
+    const std::string patchBankBefore = readFile(patchBankFile);
+    const std::string swBankBefore = readFile(swBankFile);
+    const std::string drumKitBefore = readFile(drumKitFile);
+
+    fpe::PatchWorkspace ws;
+    ws.load(profilePath);
+    CHECK(ws.warnings().empty());
+
+    // No edits at all: every file, including profile.json itself, must be
+    // left byte-for-byte untouched (not just "re-serialize to the same
+    // content" - genuinely never opened for writing).
+    ws.save();
+    CHECK(readFile(profilePath) == profileBefore);
+    CHECK(readFile(patchBankFile) == patchBankBefore);
+    CHECK(readFile(swBankFile) == swBankBefore);
+    CHECK(readFile(drumKitFile) == drumKitBefore);
+
+    // Now make one real edit (rename the layered patch bank at bank 0) and
+    // save again: only patches/00_general.patchbank.json (PatchBank::name
+    // is part of that file's own JSON shape) should change; sw/drums must
+    // still be untouched.
+    auto* patchBank = ws.findLayeredPatchBank(0);
+    CHECK(patchBank != nullptr);
+    if (patchBank) patchBank->name = "General (renamed)";
+    ws.save();
+    CHECK(readFile(patchBankFile) != patchBankBefore);
+    CHECK(readFile(swBankFile) == swBankBefore);
+    CHECK(readFile(drumKitFile) == drumKitBefore);
 }
 
 static void testDefaults() {
@@ -409,6 +455,7 @@ int main() {
     testCrudAndRoundTrip(ws, scratch);
 
     testSharedBankset(fs::temp_directory_path() / "fpe_smoke_test_shared_bankset");
+    testSaveOnlyRewritesChangedFiles(fs::temp_directory_path() / "fpe_smoke_test_dirty_save");
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     if (g_failures > 0) {
