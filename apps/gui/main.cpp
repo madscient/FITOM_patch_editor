@@ -3389,6 +3389,14 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
             try {
                 ctx.workspace.save();
                 editor.registered = *patch;
+                // D-048: close on a successful save, per the project
+                // owner's request, extending D-047's drum-note-editor
+                // change to the other three modeless patch editors. Not in
+                // kiosk mode - closing there exits the whole process
+                // (D-026), which "close the window after 登録" was never
+                // asked to do; kiosk mode keeps its existing "stays open,
+                // title-bar X exits" behavior.
+                if (!ctx.kioskMode) editor.open = false;
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
@@ -3689,6 +3697,7 @@ void renderLayeredPatchEditor(AppContext& ctx, LayeredPatchEditorWindow& editor)
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ctx.workspace.save();
+                if (!ctx.kioskMode) editor.open = false; // D-048, see renderPatchEditor()'s comment
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
@@ -3899,6 +3908,7 @@ void renderPerformancePatchEditor(AppContext& ctx, PerformancePatchEditorWindow&
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ctx.workspace.save();
+                if (!ctx.kioskMode) editor.open = false; // D-048, see renderPatchEditor()'s comment
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
@@ -3978,12 +3988,11 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
     {
         // Top-right "登録", matching every other patch editor's own (D-027) -
         // persists the whole workspace (DrumKit has no narrower single-note
-        // save API either). Unlike the other three patch editors (which stay
-        // open after 登録 so the user can keep tweaking synthesis parameters
-        // and previewing), this one closes itself on a successful save
-        // (D-047, per the project owner's request) - a drum note's fields
-        // are simple one-shot edits (name/source patch/play note/etc), not
-        // something typically iterated on with the window left open.
+        // save API either), and closes itself on a successful save (D-047,
+        // per the project owner's request - extended to the other three
+        // modeless patch editors too by D-048, see renderPatchEditor()'s
+        // comment for the kiosk-mode caveat, which doesn't apply here since
+        // DrumNoteEditorWindow has no kiosk-slot equivalent to begin with).
         const float buttonW = 90.0f;
         const float avail = ImGui::GetContentRegionAvail().x;
         if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
