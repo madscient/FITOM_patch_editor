@@ -593,6 +593,21 @@ struct KioskDrumKitWindow {
     size_t kitIndex = 0; // index into ws.drumKits()
 };
 
+// One-shot preview state for a single click on a drum-note list row
+// (renderDrumKitDetail(), D-044) - distinct from the note editor's own
+// press-and-hold "試聴" button (D-038), since a plain click has no
+// "release" event to key off of; instead this auto-stops after
+// kDrumNoteListPreviewDuration via updateDrumNoteListPreview(), called once
+// per frame regardless of screen/kiosk-vs-normal (main()'s render loop) so
+// a note can't keep sounding after the user navigates away or the app
+// otherwise stops polling this specific screen.
+struct DrumNoteListPreviewState {
+    bool active = false;
+    uint8_t channel = 0;     // channel noteOn() was actually sent on, for noteOff() to match
+    uint8_t channelNote = 0; // DrumNote::play_note actually sent
+    double startTime = 0.0;  // ImGui::GetTime() at noteOn() time
+};
+
 struct AppContext {
     fpe::PatchWorkspace workspace;
     AppState state = AppState::MainMenu;
@@ -620,6 +635,7 @@ struct AppContext {
     HwPatchPickerState hwPatchPicker; // shared HW-patch picker (for ToneLayer refs), see HwPatchPickerState/openHwPatchPicker()
     DrumSourcePatchPickerState drumSourcePatchPicker; // shared drum-note source-patch picker, see openDrumSourcePatchPicker()
     DrumNoteKeyboardPickerState drumNoteKeyboardPicker; // shared drum-note play_note keyboard picker, see openDrumNoteKeyboardPicker()
+    DrumNoteListPreviewState drumNoteListPreview; // one-shot single-click preview, see startDrumNoteListPreview() (D-044)
 
     // Selection driving the BankDetail screen - which category/index into
     // the corresponding PatchWorkspace vector. Only meaningful while
@@ -4099,6 +4115,55 @@ void renderOutline(AppContext& ctx) {
     ImGui::EndChild();
 }
 
+// A single click on a drum-note list row lasts one frame - there is no
+// "release" to key a noteOff off of the way the note editor's press-and-hold
+// "試聴" button does (D-038) - so this fixed duration stands in for that,
+// short enough to feel like a quick preview blip rather than a sustained
+// note. D-044.
+constexpr double kDrumNoteListPreviewDuration = 0.4;
+
+// Sends noteOff for whatever's currently previewing from the drum-note list,
+// if anything - safe to call unconditionally. Used both to auto-stop after
+// kDrumNoteListPreviewDuration and to cut a still-sounding preview short
+// when a different row is clicked (D-044) - previews never overlap/stack.
+void stopDrumNoteListPreview(AppContext& ctx) {
+    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    if (!p.active) return;
+    ctx.previewOutput.noteOff(p.channel, p.channelNote, 0);
+    p.active = false;
+}
+
+// One-shot preview triggered by a single click on a drum-note list row
+// (D-044, renderDrumKitDetail()) - selects the note's current source patch
+// and sounds its play_note, auto-stopping after kDrumNoteListPreviewDuration
+// (see updateDrumNoteListPreview()) rather than requiring press-and-hold,
+// since a plain click has no "release" event. No-op if no preview backend
+// is currently available (offline).
+void startDrumNoteListPreview(AppContext& ctx, const fpe::DrumNote& note) {
+    stopDrumNoteListPreview(ctx);
+    if (ctx.previewOutput.ensureReady() == PreviewOutput::ActiveBackend::None) return;
+    const uint8_t ch = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
+    ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(note.voice_patch_type),
+                                    static_cast<uint8_t>(note.patch_bank), static_cast<uint8_t>(note.patch_prog));
+    ctx.previewOutput.noteOn(ch, note.play_note, 100);
+    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    p.active = true;
+    p.channel = ch;
+    p.channelNote = note.play_note;
+    p.startTime = ImGui::GetTime();
+}
+
+// Called once per frame regardless of screen/kiosk-vs-normal (main()'s
+// render loop, D-044) - auto-stops a single-click list preview once its
+// fixed duration has elapsed. A no-op most frames (active is usually
+// false).
+void updateDrumNoteListPreview(AppContext& ctx) {
+    const DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    if (p.active && ImGui::GetTime() - p.startTime >= kDrumNoteListPreviewDuration) {
+        stopDrumNoteListPreview(ctx);
+    }
+}
+
 // The routed-kit note list, or the direct-kit inline editor, for
 // ws.drumKits()[kitIndex]. Factored out of renderBankDetail()'s
 // BankCategory::Drum case (D-040) so kiosk mode's "drum" kind can render the
@@ -4123,10 +4188,11 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
     if (kit.type == fpe::DrumKitType::Routed) {
         // ドラムノート選択画面 (D-038): 0-127の全MIDIノートを表示し、
         // 未割当のノートも一覧できるようにする(依頼通り)。割当済みの
-        // 行はクリックでドラムノート編集画面(モードレス、
-        // openDrumNoteEditor())を開き、末尾に複製・削除ボタンを
-        // 用意する。未割当の行は「作成」ボタンでデフォルト値の
-        // DrumNoteを追加した上で編集画面を開く。複製・削除は
+        // 行はシングルクリックでその場でプレビュー発音
+        // (startDrumNoteListPreview()、D-044)、ダブルクリックでドラム
+        // ノート編集画面(モードレス、openDrumNoteEditor())を開き、末尾に
+        // 複製・削除ボタンを用意する。未割当の行は「作成」ボタンで
+        // デフォルト値のDrumNoteを追加した上で編集画面を開く。複製・削除は
         // バンク作成(D-014)と同様、即座にws.save()する構造的な
         // 変更として扱う(登録ボタンでの明示保存が必要な、
         // 各ノートのフィールド編集そのものとは区別する)。
@@ -4139,9 +4205,19 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
                 const std::string label = "note " + std::to_string(n) + " (" + midiNoteName(n) + "): " +
                                            note->name + "  -> play " + midiNoteName(note->play_note) + " (" +
                                            std::to_string(note->play_note) + ")";
-                if (ImGui::Selectable(label.c_str(), false, 0, ImVec2(560, 0))) {
-                    openDrumNoteEditor(ctx, kitIndex, static_cast<uint8_t>(n));
+                // シングルクリックでその場でプレビュー発音、ダブルクリックで
+                // 編集画面を開く(D-044)。ImGuiSelectableFlags_AllowDoubleClick
+                // を付けるとSelectable()はどちらのクリックでもtrueを返すため、
+                // IsMouseDoubleClicked()で判別する(Dear ImGuiの標準的な
+                // ダブルクリック判定パターン)。
+                if (ImGui::Selectable(label.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(560, 0))) {
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        openDrumNoteEditor(ctx, kitIndex, static_cast<uint8_t>(n));
+                    } else {
+                        startDrumNoteListPreview(ctx, *note);
+                    }
                 }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックで試聴、ダブルクリックで編集");
                 ImGui::SameLine();
                 if (ImGui::SmallButton("複製")) {
                     const int toNote = nextFreeDrumNote(kit, static_cast<uint8_t>(n));
@@ -4617,6 +4693,12 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+
+        // D-044: auto-stops a drum-note list single-click preview once its
+        // fixed duration elapses - unconditional so it still fires even if
+        // the user navigated away from the drum-note screen mid-preview
+        // (kiosk or normal, doesn't matter which screen is showing now).
+        updateDrumNoteListPreview(ctx);
 
         if (ctx.kioskMode) {
             // No outer "FITOM_X Patch Editor" menu/outline frame at all in
