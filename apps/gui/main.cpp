@@ -549,11 +549,21 @@ struct DrumSourcePatchPickerState {
 // picker's own scroll position (which octave range is currently shown),
 // independent of the note being edited, so paging through octaves doesn't
 // fight with the value being picked.
+//
+// D-045 widened the keyboard to 5 octaves and changed the click semantics:
+// a single click no longer commits play_note immediately - it previews the
+// clicked pitch (through the note's current source patch, reusing D-044's
+// one-shot list-preview mechanism) and records it as `selectedNote`, a
+// pending choice that only actually gets written to play_note by a double
+// click on a key or the new "OK" button - so a single click can be used
+// purely to audition pitches without any risk of accidentally changing the
+// value.
 struct DrumNoteKeyboardPickerState {
     bool open = false;
-    size_t kitIndex = 0; // index into ws.drumKits()
-    uint8_t note = 0;    // DrumNote::note within that kit (the note being edited, routed kits only)
-    int baseNote = 48;   // C3 - leftmost key currently shown, always a C
+    size_t kitIndex = 0;  // index into ws.drumKits()
+    uint8_t note = 0;     // DrumNote::note within that kit (the note being edited, routed kits only)
+    int baseNote = 36;    // C2 - leftmost key currently shown, always a C
+    int selectedNote = -1; // pending choice (D-045) - -1 only if never initialized; see openDrumNoteKeyboardPicker()
 };
 
 // Editable working copy shown by renderPreferencesDialog() - only written
@@ -667,6 +677,57 @@ struct AppContext {
     PerformancePatchEditorWindow kioskPerformanceEditor;
     KioskDrumKitWindow kioskDrumEditor;
 };
+
+// A single click (drum-note list row, D-044; or a key in
+// renderDrumNoteKeyboardPicker(), D-045) lasts one frame - there is no
+// "release" to key a noteOff off of the way the note editor's press-and-hold
+// "試聴" button does (D-038) - so this fixed duration stands in for that,
+// short enough to feel like a quick preview blip rather than a sustained
+// note.
+constexpr double kDrumNoteListPreviewDuration = 0.4;
+
+// Sends noteOff for whatever's currently previewing via
+// startDrumNoteListPreview(), if anything - safe to call unconditionally.
+// Used both to auto-stop after kDrumNoteListPreviewDuration and to cut a
+// still-sounding preview short when a new one starts (D-044) - previews
+// never overlap/stack.
+void stopDrumNoteListPreview(AppContext& ctx) {
+    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    if (!p.active) return;
+    ctx.previewOutput.noteOff(p.channel, p.channelNote, 0);
+    p.active = false;
+}
+
+// One-shot preview triggered by a single click - either a drum-note list row
+// (D-044, renderDrumKitDetail()) or a key in the play_note keyboard picker
+// (D-045, renderDrumNoteKeyboardPicker()) - selects `note`'s source patch and
+// sounds `note.play_note`, auto-stopping after kDrumNoteListPreviewDuration
+// (see updateDrumNoteListPreview()) rather than requiring press-and-hold,
+// since a plain click has no "release" event. No-op if no preview backend is
+// currently available (offline).
+void startDrumNoteListPreview(AppContext& ctx, const fpe::DrumNote& note) {
+    stopDrumNoteListPreview(ctx);
+    if (ctx.previewOutput.ensureReady() == PreviewOutput::ActiveBackend::None) return;
+    const uint8_t ch = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
+    ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(note.voice_patch_type),
+                                    static_cast<uint8_t>(note.patch_bank), static_cast<uint8_t>(note.patch_prog));
+    ctx.previewOutput.noteOn(ch, note.play_note, 100);
+    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    p.active = true;
+    p.channel = ch;
+    p.channelNote = note.play_note;
+    p.startTime = ImGui::GetTime();
+}
+
+// Called once per frame regardless of screen/kiosk-vs-normal (main()'s
+// render loop, D-044) - auto-stops a single-click preview once its fixed
+// duration has elapsed. A no-op most frames (active is usually false).
+void updateDrumNoteListPreview(AppContext& ctx) {
+    const DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    if (p.active && ImGui::GetTime() - p.startTime >= kDrumNoteListPreviewDuration) {
+        stopDrumNoteListPreview(ctx);
+    }
+}
 
 void tryLoadProfile(AppContext& ctx, const fs::path& file) {
     fpe::PatchWorkspace newWorkspace;
@@ -2901,25 +2962,48 @@ KeyboardResult renderPreviewKeyboard(int baseNote, int whiteKeyCount, float whit
     return result;
 }
 
+// White-key count/semitone span for renderDrumNoteKeyboardPicker() - 5
+// octaves (D-045, widened from the original 3) so more of the MIDI range is
+// visible without paging. 36 white keys = 5*7+1 (the "+1" trailing C, same
+// convention as renderPreviewKeyboard()'s other callers) = a 60-semitone
+// span; `kDrumNoteKeyboardMaxBase` is the highest `baseNote` that still
+// keeps the whole 36-key span within 0-127.
+constexpr int kDrumNoteKeyboardWhiteKeys = 36;
+constexpr int kDrumNoteKeyboardSemitoneSpan = 60;
+constexpr int kDrumNoteKeyboardMaxBase = 127 - kDrumNoteKeyboardSemitoneSpan;
+
 // Points the shared DrumNoteKeyboardPickerState at a specific DrumNote's
 // play_note and opens the picker (D-038) - called from
 // renderDrumNoteEditor() next to the by-name dropdown, per the project
 // owner's request that play_note be settable either way. Centers the
-// initial keyboard view on an octave around the note's current play_note
-// (rounded down to a C) so the picker opens showing the current value
-// rather than always starting at C3.
+// initial keyboard view (2 octaves below the note's own octave, so the
+// current value lands roughly in the middle of the visible 5 octaves)
+// around the note's current play_note (rounded down to a C). `selectedNote`
+// starts at the current play_note too (D-045) - so pressing "OK" without
+// clicking anything is a no-op, same value as before, rather than requiring
+// a click first.
 void openDrumNoteKeyboardPicker(AppContext& ctx, size_t kitIndex, uint8_t note, uint8_t currentPlayNote) {
     ctx.drumNoteKeyboardPicker.kitIndex = kitIndex;
     ctx.drumNoteKeyboardPicker.note = note;
-    ctx.drumNoteKeyboardPicker.baseNote = std::clamp((currentPlayNote / 12) * 12 - 12, 0, 127 - 12 * 3);
+    ctx.drumNoteKeyboardPicker.baseNote =
+        std::clamp((currentPlayNote / 12) * 12 - 24, 0, kDrumNoteKeyboardMaxBase);
+    ctx.drumNoteKeyboardPicker.selectedNote = currentPlayNote;
     ctx.drumNoteKeyboardPicker.open = true;
 }
 
-// Modal on-screen keyboard (renderPreviewKeyboard(), 3 octaves at a time)
-// for picking a DrumNote's play_note by clicking a key instead of typing a
-// number (D-038). `baseNote` pages independently of the note being edited
-// via the two octave-shift buttons, since the picker's own scroll position
-// and the value it's about to write are two different things.
+// Modal on-screen keyboard (renderPreviewKeyboard(), 5 octaves at a time,
+// D-045) for picking a DrumNote's play_note by clicking a key instead of
+// typing a number (D-038). `baseNote` pages independently of the note being
+// edited via the two octave-shift buttons, since the picker's own scroll
+// position and the value it's about to write are two different things.
+//
+// D-045 split what a key click does into two: a single click previews the
+// clicked pitch (through the note's current source patch, reusing D-044's
+// one-shot preview mechanism) and records it as the pending `selectedNote`,
+// without touching play_note yet; only a double click on a key, or the new
+// "OK" button (which commits whatever `selectedNote` currently holds),
+// actually writes it - so clicking around to audition pitches can't
+// accidentally change the value.
 void renderDrumNoteKeyboardPicker(AppContext& ctx) {
     DrumNoteKeyboardPickerState& p = ctx.drumNoteKeyboardPicker;
     if (!p.open) return;
@@ -2940,26 +3024,46 @@ void renderDrumNoteKeyboardPicker(AppContext& ctx) {
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("現在のプレイノート: %s (%d)", midiNoteName(note->play_note).c_str(), note->play_note);
+        ImGui::Text("選択中: %s (%d)", midiNoteName(p.selectedNote).c_str(), p.selectedNote);
+        ImGui::TextDisabled("クリックで試聴、ダブルクリックまたはOKで確定");
         ImGui::Separator();
 
         ImGui::BeginDisabled(p.baseNote <= 0);
         if (ImGui::ArrowButton("##octdown", ImGuiDir_Left)) p.baseNote = std::max(0, p.baseNote - 12);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::Text("%s - %s", midiNoteName(p.baseNote).c_str(), midiNoteName(p.baseNote + 36).c_str());
+        ImGui::Text("%s - %s", midiNoteName(p.baseNote).c_str(),
+                     midiNoteName(p.baseNote + kDrumNoteKeyboardSemitoneSpan).c_str());
         ImGui::SameLine();
-        ImGui::BeginDisabled(p.baseNote + 12 > 127 - 12 * 3);
-        if (ImGui::ArrowButton("##octup", ImGuiDir_Right)) p.baseNote = std::min(127 - 12 * 3, p.baseNote + 12);
+        ImGui::BeginDisabled(p.baseNote >= kDrumNoteKeyboardMaxBase);
+        if (ImGui::ArrowButton("##octup", ImGuiDir_Right)) {
+            p.baseNote = std::min(kDrumNoteKeyboardMaxBase, p.baseNote + 12);
+        }
         ImGui::EndDisabled();
 
-        KeyboardResult kb = renderPreviewKeyboard(p.baseNote, 22, 70.0f); // 3 octaves, matches the patch editors' own
+        KeyboardResult kb = renderPreviewKeyboard(p.baseNote, kDrumNoteKeyboardWhiteKeys, 70.0f); // 5 octaves, D-045
         if (kb.pressedNote >= 0) {
-            note->play_note = static_cast<uint8_t>(kb.pressedNote);
-            p.open = false;
-            ImGui::CloseCurrentPopup();
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                note->play_note = static_cast<uint8_t>(kb.pressedNote);
+                p.open = false;
+                ImGui::CloseCurrentPopup();
+            } else {
+                p.selectedNote = kb.pressedNote;
+                fpe::DrumNote previewNote = *note;
+                previewNote.play_note = static_cast<uint8_t>(kb.pressedNote);
+                startDrumNoteListPreview(ctx, previewNote);
+            }
         }
 
         ImGui::Separator();
+        ImGui::BeginDisabled(p.selectedNote < 0);
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            note->play_note = static_cast<uint8_t>(p.selectedNote);
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
         if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
             p.open = false;
             ImGui::CloseCurrentPopup();
@@ -4113,55 +4217,6 @@ void renderOutline(AppContext& ctx) {
     }
 
     ImGui::EndChild();
-}
-
-// A single click on a drum-note list row lasts one frame - there is no
-// "release" to key a noteOff off of the way the note editor's press-and-hold
-// "試聴" button does (D-038) - so this fixed duration stands in for that,
-// short enough to feel like a quick preview blip rather than a sustained
-// note. D-044.
-constexpr double kDrumNoteListPreviewDuration = 0.4;
-
-// Sends noteOff for whatever's currently previewing from the drum-note list,
-// if anything - safe to call unconditionally. Used both to auto-stop after
-// kDrumNoteListPreviewDuration and to cut a still-sounding preview short
-// when a different row is clicked (D-044) - previews never overlap/stack.
-void stopDrumNoteListPreview(AppContext& ctx) {
-    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
-    if (!p.active) return;
-    ctx.previewOutput.noteOff(p.channel, p.channelNote, 0);
-    p.active = false;
-}
-
-// One-shot preview triggered by a single click on a drum-note list row
-// (D-044, renderDrumKitDetail()) - selects the note's current source patch
-// and sounds its play_note, auto-stopping after kDrumNoteListPreviewDuration
-// (see updateDrumNoteListPreview()) rather than requiring press-and-hold,
-// since a plain click has no "release" event. No-op if no preview backend
-// is currently available (offline).
-void startDrumNoteListPreview(AppContext& ctx, const fpe::DrumNote& note) {
-    stopDrumNoteListPreview(ctx);
-    if (ctx.previewOutput.ensureReady() == PreviewOutput::ActiveBackend::None) return;
-    const uint8_t ch = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
-    ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(note.voice_patch_type),
-                                    static_cast<uint8_t>(note.patch_bank), static_cast<uint8_t>(note.patch_prog));
-    ctx.previewOutput.noteOn(ch, note.play_note, 100);
-    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
-    p.active = true;
-    p.channel = ch;
-    p.channelNote = note.play_note;
-    p.startTime = ImGui::GetTime();
-}
-
-// Called once per frame regardless of screen/kiosk-vs-normal (main()'s
-// render loop, D-044) - auto-stops a single-click list preview once its
-// fixed duration has elapsed. A no-op most frames (active is usually
-// false).
-void updateDrumNoteListPreview(AppContext& ctx) {
-    const DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
-    if (p.active && ImGui::GetTime() - p.startTime >= kDrumNoteListPreviewDuration) {
-        stopDrumNoteListPreview(ctx);
-    }
 }
 
 // The routed-kit note list, or the direct-kit inline editor, for
