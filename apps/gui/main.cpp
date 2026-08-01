@@ -698,6 +698,38 @@ void stopDrumNoteListPreview(AppContext& ctx) {
     p.active = false;
 }
 
+// Sends a DrumNote's own performance-patch override, if it has one, via the
+// SwPatch override SysEx (docs/manuals/midi-message-reference.md 8.1) - D-046.
+//
+// Investigated against the real FITOM_X source (core/src/PatchManager.cpp,
+// core/src/MidiCh.cpp) after a report that drum preview didn't match real
+// rhythm-track playback: a plain CC#0/32/PC direct-device-select (what
+// selectDevice() sends) DOES automatically resolve and apply the selected
+// HwPatch's own default sw_bank/sw_prog (PatchManager::resolveDirect()) - so
+// that part was already correct. But a DrumNote's own sw_bank/sw_prog is a
+// drum-map-specific OVERRIDE of that default, and it is only ever consulted
+// by CRhythmCh::resolveNote() - a rhythm-channel-specific code path that a
+// plain direct-device-select on an ordinary channel (which is what every
+// preview in this editor uses, so unsaved in-memory edits stay audible
+// without round-tripping through FITOM_X's own loaded profile) never
+// reaches. So the override has to be pushed explicitly, exactly like this
+// editor already does for HwPatch parameters (buildHwPatchOverrideJson()/
+// sendHwPatchOverride(), D-027) - `fpe::to_json(SwPatch)`'s shape already
+// matches the wire format's own example verbatim (`{"sw":{...},"ops":[...],
+// "fine_transpose":...}`, extra keys like "prog"/"name" are simply ignored
+// per the doc), so no separate flattening builder is needed here the way
+// HwPatch's was. Must be sent before the note-on it's meant to affect - the
+// doc states a SwPatch override "以後のノートオンから反映されます" (applies
+// starting from the next note-on, not retroactively to an already-sounding
+// note). No-op if the note has no override (sw_bank/sw_prog == -1) - in that
+// case the resolved HwPatch's own default sw_bank/sw_prog is already in
+// effect from the selectDevice() call, so there's nothing to send.
+void sendDrumNoteSwPatchOverride(AppContext& ctx, uint8_t channel, const fpe::DrumNote& note) {
+    if (note.sw_bank < 0 || note.sw_prog < 0) return;
+    const fpe::SwPatch* swPatch = ctx.workspace.resolvePerformancePatch(note.sw_bank, note.sw_prog);
+    if (swPatch) ctx.previewOutput.sendSwPatchOverride(channel, nlohmann::json(*swPatch).dump());
+}
+
 // One-shot preview triggered by a single click - either a drum-note list row
 // (D-044, renderDrumKitDetail()) or a key in the play_note keyboard picker
 // (D-045, renderDrumNoteKeyboardPicker()) - selects `note`'s source patch and
@@ -711,6 +743,7 @@ void startDrumNoteListPreview(AppContext& ctx, const fpe::DrumNote& note) {
     const uint8_t ch = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
     ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(note.voice_patch_type),
                                     static_cast<uint8_t>(note.patch_bank), static_cast<uint8_t>(note.patch_prog));
+    sendDrumNoteSwPatchOverride(ctx, ch, note); // D-046 - must precede noteOn(), see comment above
     ctx.previewOutput.noteOn(ch, note.play_note, 100);
     DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
     p.active = true;
@@ -4052,10 +4085,13 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
     // 試聴 (D-038): 登録前でも現在のソースパッチ+プレイノートでその場で
     // 発音できるようにする、との依頼。鍵盤全体は不要なので、
     // renderPreviewKeyboard()と同じIsItemActivated()/IsItemDeactivated()の
-    // 押し続け方式のボタン1つで済ませる。fine_tune/pan/gate_time/
-    // sw_bank・sw_progは(DeviceパッチのAR/DR等と違って)差分SysEx越しに
-    // 送れる合成パラメータではないため、この試聴には反映しない - ソース
-    // パッチ自体の音は参照先のDeviceパッチ編集画面で確認できる。
+    // 押し続け方式のボタン1つで済ませる。fine_tune/pan/gate_timeは
+    // (DeviceパッチのAR/DR等と違って)差分SysEx越しに送れる合成パラメータ
+    // ではないため、この試聴には反映しない。sw_bank/sw_progは反映する
+    // (D-046 - 実際のリズムトラック再生と音が異なるという報告を受けて
+    // FITOM_X本体を調査した結果、CC#0/32/PCによる直接デバイス選択だけでは
+    // 反映されないドラムノート固有のオーバーライドだと判明したため、
+    // sendDrumNoteSwPatchOverride()で明示的に送るようにした)。
     {
         const PreviewOutput::ActiveBackend backend = ctx.previewOutput.ensureReady();
         const bool connected = backend != PreviewOutput::ActiveBackend::None;
@@ -4074,6 +4110,7 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
             ctx.previewOutput.selectDevice(previewChannel, static_cast<uint8_t>(note->voice_patch_type),
                                             static_cast<uint8_t>(note->patch_bank),
                                             static_cast<uint8_t>(note->patch_prog));
+            sendDrumNoteSwPatchOverride(ctx, previewChannel, *note); // D-046 - must precede noteOn(), see comment above
             ctx.previewOutput.noteOn(previewChannel, note->play_note, 100);
             editor.heldPreviewNote = note->play_note;
         }
