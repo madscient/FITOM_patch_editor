@@ -3096,6 +3096,49 @@ FITOM_X本体側にもチップファミリー軸が無いため変更してい�
 意図的に実装していない(依頼は「探しやすさ」のみで、試聴には既存の
 パッチ編集ウィンドウ自体のプレビュー鍵盤が別途ある)。
 
+### D-044: ドラムノート選択画面の行クリックを、シングルクリック=その場でプレビュー発音・ダブルクリック=編集画面へ変更
+
+利用者から「ドラムキット編集画面で、ノート行をシングルクリックで編集
+画面に遷移しているが、これをシングルクリックでプレビュー(その場で
+発音)、ダブルクリックで編集としたい」という依頼を受けた。D-038時点の
+`renderDrumKitDetail()`(旧`renderBankDetail()`のDrumケース)は、割当済み
+ノート行のクリック(`ImGui::Selectable()`の単純な戻り値)がそのまま
+`openDrumNoteEditor()`を呼ぶ実装だったため、この依頼通りに単純な
+クリック→シングル/ダブルの判別に切り替えた。
+
+- `ImGui::Selectable()`に`ImGuiSelectableFlags_AllowDoubleClick`を渡すと、
+  シングルクリック・ダブルクリックのどちらでも戻り値が`true`になる
+  ため、その中で`ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)`を
+  見て判別する(Dear ImGui標準のダブルクリック判定パターン)。ダブル
+  クリックなら従来通り`openDrumNoteEditor()`、それ以外(シングル
+  クリック)なら新規`startDrumNoteListPreview()`を呼ぶ。
+- 「プレビュー(その場で発音)」の実装は、ドラムノート編集画面が既に
+  持つ押し続け式の「試聴」ボタン(D-038)とは前提が異なる - リスト行の
+  クリックは1フレームだけの単発イベントで、ボタンの
+  `IsItemActivated()`/`IsItemDeactivated()`のような「押した/離した」を
+  区別できる情報が無い。そこで新規`DrumNoteListPreviewState`
+  (`AppContext::drumNoteListPreview`)で「今鳴らしている
+  channel/channelNote/開始時刻」を保持し、`startDrumNoteListPreview()`が
+  `selectDevice()`→`noteOn()`を送った時点の`ImGui::GetTime()`を記録、
+  固定時間`kDrumNoteListPreviewDuration`(0.4秒、単発の「プレビュー
+  ブリップ」として鳴っていることが分かる程度の長さとして選んだ暫定値)
+  経過後に`updateDrumNoteListPreview()`が自動で`noteOff()`を送る、という
+  設計にした。この更新関数はどの画面を表示中でも(キオスクの`drum`種別
+  も含め)main()のレンダーループ先頭で毎フレーム無条件に呼ぶ - ユーザー
+  がプレビュー中に別の画面へ移動しても発音が止まらず残り続けることを
+  防ぐため。別の行をクリックした場合は`startDrumNoteListPreview()`内で
+  まず`stopDrumNoteListPreview()`を呼んで前の発音を止めるため、複数の
+  プレビューが重なって鳴り続けることはない。
+- 行のホバー時ツールチップを「クリックで試聴、ダブルクリックで編集」に
+  変更し、新しい操作方法を発見しやすくした。「複製」「削除」ボタン
+  (SmallButton)はSelectableとは独立したウィジェットなのでこの変更の
+  影響を受けない。
+
+ビルド(`cmake --build build/vs2026`)・`ctest`(既存項目、GUI層のみの
+変更でデータモデル層に変更が無いため回帰なし)を確認した。**クリック
+操作(シングル/ダブルの判別が実際に意図通り働くか)の実機確認は
+`CLAUDE.md`の方針により未実施** - 利用者自身の目視確認待ち。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
