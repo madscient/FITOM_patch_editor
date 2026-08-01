@@ -730,6 +730,40 @@ void sendDrumNoteSwPatchOverride(AppContext& ctx, uint8_t channel, const fpe::Dr
     if (swPatch) ctx.previewOutput.sendSwPatchOverride(channel, nlohmann::json(*swPatch).dump());
 }
 
+// Builds the sub-cmd=0x07 JSON payload (docs/manuals/midi-message-
+// reference.md 8.1.1, D-049) for persisting one whole DrumKit's current
+// notes into a running FITOM_X's own in-memory DrumPatch. Uses
+// kit.effectiveNotes() rather than kit.notes directly so both "routed" and
+// "direct" kits go through the same code path - for a "direct" kit this
+// materializes the note_min..note_max passthrough range into individual
+// note entries client-side, exactly like renderBankDetail()'s own read-only
+// display already does (DrumKit.h's own comment on effectiveNotes()).
+//
+// Every note gets an explicit "enabled":true added on top of whatever
+// fpe::to_json(DrumNote) already produces (which otherwise matches the wire
+// schema's own key names exactly - voice_patch_type/patch_bank/patch_prog/
+// play_note/fine_tune/pan/gate_time/sw_bank/sw_prog; extra "note" is simply
+// ignored). This is NOT one of drumkit.schema.json's own fields - it's
+// purely a runtime concept of FITOM_X's own fixed 128-slot DrumNote array
+// (core/include/fitom/DrumData.h: `enabled` defaults to false, and
+// DrumPatch::getNote() - what CRhythmCh::noteOn() calls - returns nullptr
+// for a disabled slot), so a newly-added note this editor persists here
+// would otherwise silently never sound despite having correct data
+// everywhere else.
+nlohmann::json buildDrumKitOverrideJson(const fpe::DrumKit& kit) {
+    nlohmann::json notesObj = nlohmann::json::object();
+    for (const auto& note : kit.effectiveNotes()) {
+        nlohmann::json nj = note;
+        nj["enabled"] = true;
+        notesObj[std::to_string(note.note)] = nj;
+    }
+    nlohmann::json j;
+    j["name"] = kit.name;
+    j["choke_groups"] = kit.choke_groups;
+    j["notes"] = notesObj;
+    return j;
+}
+
 // One-shot preview triggered by a single click - either a drum-note list row
 // (D-044, renderDrumKitDetail()) or a key in the play_note keyboard picker
 // (D-045, renderDrumNoteKeyboardPicker()) - selects `note`'s source patch and
@@ -3388,6 +3422,17 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ctx.workspace.save();
+                // D-049: also persist into a running FITOM_X's own
+                // in-memory copy of this bank+prog, so it's audible in a
+                // live session without restarting FITOM_X (previously
+                // impossible - see D-047 - until FITOM_X's own 2026-08
+                // addition of this bank-direct-edit SysEx). Fire-and-forget:
+                // sendXBankOverride()/send() already no-op harmlessly if
+                // nothing's connected.
+                ctx.previewOutput.sendHwPatchBankOverride(static_cast<uint8_t>(bank.voicePatchType),
+                                                           static_cast<uint8_t>(bank.bankIndex),
+                                                           static_cast<uint8_t>(patch->prog),
+                                                           buildHwPatchOverrideJson(*patch).dump());
                 editor.registered = *patch;
                 // D-048: close on a successful save, per the project
                 // owner's request, extending D-047's drum-note-editor
@@ -3697,6 +3742,16 @@ void renderLayeredPatchEditor(AppContext& ctx, LayeredPatchEditorWindow& editor)
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ctx.workspace.save();
+                // D-049: persist into FITOM_X's own in-memory copy too, see
+                // renderPatchEditor()'s comment. fpe::to_json(Patch)
+                // already matches the wire schema's recognized keys
+                // (name/poly/layers) - the extra prog/sw_bank/sw_prog keys
+                // it also includes are simply ignored (unrecognized by
+                // FITOM_X's mergePatchFromJson(), same as HwPatch/SwPatch's
+                // own harmlessly-ignored extras elsewhere).
+                ctx.previewOutput.sendLayeredPatchBankOverride(
+                    static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog),
+                    nlohmann::json(*patch).dump());
                 if (!ctx.kioskMode) editor.open = false; // D-048, see renderPatchEditor()'s comment
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
@@ -3908,6 +3963,13 @@ void renderPerformancePatchEditor(AppContext& ctx, PerformancePatchEditorWindow&
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ctx.workspace.save();
+                // D-049: persist into FITOM_X's own in-memory copy too, see
+                // renderPatchEditor()'s comment. fpe::to_json(SwPatch)
+                // already matches the wire schema's own example verbatim
+                // (confirmed D-046) - extra prog/name keys are ignored.
+                ctx.previewOutput.sendSwPatchBankOverride(
+                    static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog),
+                    nlohmann::json(*patch).dump());
                 if (!ctx.kioskMode) editor.open = false; // D-048, see renderPatchEditor()'s comment
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
@@ -3999,6 +4061,11 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ws.save();
+                // D-049: persist the whole kit into FITOM_X's own in-memory
+                // DrumPatch too - drum banks are always bank 0
+                // (profile.schema.json), so only kit.prog varies.
+                ctx.previewOutput.sendDrumKitBankOverride(0, static_cast<uint8_t>(kit.prog),
+                                                           buildDrumKitOverrideJson(kit).dump());
                 editor.open = false;
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
@@ -4384,6 +4451,12 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
             if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
                 try {
                     ws.save();
+                    // D-049: persist into FITOM_X's own in-memory DrumPatch
+                    // too, same as the "routed" note editor's own 登録
+                    // (buildDrumKitOverrideJson() already handles "direct"
+                    // kits uniformly via kit.effectiveNotes()).
+                    ctx.previewOutput.sendDrumKitBankOverride(0, static_cast<uint8_t>(kit.prog),
+                                                               buildDrumKitOverrideJson(kit).dump());
                 } catch (const std::exception& e) {
                     ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
                 }

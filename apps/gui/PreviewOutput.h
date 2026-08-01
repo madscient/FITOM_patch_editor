@@ -48,6 +48,18 @@ public:
     bool selectDevice(uint8_t channel, uint8_t voicePatchTypeCc0, uint8_t hwBank, uint8_t hwProg);
     bool sendHwPatchOverride(uint8_t channel, const std::string& json);
     bool sendSwPatchOverride(uint8_t channel, const std::string& json);
+
+    // Bank-direct-edit persistence (D-049, docs/plugin-midi-pipe.md 5.6) -
+    // channel-independent (the message itself carries a bank+prog, not a
+    // channel), meant to be sent right after this editor's own save() so a
+    // running FITOM_X's in-memory copy of that bank+prog stays in sync.
+    // Harmless no-op if nothing's connected (send() below already handles
+    // that uniformly, same as every other method here).
+    bool sendHwPatchBankOverride(uint8_t voicePatchTypeCc0, uint8_t hwBank, uint8_t hwProg, const std::string& json);
+    bool sendSwPatchBankOverride(uint8_t swBank, uint8_t swProg, const std::string& json);
+    bool sendLayeredPatchBankOverride(uint8_t patchBank, uint8_t prog, const std::string& json);
+    bool sendDrumKitBankOverride(uint8_t drumBank, uint8_t prog, const std::string& json);
+
     bool noteOn(uint8_t channel, uint8_t note, uint8_t velocity);
     bool noteOff(uint8_t channel, uint8_t note, uint8_t velocity = 0);
     bool sendControlChange(uint8_t channel, uint8_t ccNumber, uint8_t value);

@@ -40,6 +40,19 @@ bool PreviewOutput::sendHwPatchOverride(uint8_t channel, const std::string& json
 bool PreviewOutput::sendSwPatchOverride(uint8_t channel, const std::string& json) {
     return send(midimsg::paramOverrideSysEx(0x02, channel, json));
 }
+bool PreviewOutput::sendHwPatchBankOverride(uint8_t voicePatchTypeCc0, uint8_t hwBank, uint8_t hwProg,
+                                             const std::string& json) {
+    return send(midimsg::hwPatchBankOverrideSysEx(voicePatchTypeCc0, hwBank, hwProg, json));
+}
+bool PreviewOutput::sendSwPatchBankOverride(uint8_t swBank, uint8_t swProg, const std::string& json) {
+    return send(midimsg::swPatchBankOverrideSysEx(swBank, swProg, json));
+}
+bool PreviewOutput::sendLayeredPatchBankOverride(uint8_t patchBank, uint8_t prog, const std::string& json) {
+    return send(midimsg::layeredPatchBankOverrideSysEx(patchBank, prog, json));
+}
+bool PreviewOutput::sendDrumKitBankOverride(uint8_t drumBank, uint8_t prog, const std::string& json) {
+    return send(midimsg::drumKitBankOverrideSysEx(drumBank, prog, json));
+}
 bool PreviewOutput::noteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
     return send(midimsg::noteOn(channel, note, velocity));
 }
