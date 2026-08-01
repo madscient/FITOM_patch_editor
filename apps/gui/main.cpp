@@ -3978,13 +3978,19 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
     {
         // Top-right "登録", matching every other patch editor's own (D-027) -
         // persists the whole workspace (DrumKit has no narrower single-note
-        // save API either).
+        // save API either). Unlike the other three patch editors (which stay
+        // open after 登録 so the user can keep tweaking synthesis parameters
+        // and previewing), this one closes itself on a successful save
+        // (D-047, per the project owner's request) - a drum note's fields
+        // are simple one-shot edits (name/source patch/play note/etc), not
+        // something typically iterated on with the window left open.
         const float buttonW = 90.0f;
         const float avail = ImGui::GetContentRegionAvail().x;
         if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
         if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
             try {
                 ws.save();
+                editor.open = false;
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
