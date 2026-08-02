@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "fpe/BuiltinVoices.h"
 #include "fpe/PatchWorkspace.h"
 #include "fpe/VoicePatchType.h"
 
@@ -84,6 +85,72 @@ static void testVoicePatchType() {
     CHECK(!fpe::isPcmWaveformVoicePatchType(VoicePatchType::OPM));
     CHECK(!fpe::isValidHwBankTag(VoicePatchType::None));
     CHECK(fpe::isValidHwBankTag(VoicePatchType::SSG));
+}
+
+// D-050: the two families FITOM_X synthesizes internally instead of loading
+// from a *.hwbank.json (fpe/BuiltinVoices.h).
+static void testBuiltinVoices() {
+    using fpe::VoicePatchType;
+
+    // --- OPLL-family ROM voices (hw_bank 0) ---
+    CHECK(fpe::opllRomVariantSel(VoicePatchType::OPLL) == 0);
+    CHECK(fpe::opllRomVariantSel(VoicePatchType::OPLLX) == 1);
+    CHECK(fpe::opllRomVariantSel(VoicePatchType::OPLLP) == 2);
+    CHECK(fpe::opllRomVariantSel(VoicePatchType::VRC7) == 3);
+    CHECK(fpe::opllRomVariantSel(VoicePatchType::OPL2) == -1);
+    CHECK(fpe::isOpllRomVoiceRef(VoicePatchType::OPLL, 0));
+    CHECK(!fpe::isOpllRomVoiceRef(VoicePatchType::OPLL, 2)); // real JSON bank
+    CHECK(!fpe::isOpllRomVoiceRef(VoicePatchType::OPL2, 0));
+
+    // 15 voices per variant (index 0 = deliberately-reserved silence), and
+    // `prog` must be (variantSel<<4)|instIndex - NOT the list index. Sending
+    // the raw index would make every non-OPLL category sound the wrong
+    // chip's voices, since FITOM_X's resolveOpllRomVoice() re-decodes the
+    // variant out of the program number itself
+    // (FITOM_X docs/patch-structure-design.md「実装上の注意」).
+    const auto opllx = fpe::opllRomVoices(VoicePatchType::OPLLX);
+    CHECK(opllx.size() == 15);
+    CHECK(opllx.front().prog == 0x11);
+    CHECK(opllx.front().name == "Strings");
+    CHECK(opllx.back().prog == 0x1F);
+    CHECK(fpe::opllRomVoices(VoicePatchType::OPL2).empty());
+
+    // Decoding is driven purely by hw_prog and ignores the referencing
+    // category - staging's gm_layered_opll.patchbank.json really does point
+    // voice_patch_type=OPLL layers at hw_prog=35 (=OPLLP's "Piano").
+    const fpe::OpllRomVoiceRef rom = fpe::opllRomVoiceByProg(35);
+    CHECK(rom.valid);
+    CHECK(rom.variant == VoicePatchType::OPLLP);
+    CHECK(rom.instIndex == 3);
+    CHECK(rom.name == "Piano");
+    CHECK(!fpe::opllRomVoiceByProg(0x20).valid);   // instIndex 0 = silence
+    CHECK(!fpe::opllRomVoiceByProg(0x40).valid);   // variantSel 4 = undefined
+    CHECK(fpe::opllRomVoiceByProg(0x01).name == "Violin");
+
+    // builtin_swpatch_meta bank's {patch_type, patch_no} form.
+    CHECK(fpe::opllRomVoiceName("VRC7", 1) == "Buzzy Bell");
+    CHECK(fpe::opllRomVoiceName("OPLL", 0).empty());
+    CHECK(fpe::opllRomVoiceName("OPL2", 1).empty());
+
+    // --- Built-in rhythm (voice_patch_type 0x70) ---
+    // patch_bank holds the chip's own VoicePatchType, not a bank number:
+    // OPN2(17)=OPNA with 6 parts, OPLL(40) with 5 - exactly what staging's
+    // opna_builtin.drumkit.json / opll_rhythm.drumkit.json store.
+    CHECK(fpe::builtinRhythmChips().size() == 2);
+    CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::OPN2)) == "OPNA");
+    CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::OPLL)) == "OPLL");
+    CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::OPL)).empty());
+    CHECK(fpe::builtinRhythmParts(static_cast<int>(VoicePatchType::OPN2)).size() == 6);
+    CHECK(fpe::builtinRhythmParts(static_cast<int>(VoicePatchType::OPLL)).size() == 5);
+    CHECK(fpe::builtinRhythmParts(static_cast<int>(VoicePatchType::OPL)).empty());
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPN2), 0) == "Bass Drum");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPN2), 5) == "Rim Shot");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPN2), 6).empty());
+    // OPLL's part order differs from OPNA's (hardware register layout), so
+    // the two tables genuinely cannot be shared.
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPLL), 0) == "Hi-Hat");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPLL), 4) == "Bass Drum");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPLL), 5).empty());
 }
 
 static void testLoad(fpe::PatchWorkspace& ws) {
@@ -444,6 +511,7 @@ static void testDefaults() {
 
 int main() {
     testVoicePatchType();
+    testBuiltinVoices();
     testDefaults();
 
     fpe::PatchWorkspace ws;
