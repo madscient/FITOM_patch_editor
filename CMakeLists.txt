@@ -37,6 +37,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 # --- fpe_data: the JSON data-model / I/O library -------------------------
 add_library(fpe_data STATIC
   src/VoicePatchType.cpp
+  src/BuiltinVoices.cpp
   src/HwPatch.cpp
   src/SwPatch.cpp
   src/LayeredPatch.cpp

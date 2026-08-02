@@ -3455,6 +3455,129 @@ Device編集画面(`renderPatchEditor()`)については、D-027の
 直後(FITOM_X未登録の状態)は依然再起動が必要という制約(D-047)は
 変わっていないことも申し添える。
 
+### D-050: OPLL系ROM音色(バンク0)・OPNA/OPLL内蔵リズム(0x70)がどのパッチ編集画面/ピッカーでも解決できなかったバグを修正
+
+利用者から「各パッチ編集画面、パッチピッカーでOPLL/OPNAのビルトイン
+リズム、OPLLのビルトインパッチが解決できていないようなので、FITOM_X
+本体の実装を参考にして修正してください」という報告を受けた。
+
+**原因**: FITOM_Xには「`profile.json`の`hw_banks[]`→`*.hwbank.json`
+という通常のバンク定義を一切経由せず、FITOM_X自身が内部で機械合成する」
+音色が2種類ある。本エディタは`{voice_patch_type, patch_bank, patch_prog}`
+の解決を`PatchWorkspace::deviceBanks()`(≒FITOM_Xの`HwBankRegistry`)の
+線形探索だけで行っていたため、この2種類は**構造上必ず「見つからない」**
+となり、名前欄が常に`(N/A) / (N/A)`、ピッカーからは一切選択できない
+状態だった。
+
+1. **OPLL系ROM音色** — `voice_patch_type`がOPLL/OPLLP/OPLLX/VRC7で
+   `hw_bank == 0` のとき、`PatchManager::resolveOpllRomVoice()`が
+   `opllRomPatches_[4][16]`(4変種×15音色、添字0はユーザー音色との
+   衝突回避のため無音として予約)から解決する。バンク0はJSON定義不可の
+   予約領域。
+2. **内蔵リズム音源** — `voice_patch_type == 0x70`のとき、
+   `PatchManager::resolveBuiltinRhythm()`が解決する。この経路では
+   `patch_bank`が「バンク番号」ではなく**対象チップのVoicePatchType**
+   (`VOICE_PATCH_OPN2`=OPNA、`VOICE_PATCH_OPLL`=OPLL)、`patch_prog`が
+   **そのチップ内の楽器(=デバイスチャンネル)番号**に読み替わる
+   (`config_schema/drumkit.schema.json`の`voice_patch_type`の説明に
+   明記されている、DrumNoteの正規の値)。OPL系内蔵リズム
+   (`COPLRhythm`)はこの経路を使わず`VoicePatchType::OPL_RHY`(0x23)と
+   いう**通常の**HwBankを使うため、元から正しく解決できていた。
+
+いずれも実データで普通に使われている: `../FITOM_staging`の
+`banks/patches/gm_layered_opll.patchbank.json`は128パッチ中37レイヤーが
+`hw_bank=0`のROM音色参照、`banks/drums/opna_builtin.drumkit.json`・
+`opll_rhythm.drumkit.json`は全ノートが`voice_patch_type=112`(0x70)。
+
+**FITOM_X本体側も全く同じ不具合を持っており**、2026-08-03のコミット
+`75b9ac8`「Fix. パッチピッカーでOPLL ROM音色・内蔵リズムが常に空欄に
+なるバグを修正」で修正されている(`PatchManager::getOpllRomPatches()`/
+`getOpllRomPatchByProg()`新設、`FITOMBridge::getHwBankList()`/
+`getHwBankPatches()`/`getChannelMonitors()`対応、`PatchPickerDialog`の
+カテゴリ一覧に`0x70`追加)。本修正はその実装をこのエディタ側へ移植した
+もの。
+
+**実装**: 新規`fpe::BuiltinVoices`(`include/fpe/BuiltinVoices.h` /
+`src/BuiltinVoices.cpp`)に、FITOM_X側の固定テーブルと変換規約をそのまま
+移植した。GUI層(`apps/gui/main.cpp`)ではなくデータモデル層に置いたのは、
+これが「FITOM_Xのデータモデルの一部」であり、`ctest`で回帰テストできる
+ようにするため(`tests/smoke_test.cpp`の`testBuiltinVoices()`)。
+
+- `opllRomVoices(type)` / `opllRomVoiceByProg(hwProg)` /
+  `opllRomVoiceName(patch_type, patch_no)` / `opllRomVariantSel()` /
+  `isOpllRomVoiceRef()` / `opllRomBankName()`(= `"ROM Preset"`)
+- `builtinRhythmChips()` / `builtinRhythmParts(chipSel)` /
+  `builtinRhythmChipLabel()` / `builtinRhythmPartName()`
+
+GUI側は共通ヘルパー`resolveHwRefNames()`(表示名解決)・
+`deviceCategoryLabel()`(0x70の表示名補完)・`collectDeviceCategories()`
+/`addOpllRomCategories()`(カテゴリ一覧の補完)を新設し、
+`renderToneLayerEditor()`(レイヤードパッチ編集画面のHW参照ラベル)・
+`describeDrumSourcePatch()`(ドラムノート編集画面/"direct"キットの
+ソースパッチラベル)・`renderHwPatchPicker()`・
+`renderDrumSourcePatchPicker()`の4箇所が全てそれを通るようにした。
+`role=="builtin_swpatch_meta"`バンクのエントリ(`fpe::BuiltinRef`)も、
+`patch_type`/`patch_no`の生値だけでなく解決したROM音色名を併記するように
+した(メタバンクのエントリ名は自由記述で、ステージングでは空の
+スケルトンとして配布されているため、生値だけでは何を指すのか分からな
+かった)。
+
+**実装上の判断メモ**:
+
+- **ROM音色名は参照元のカテゴリ(CC#0)ではなく`hw_prog`自身からデコード
+  する。** `resolveOpllRomVoice()`は`hwProg`の上位3bitで変種を、下位4bitで
+  音色番号を決め、渡された`voicePatchType`を一切見ない。実データも
+  それに依存しており、`gm_layered_opll.patchbank.json`には
+  `voice_patch_type=OPLL`のまま`hw_prog=35`(=0x23、variantSel=2=OPLLP)で
+  OPLLPの音色を指すレイヤーが多数ある(パッチ名も`[OPLLP] Piano`)。
+  そのため表示は`opllRomVoiceByProg()`で解決し、変種がカテゴリと食い違う
+  場合だけ`[OPLLP] Piano`のように実際に鳴る変種を前置して明示する。
+  ピッカーで書き込む値も、配列の生添字ではなく
+  `(variantSel << 4) | instIndex`(FITOM_X側の`HwPatch::id`相当)を使う
+  — 生添字を使うとOPLL以外のカテゴリで別チップの音色が鳴る
+  (FITOM_X `docs/patch-structure-design.md`の「実装上の注意」)。
+- **カテゴリ一覧はデータ駆動のまま「補完」する。** FITOM_X本体の
+  `PatchPickerDialog`はカテゴリ一覧を丸ごとハードコードしているが、
+  本エディタは読み込んだバンクからカテゴリを導出する方式を維持したい。
+  一方でOPLL系4カテゴリは(バンク0が常に存在するので)バンク登録が
+  無くても選択肢に出す必要があり、内蔵リズムに至ってはどのレジストリ
+  にも実体が無い。そこで導出結果に対して`addOpllRomCategories()`と
+  `0x70`の追加だけを行う形にした。
+- **OPLL系のJSONバンク0は隠す。** FITOM_Xの`resolveTriple()`はOPLL系の
+  バンク0を常にROM音色へ振り向けるため、仮に`profile.json`がOPLL系の
+  バンク0を登録していても発音には決して使われない。ピッカーで選べる
+  ようにしておくと「選べるのに鳴らない」項目になるので、
+  `getHwBankList()`側の`if (hasOpllRom && bankNo == 0) continue;`と同じ
+  優先順位で非表示にした。
+- **内蔵リズムはToneLayerのピッカーには出さない。** `0x70`はDrumNote/
+  DrumKitの`voice_patch_type`としては`drumkit.schema.json`に明記された
+  正規の値だが、ToneLayerの`voice_patch_type`は
+  `patchbank.schema.json`で`0x01-0x6F`に限定されており、`0x70-0x7F`は
+  「将来予約」と明記されている(`resolveTriple()`自体は共通なので技術的
+  には解決できてしまうが、スキーマ違反のデータを本エディタが新規に
+  書き込むべきではない)。そのため`renderHwPatchPicker()`(ToneLayer用)の
+  カテゴリには追加せず、**表示側だけ**は`resolveHwRefNames()`経由で
+  解決できるようにしてある(既存データに入っていた場合に`?`や`(N/A)`に
+  ならないよう)。ドラムノート用の`renderDrumSourcePatchPicker()`には
+  通常のカテゴリとして追加した。
+- **「編集」ボタンは両方とも無効化する。** どちらもJSON上の編集可能な
+  実体を持たない(内蔵リズムパートは実機固定の楽器、ROM音色はFITOM_X
+  内部で合成される)。ROM音色に紐づくパフォーマンスパッチだけは別途
+  `role=="builtin_swpatch_meta"`バンク側で編集する構造なので、
+  `drumSourcePatchHasEditor()`は`type`だけでなく`bank`も見るように
+  シグネチャを変えた(OPLL系でもバンク0だけがROM音色のため)。
+
+試聴(プレビュー)経路は元から生のCC#0/CC#32/ProgramChangeをそのまま
+送っており(`startDrumNoteListPreview()`等)、`0x70`もバンク0もFITOM_X側で
+正しく解決されるため変更不要だった。
+
+ビルド(`cmake --build build/vs2026`)・`ctest`(182項目、うち今回追加の
+`testBuiltinVoices()`が新規)を確認した。加えて、移植したROM音色名
+テーブルとデコード規約がステージングの実データと完全に一致することを
+確認した(`gm_layered_opll.patchbank.json`の`hw_bank=0`参照37件すべてで、
+`hw_prog`からデコードした`[変種] 音色名`がパッチ名と一致)。GUIの実際の
+クリック確認は`CLAUDE.md`の方針により未実施。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に
