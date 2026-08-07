@@ -122,7 +122,7 @@ static void testBuiltinVoices() {
     CHECK(rom.valid);
     CHECK(rom.variant == VoicePatchType::OPLLP);
     CHECK(rom.instIndex == 3);
-    CHECK(rom.name == "Piano");
+    CHECK(rom.name == "Electric Guitar"); // f6dfd8d renamed OPLLP index 3 away from "Piano"
     CHECK(!fpe::opllRomVoiceByProg(0x20).valid);   // instIndex 0 = silence
     CHECK(!fpe::opllRomVoiceByProg(0x40).valid);   // variantSel 4 = undefined
     CHECK(fpe::opllRomVoiceByProg(0x01).name == "Violin");
@@ -437,6 +437,38 @@ static void testSharedBankset(const fs::path& scratchDir) {
     auto* reloadedKit2 = reloaded.findDrumKit(2);
     CHECK(reloadedKit2 != nullptr);
     if (reloadedKit2) CHECK(reloadedKit2->name == "Extra Kit");
+
+    // Regression test: prog0 and prog1 both resolve to direct_kit.drumkit.json
+    // (see the merge check above) - two separate in-memory fpe::DrumKit
+    // objects sharing one physical sourceFile, exactly the real-world
+    // scenario a shared "banks" bankset (D-041) + a profile's own
+    // bank_overrides can produce. Editing prog0 and saving must not have
+    // prog1 (never touched this session) silently overwrite prog0's edit
+    // back to the stale on-disk value. This was a real reported bug: D-049's
+    // FITOM_X in-memory persistence reflected the edit correctly (it reads
+    // the in-memory fpe::DrumKit object directly), but the file on disk kept
+    // the pre-edit value - because save()'s old saveIfDirty() compared each
+    // sibling against a baseline map it was ALSO mutating mid-pass, so
+    // prog1's still-stale in-memory copy looked "dirty" relative to what
+    // prog0 had just written and clobbered it right back.
+    fpe::DrumKit* dupKit0 = reloaded.findDrumKit(0);
+    CHECK(dupKit0 != nullptr);
+    if (dupKit0) dupKit0->fine_tune = 42;
+    reloaded.save();
+
+    fpe::PatchWorkspace afterDupEdit;
+    afterDupEdit.load(profilePath);
+    for (const auto& w : afterDupEdit.warnings()) std::fprintf(stderr, "shared-bankset dup-edit warning: %s\n", w.c_str());
+    CHECK(afterDupEdit.warnings().empty());
+    fpe::DrumKit* afterKit0 = afterDupEdit.findDrumKit(0);
+    CHECK(afterKit0 != nullptr);
+    if (afterKit0) CHECK(afterKit0->fine_tune == 42);
+    fpe::DrumKit* afterKit1 = afterDupEdit.findDrumKit(1);
+    CHECK(afterKit1 != nullptr);
+    // Same physical file as prog0 - correctly reflects prog0's just-saved
+    // edit (not clobbered back to fine_tune=10, direct_kit.drumkit.json's
+    // original value).
+    if (afterKit1) CHECK(afterKit1->fine_tune == 42);
 }
 
 // D-042: save() used to unconditionally re-serialize every loaded bank/kit,
