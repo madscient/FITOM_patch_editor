@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -39,17 +40,41 @@ void saveJsonFile(const std::filesystem::path& path, const T& value) {
 }
 
 // Like saveJsonFile(), but skips the write (and the baseline update) when
-// `value`'s current JSON is structurally identical to `original[path]` -
+// `value`'s current JSON is structurally identical to `baseline[path]` -
 // see PatchWorkspace::originalContent_'s comment for why this matters
-// (D-042). `original` is updated to the just-written content either way a
-// write happens, so the next call in the same session compares against
-// what's now actually on disk.
+// (D-042). `original` (the real originalContent_, updated in place so the
+// *next* save() call compares against what's now actually on disk) and
+// `baseline` (a frozen copy taken once at the top of THIS save() call,
+// see below) are deliberately two separate maps, not one - and `written`
+// records which paths this call has already committed to disk.
+//
+// Both exist to fix a real data-loss bug (reported live: a DrumNote edit
+// reached FITOM_X's in-memory copy correctly via the D-049 bank-override
+// SysEx, which reads the in-memory object directly, but the *file* on disk
+// still had the pre-edit value afterward). Root cause: multiple in-memory
+// objects can legitimately share the same sourceFile - confirmed happening
+// for real DrumKit data via D-041's shared "banks" bankset + a profile's
+// own bank_overrides both registering the same physical *.drumkit.json
+// under two different progs, so ws.drumKits() ends up with two separate
+// fpe::DrumKit objects, both loaded from the one file. If `original` were
+// mutated (and compared against) live during a single save() pass the way
+// it used to be, the sequence "edited sibling writes first, updating the
+// live baseline to its edited content" followed by "unedited sibling
+// compares its own (still pre-edit) content against that now-edited
+// baseline, sees a mismatch, and 'helpfully' rewrites the file back to its
+// own stale content" would silently discard the first sibling's just-saved
+// edit. Comparing against a `baseline` that's frozen for the whole pass,
+// plus letting only the first dirty writer for a given path actually write
+// (via `written`), closes that: the unedited sibling now correctly matches
+// the frozen baseline and is left alone.
 template <typename T>
-void saveIfDirty(std::map<std::filesystem::path, nlohmann::json>& original, const std::filesystem::path& path,
-                  const T& value) {
+void saveIfDirty(const std::map<std::filesystem::path, nlohmann::json>& baseline,
+                  std::map<std::filesystem::path, nlohmann::json>& original,
+                  std::set<std::filesystem::path>& written, const std::filesystem::path& path, const T& value) {
     nlohmann::json cur = value;
-    auto it = original.find(path);
-    if (it != original.end() && it->second == cur) return;
+    auto it = baseline.find(path);
+    if (it != baseline.end() && it->second == cur) return; // matches the true pre-save content - nothing to write
+    if (!written.insert(path).second) return; // an earlier sibling for this path already wrote this round - first dirty writer wins (rare same-file-diverged-edits case; better than the alternative of letting a later writer silently clobber the first)
     saveJsonFile(path, value);
     original[path] = std::move(cur);
 }
@@ -405,25 +430,35 @@ void PatchWorkspace::save() {
     // saveAs() to a location that's never been written to) is always
     // treated as dirty, so this doesn't change saveAs()'s "always produces
     // a complete, self-contained copy" behavior.
-    saveIfDirty(originalContent_, profilePath_, profile_);
+    //
+    // `baseline`/`written` are local to this one save() call (see
+    // saveIfDirty()'s comment) - fixes a real data-loss bug where an
+    // unedited object sharing a sourceFile with an edited one (D-041: the
+    // same physical file registered under two different progs) would
+    // silently overwrite the edited one's just-written content back to its
+    // own stale value.
+    const auto baseline = originalContent_;
+    std::set<std::filesystem::path> written;
+    saveIfDirty(baseline, originalContent_, written, profilePath_, profile_);
     // "banks" is deliberately never written back here (see
     // syncBanksSourceForSave()) even when it's an external reference; only
     // "bank_overrides" gets a physical file of its own, and only if it was
     // itself an external reference to begin with.
     if (!profile_.bank_overrides.externalFile.empty()) {
-        saveIfDirty(originalContent_, resolve(profile_.bank_overrides.externalFile), profile_.bank_overrides.data);
+        saveIfDirty(baseline, originalContent_, written, resolve(profile_.bank_overrides.externalFile),
+                    profile_.bank_overrides.data);
     }
-    for (auto& b : patchBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
-    for (auto& b : swBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
-    for (auto& b : hwBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
-    for (auto& b : sampleZoneBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
+    for (auto& b : patchBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
+    for (auto& b : swBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
+    for (auto& b : hwBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
+    for (auto& b : sampleZoneBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
     // Re-serializes each pcmbank.json's own top-level fields; entries[]
     // read from a separate adpcm_json are NOT duplicated in here (PcmBank's
     // to_json omits them whenever adpcm_json is set) - copying that sidecar
     // file itself alongside is rebaseSourceFiles()'s job (saveAs() calls it
     // before save()), since it needs both the old and new sourceFile.
-    for (auto& b : pcmBanks_) saveIfDirty(originalContent_, b.sourceFile, b);
-    for (auto& k : drumKits_) saveIfDirty(originalContent_, k.sourceFile, k);
+    for (auto& b : pcmBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
+    for (auto& k : drumKits_) saveIfDirty(baseline, originalContent_, written, k.sourceFile, k);
 }
 
 void PatchWorkspace::rebaseSourceFiles(const std::filesystem::path& newRoot) {
