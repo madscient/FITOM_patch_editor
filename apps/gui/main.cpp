@@ -49,7 +49,7 @@
 // patch editor (renderPatchEditors()/renderPatchEditor()) - several can be
 // open at once, independent of AppState/the current screen. Each editor
 // has per-operator envelope curves that redraw live as AR/DR/SL/RR/TL
-// change, and a clickable preview keyboard (3 octaves, with CC#1
+// change, and a clickable preview keyboard (5 octaves, with CC#1
 // modulation / CC#7 volume levers to its left) that plays notes through
 // FITOM_X's internal MIDI pipe (MidiPipeClient, see
 // docs/plugin-midi-pipe.md in the FITOM_X repo) when an instance is
@@ -381,6 +381,12 @@ struct PatchEditorWindow {
     // the patch the first time it actually renders this editor.
     fpe::HwPatch lastSent;
     fpe::HwPatch registered;
+    // D-052: the patch exactly as it was when this editor was opened, for the
+    // "リセット" button. Deliberately never updated by "登録" (unlike
+    // `registered`) - "編集開始時点に戻す" means the state the user started
+    // from. Only kiosk mode can even observe the difference, since the other
+    // editors close themselves on a successful 登録 (D-048).
+    fpe::HwPatch original;
     bool initialized = false;
     bool deviceSelected = false; // selectDevice() sent at least once this editor's lifetime
 };
@@ -453,6 +459,12 @@ struct LayeredPatchEditorWindow {
     bool open = true;
     size_t bankIndex = 0; // index into ws.layeredPatchBanks()
     int prog = 0;         // Patch::prog within that bank
+
+    // D-052 "リセット" snapshot, same lazy-capture-on-first-render convention
+    // as PatchEditorWindow's own `original` (openLayeredPatchEditor() has no
+    // resolved Patch& to copy at construction time).
+    fpe::Patch original;
+    bool initialized = false;
 };
 
 // A single modeless "performance patch editor" window
@@ -470,6 +482,10 @@ struct PerformancePatchEditorWindow {
     bool open = true;
     size_t bankIndex = 0; // index into ws.performanceBanks()
     int prog = 0;         // SwPatch::prog within that bank
+
+    // D-052 "リセット" snapshot, see PatchEditorWindow::original.
+    fpe::SwPatch original;
+    bool initialized = false;
 };
 
 // A single modeless "drum note editor" window (renderDrumNoteEditor(),
@@ -488,6 +504,10 @@ struct DrumNoteEditorWindow {
     size_t kitIndex = 0; // index into ws.drumKits()
     uint8_t note = 0;    // DrumNote::note within that kit
     int heldPreviewNote = -1; // play_note currently sounding via the "試聴" button, -1 if none
+
+    // D-052 "リセット" snapshot, see PatchEditorWindow::original.
+    fpe::DrumNote original;
+    bool initialized = false;
 };
 
 // Shared "HW (device voice) patch picker" popup for a ToneLayer's
@@ -619,6 +639,24 @@ struct DrumNoteListPreviewState {
     double startTime = 0.0;  // ImGui::GetTime() at noteOn() time
 };
 
+// "編集開始時点" snapshot backing the "リセット" button of the *direct* drum
+// kit's inline form (renderDrumKitDetail()'s else branch, D-052). The other
+// four editors are modeless windows and can hold their snapshot in their own
+// window struct; this form is part of a screen instead, so the snapshot lives
+// in AppContext and "編集開始" is taken to mean "this kit's detail screen was
+// entered" - invalidated by selectBank() on every navigation into BankDetail.
+// Holds only the fields this inline form can actually edit, so restoring can
+// never clobber anything else in the DrumKit.
+struct DirectDrumKitBaseline {
+    bool valid = false;
+    size_t kitIndex = 0;
+    fpe::VoicePatchType voice_patch_type = fpe::VoicePatchType::None;
+    int patch_bank = 0;
+    int patch_prog = 0;
+    uint8_t note_min = 0;
+    uint8_t note_max = 127;
+};
+
 struct AppContext {
     fpe::PatchWorkspace workspace;
     AppState state = AppState::MainMenu;
@@ -647,6 +685,7 @@ struct AppContext {
     DrumSourcePatchPickerState drumSourcePatchPicker; // shared drum-note source-patch picker, see openDrumSourcePatchPicker()
     DrumNoteKeyboardPickerState drumNoteKeyboardPicker; // shared drum-note play_note keyboard picker, see openDrumNoteKeyboardPicker()
     DrumNoteListPreviewState drumNoteListPreview; // one-shot single-click preview, see startDrumNoteListPreview() (D-044)
+    DirectDrumKitBaseline directDrumKitBaseline;  // "リセット" snapshot for the direct-kit inline form (D-052)
 
     // Selection driving the BankDetail screen - which category/index into
     // the corresponding PatchWorkspace vector. Only meaningful while
@@ -880,6 +919,7 @@ void selectBank(AppContext& ctx, BankCategory category, size_t index) {
     ctx.selectedCategory = category;
     ctx.selectedIndex = index;
     ctx.state = AppState::BankDetail;
+    ctx.directDrumKitBaseline.valid = false; // 「編集開始時点」を取り直す、D-052
 }
 
 // Opens a modeless editor for the HwPatch at ws.deviceBanks()[bankIndex]'s
@@ -3265,6 +3305,13 @@ KeyboardResult renderPreviewKeyboard(int baseNote, int whiteKeyCount, float whit
     return result;
 }
 
+// Preview keyboard shown in the HwPatch editor (renderPatchEditor()): 5
+// octaves, C2-C7. 36 white keys = 5*7+1 (the "+1" trailing C, same
+// convention as renderDrumNoteKeyboardPicker() below). Fits within
+// kPatchEditorInitialSize's width alongside the two CC levers.
+constexpr int kPatchEditorKeyboardBaseNote = 36; // C2
+constexpr int kPatchEditorKeyboardWhiteKeys = 36;
+
 // White-key count/semitone span for renderDrumNoteKeyboardPicker() - 5
 // octaves (D-045, widened from the original 3) so more of the MIDI range is
 // visible without paging. 36 white keys = 5*7+1 (the "+1" trailing C, same
@@ -3603,6 +3650,30 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges,
     ImGui::PopID();
 }
 
+// 各編集画面のヘッダ行右上に並べる「リセット」+「登録」ボタン(D-052)。
+// ボタン幅・右寄せの計算・ツールチップ文言を1箇所に集約するための共通
+// ヘルパーで、呼び出し側は返ってきたアクションに対して自分の型に応じた
+// 復元/保存処理を行う。`resetEnabled`がfalseの間は「リセット」のみ
+// 無効化する(復元元スナップショットがまだ取れていない初回フレーム用、
+// renderPatchEditor()参照)。
+enum class EditorHeaderAction { None, Reset, Register };
+
+EditorHeaderAction renderEditorHeaderButtons(bool resetEnabled = true) {
+    constexpr float kButtonW = 90.0f;
+    const float totalW = kButtonW * 2.0f + ImGui::GetStyle().ItemSpacing.x;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (avail > totalW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - totalW);
+
+    EditorHeaderAction action = EditorHeaderAction::None;
+    ImGui::BeginDisabled(!resetEnabled);
+    if (ImGui::Button("リセット", ImVec2(kButtonW, 0))) action = EditorHeaderAction::Reset;
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("この編集画面を開いた時点の値に戻します(保存はしません)");
+    ImGui::SameLine();
+    if (ImGui::Button("登録", ImVec2(kButtonW, 0))) action = EditorHeaderAction::Register;
+    return action;
+}
+
 // Called once when a patch editor closes (D-027): resends the FULL
 // last-registered (i.e. actually-persisted-to-disk) HwPatch, so any
 // live-only edits made after the last "登録" - which were already heard
@@ -3652,10 +3723,15 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         // state into editor.registered, which is what gets resent in
         // full when this editor closes (see sendFullRegisteredOverride()).
         ImGui::SameLine();
-        const float buttonW = 90.0f;
-        const float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
-        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+        // "リセット" restores editor.original (D-052). The realtime diff
+        // stream further down picks the restored values up on the very next
+        // frame, so FITOM_X's live preview follows the revert too - nothing
+        // extra to send here. Disabled until `original` actually holds this
+        // patch (see the lazy init below).
+        const EditorHeaderAction action = renderEditorHeaderButtons(editor.initialized);
+        if (action == EditorHeaderAction::Reset) {
+            *patch = editor.original;
+        } else if (action == EditorHeaderAction::Register) {
             try {
                 ctx.workspace.save();
                 // D-049: also persist into a running FITOM_X's own
@@ -3708,6 +3784,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     if (!editor.initialized) {
         editor.lastSent = *patch;
         editor.registered = *patch;
+        editor.original = *patch;
         editor.initialized = true;
     }
 
@@ -3904,7 +3981,8 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     ImGui::EndGroup();
     ImGui::SameLine();
 
-    KeyboardResult kb = renderPreviewKeyboard(48, 22, kLeverHeight); // 3 octaves, C3-C6
+    KeyboardResult kb =
+        renderPreviewKeyboard(kPatchEditorKeyboardBaseNote, kPatchEditorKeyboardWhiteKeys, kLeverHeight);
     if (kb.pressedNote >= 0 && connected) {
         ctx.previewOutput.selectDevice(previewChannel, static_cast<uint8_t>(bank.voicePatchType),
                                         static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog));
@@ -3972,16 +4050,21 @@ void renderLayeredPatchEditor(AppContext& ctx, LayeredPatchEditorWindow& editor)
         return;
     }
 
+    if (!editor.initialized) {
+        editor.original = *patch;
+        editor.initialized = true;
+    }
+
     ImGui::Text("[layered bank %d prog %d]", bank.bankIndex, patch->prog);
     ImGui::SameLine();
     {
-        // Top-right placement, matching renderPatchEditor()'s "登録" button
-        // (D-027) - persists the whole workspace (PatchBank has no narrower
-        // single-bank save API either).
-        const float buttonW = 90.0f;
-        const float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
-        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+        // Top-right placement, matching renderPatchEditor()'s "リセット"/"登録"
+        // buttons (D-027/D-052) - "登録" persists the whole workspace
+        // (PatchBank has no narrower single-bank save API either).
+        const EditorHeaderAction action = renderEditorHeaderButtons();
+        if (action == EditorHeaderAction::Reset) {
+            *patch = editor.original;
+        } else if (action == EditorHeaderAction::Register) {
             try {
                 ctx.workspace.save();
                 // D-049: persist into FITOM_X's own in-memory copy too, see
@@ -4193,16 +4276,21 @@ void renderPerformancePatchEditor(AppContext& ctx, PerformancePatchEditorWindow&
         return;
     }
 
+    if (!editor.initialized) {
+        editor.original = *patch;
+        editor.initialized = true;
+    }
+
     ImGui::Text("[performance bank %d prog %d]", bank.bankIndex, patch->prog);
     ImGui::SameLine();
     {
-        // Top-right "登録" placement, matching renderPatchEditor()/
+        // Top-right "リセット"/"登録" placement, matching renderPatchEditor()/
         // renderLayeredPatchEditor()'s convention - SwBank has no narrower
         // single-bank save API either, so this persists the whole workspace.
-        const float buttonW = 90.0f;
-        const float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
-        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+        const EditorHeaderAction action = renderEditorHeaderButtons();
+        if (action == EditorHeaderAction::Reset) {
+            *patch = editor.original;
+        } else if (action == EditorHeaderAction::Register) {
             try {
                 ctx.workspace.save();
                 // D-049: persist into FITOM_X's own in-memory copy too, see
@@ -4287,20 +4375,25 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
         return;
     }
 
+    if (!editor.initialized) {
+        editor.original = *note;
+        editor.initialized = true;
+    }
+
     ImGui::Text("[drum prog %d] note %d (%s)", kit.prog, note->note, midiNoteName(note->note).c_str());
     ImGui::SameLine();
     {
-        // Top-right "登録", matching every other patch editor's own (D-027) -
+        // Top-right "リセット"(D-052)/"登録", matching every other patch editor's own (D-027) -
         // persists the whole workspace (DrumKit has no narrower single-note
         // save API either), and closes itself on a successful save (D-047,
         // per the project owner's request - extended to the other three
         // modeless patch editors too by D-048, see renderPatchEditor()'s
         // comment for the kiosk-mode caveat, which doesn't apply here since
         // DrumNoteEditorWindow has no kiosk-slot equivalent to begin with).
-        const float buttonW = 90.0f;
-        const float avail = ImGui::GetContentRegionAvail().x;
-        if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
-        if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+        const EditorHeaderAction action = renderEditorHeaderButtons();
+        if (action == EditorHeaderAction::Reset) {
+            *note = editor.original;
+        } else if (action == EditorHeaderAction::Register) {
             try {
                 ws.save();
                 // D-049: persist the whole kit into FITOM_X's own in-memory
@@ -4687,10 +4780,27 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
         // 用意する(D-038、スコープ限定 - sw_bank/sw_prog・
         // fine_tune/pan/gate_timeは今回未対応、docs/STATUS.md参照)。
         {
-            const float buttonW = 90.0f;
-            const float avail = ImGui::GetContentRegionAvail().x;
-            if (avail > buttonW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - buttonW);
-            if (ImGui::Button("登録", ImVec2(buttonW, 0))) {
+            // D-052: この画面に入った時点の値を控えておき、「リセット」で
+            // 戻せるようにする(DirectDrumKitBaseline参照)。
+            DirectDrumKitBaseline& baseline = ctx.directDrumKitBaseline;
+            if (!baseline.valid || baseline.kitIndex != kitIndex) {
+                baseline.valid = true;
+                baseline.kitIndex = kitIndex;
+                baseline.voice_patch_type = kit.voice_patch_type;
+                baseline.patch_bank = kit.patch_bank;
+                baseline.patch_prog = kit.patch_prog;
+                baseline.note_min = kit.note_min;
+                baseline.note_max = kit.note_max;
+            }
+
+            const EditorHeaderAction action = renderEditorHeaderButtons();
+            if (action == EditorHeaderAction::Reset) {
+                kit.voice_patch_type = baseline.voice_patch_type;
+                kit.patch_bank = baseline.patch_bank;
+                kit.patch_prog = baseline.patch_prog;
+                kit.note_min = baseline.note_min;
+                kit.note_max = baseline.note_max;
+            } else if (action == EditorHeaderAction::Register) {
                 try {
                     ws.save();
                     // D-049: persist into FITOM_X's own in-memory DrumPatch
