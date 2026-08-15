@@ -515,7 +515,15 @@ SwBank* PatchWorkspace::findPerformanceBank(int bank) {
     return nullptr;
 }
 HwBank* PatchWorkspace::findDeviceBank(VoicePatchType type, int bank) {
-    for (auto& b : hwBanks_) if (b.voicePatchType == type && b.bankIndex == bank) return &b;
+    // Both sides go through hwBankLookupVoicePatchType() so that the PSG
+    // family's shared bank namespace resolves: real profiles register every
+    // SSG/EPSG/DCSG/SAA/SCC bank under the "SSG" group (see
+    // ../FITOM_staging/config/profiles/unified.bankset.json), and a reference
+    // that names one of the other four would otherwise find nothing.
+    const VoicePatchType key = hwBankLookupVoicePatchType(type);
+    for (auto& b : hwBanks_) {
+        if (hwBankLookupVoicePatchType(b.voicePatchType) == key && b.bankIndex == bank) return &b;
+    }
     return nullptr;
 }
 SampleZoneBank* PatchWorkspace::findSampleZoneBank(VoicePatchType type, int bank) {

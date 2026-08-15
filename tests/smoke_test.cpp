@@ -85,9 +85,40 @@ static void testVoicePatchType() {
     CHECK(!fpe::isPcmWaveformVoicePatchType(VoicePatchType::OPM));
     CHECK(!fpe::isValidHwBankTag(VoicePatchType::None));
     CHECK(fpe::isValidHwBankTag(VoicePatchType::SSG));
+    // DSG is a recognized chip type, but never a bank tag - it owns no
+    // *.hwbank.json at all (D-053).
+    CHECK(!fpe::isValidHwBankTag(VoicePatchType::DSG));
+
+    // Alias group strings FITOM_X's own stringToVoicePatchType() accepts.
+    // Before D-053 an "OPNA"/"OPNB"/"SCCP"/"PSG"/"PCM" tagged bank - all
+    // legal per profile.schema.json - was dropped outright with a warning.
+    CHECK(fpe::stringToVoicePatchType("OPNA") == VoicePatchType::OPN2);
+    CHECK(fpe::stringToVoicePatchType("OPNB") == VoicePatchType::OPN2);
+    CHECK(fpe::stringToVoicePatchType("SCCP") == VoicePatchType::SCC);
+    CHECK(fpe::stringToVoicePatchType("PSG") == VoicePatchType::SSG);
+    CHECK(fpe::stringToVoicePatchType("PCM") == VoicePatchType::ADPCMB);
+    CHECK(fpe::stringToVoicePatchType("AY8930") == VoicePatchType::EPSG);
+    CHECK(fpe::stringToVoicePatchType("YM2163") == VoicePatchType::DSG);
+    CHECK(!fpe::stringToVoicePatchType("NOSUCHCHIP").has_value());
+    // Aliases are input-only: the canonical spelling is what round-trips.
+    CHECK(fpe::voicePatchTypeToString(VoicePatchType::OPN2) == "OPN2");
+    CHECK(fpe::voicePatchTypeToString(VoicePatchType::DSG) == "DSG");
+
+    // The PSG family is the one family sharing a single bank namespace, so
+    // every {type,bank} HwBank lookup has to collapse onto SSG for it.
+    CHECK(fpe::isPsgFamilyVoicePatchType(VoicePatchType::EPSG));
+    CHECK(fpe::isPsgFamilyVoicePatchType(VoicePatchType::SCC));
+    // DSG must stay out of it - it has no user banks, so folding it in would
+    // list every SSG bank under the DSG category (FITOM_X hit exactly this
+    // and removed it again in 54830f3).
+    CHECK(!fpe::isPsgFamilyVoicePatchType(VoicePatchType::DSG));
+    CHECK(!fpe::isPsgFamilyVoicePatchType(VoicePatchType::OPN));
+    CHECK(fpe::hwBankLookupVoicePatchType(VoicePatchType::SCC) == VoicePatchType::SSG);
+    CHECK(fpe::hwBankLookupVoicePatchType(VoicePatchType::DSG) == VoicePatchType::DSG);
+    CHECK(fpe::hwBankLookupVoicePatchType(VoicePatchType::OPM) == VoicePatchType::OPM);
 }
 
-// D-050: the two families FITOM_X synthesizes internally instead of loading
+// D-050/D-053: the families FITOM_X synthesizes internally instead of loading
 // from a *.hwbank.json (fpe/BuiltinVoices.h).
 static void testBuiltinVoices() {
     using fpe::VoicePatchType;
@@ -127,16 +158,42 @@ static void testBuiltinVoices() {
     CHECK(!fpe::opllRomVoiceByProg(0x40).valid);   // variantSel 4 = undefined
     CHECK(fpe::opllRomVoiceByProg(0x01).name == "Violin");
 
-    // builtin_swpatch_meta bank's {patch_type, patch_no} form.
-    CHECK(fpe::opllRomVoiceName("VRC7", 1) == "Buzzy Bell");
-    CHECK(fpe::opllRomVoiceName("OPLL", 0).empty());
-    CHECK(fpe::opllRomVoiceName("OPL2", 1).empty());
+    // --- DSG (YM2163) built-in voices ---
+    // Unlike the OPLL ROM bank, these resolve at *any* hw_bank: DSG has no
+    // user banks for a bank number to select between, and FITOM_X's
+    // resolveDsgBuiltinVoice() never reads hw_bank at all.
+    CHECK(fpe::isDsgBuiltinVoiceRef(VoicePatchType::DSG));
+    CHECK(!fpe::isDsgBuiltinVoiceRef(VoicePatchType::SSG));
+
+    // 5 waveforms x 4 envelopes, prog = wave*4 + env (a plain array index,
+    // with no chip-variant bits packed in the way OPLL ROM progs have).
+    const auto dsg = fpe::dsgBuiltinVoices();
+    CHECK(dsg.size() == 20);
+    CHECK(dsg.front().prog == 0);
+    CHECK(dsg.front().name == "St.Percussive");
+    CHECK(dsg.back().prog == 19);
+    CHECK(dsg.back().name == "Hc.Plateau");
+    CHECK(fpe::dsgBuiltinVoiceName(4) == "Or.Percussive");
+    CHECK(fpe::dsgBuiltinVoiceName(19) == "Hc.Plateau");
+    CHECK(fpe::dsgBuiltinVoiceName(20).empty());
+    CHECK(fpe::dsgBuiltinVoiceName(-1).empty());
+
+    // builtin_swpatch_meta bank's {patch_type, patch_no} form - one bank
+    // mixes OPLL-family and DSG entries, told apart by patch_type.
+    CHECK(fpe::builtinMetaVoiceName("VRC7", 1) == "Buzzy Bell");
+    CHECK(fpe::builtinMetaVoiceName("OPLL", 0).empty());
+    CHECK(fpe::builtinMetaVoiceName("OPL2", 1).empty());
+    // patch_no 0 is reserved silence for OPLL but a real voice for DSG, so
+    // the two ranges genuinely differ (OPLL系 1-15 / DSG 0-19).
+    CHECK(fpe::builtinMetaVoiceName("DSG", 0) == "St.Percussive");
+    CHECK(fpe::builtinMetaVoiceName("DSG", 19) == "Hc.Plateau");
+    CHECK(fpe::builtinMetaVoiceName("DSG", 20).empty());
 
     // --- Built-in rhythm (voice_patch_type 0x70) ---
     // patch_bank holds the chip's own VoicePatchType, not a bank number:
     // OPN2(17)=OPNA with 6 parts, OPLL(40) with 5 - exactly what staging's
     // opna_builtin.drumkit.json / opll_rhythm.drumkit.json store.
-    CHECK(fpe::builtinRhythmChips().size() == 2);
+    CHECK(fpe::builtinRhythmChips().size() == 3);
     CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::OPN2)) == "OPNA");
     CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::OPLL)) == "OPLL");
     CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::OPL)).empty());
@@ -151,6 +208,14 @@ static void testBuiltinVoices() {
     CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPLL), 0) == "Hi-Hat");
     CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPLL), 4) == "Bass Drum");
     CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::OPLL), 5).empty());
+    // DSG's 5 parts follow its rhythm trigger register's bit order, which is
+    // a third distinct ordering again (CDSGRhythm::kTriggerBit).
+    CHECK(fpe::builtinRhythmChipLabel(static_cast<int>(VoicePatchType::DSG)) == "DSG");
+    CHECK(fpe::builtinRhythmParts(static_cast<int>(VoicePatchType::DSG)).size() == 5);
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::DSG), 0) == "Bass Drum");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::DSG), 1) == "Hi Conga");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::DSG), 4) == "Hi-Hat Close");
+    CHECK(fpe::builtinRhythmPartName(static_cast<int>(VoicePatchType::DSG), 5).empty());
 }
 
 static void testLoad(fpe::PatchWorkspace& ws) {
@@ -165,7 +230,7 @@ static void testLoad(fpe::PatchWorkspace& ws) {
 
     CHECK(ws.layeredPatchBanks().size() == 1);
     CHECK(ws.performanceBanks().size() == 1);
-    CHECK(ws.deviceBanks().size() == 1);
+    CHECK(ws.deviceBanks().size() == 2); // OPM bank 0 + PSG-family shared bank 5 (D-053)
     CHECK(ws.pcmBanks().size() == 2); // one via hw_banks[group=ADPCMA], one via pcm_banks[] (D-038 "追記2")
     CHECK(ws.drumKits().size() == 2);
 
@@ -206,6 +271,30 @@ static void testLoad(fpe::PatchWorkspace& ws) {
             CHECK(hwPatch->sw_bank == 0);
             CHECK(hwPatch->sw_prog == 0);
         }
+    }
+
+    // PSG family shared bank namespace (D-053). The fixture registers this
+    // bank with the legacy coarse group string "PSG", so this also covers the
+    // alias table: before D-053 the bank was dropped outright at load.
+    auto* psgBank = ws.findDeviceBank(fpe::VoicePatchType::SSG, 5);
+    CHECK(psgBank != nullptr);
+    if (psgBank) {
+        CHECK(psgBank->voicePatchType == fpe::VoicePatchType::SSG);
+        CHECK(psgBank->name == "PSG shared bank");
+        // The whole point of the shared namespace: the same bank has to be
+        // reachable from every PSG-family chip type, since real profiles
+        // register all of them under "SSG"
+        // (../FITOM_staging/config/profiles/unified.bankset.json) and each
+        // patch names its real target chip via ext.target_voice_patch_type.
+        CHECK(ws.findDeviceBank(fpe::VoicePatchType::EPSG, 5) == psgBank);
+        CHECK(ws.findDeviceBank(fpe::VoicePatchType::SCC, 5) == psgBank);
+        // ...but only within the family - other chips keep their own
+        // per-chip-type namespace.
+        CHECK(ws.findDeviceBank(fpe::VoicePatchType::OPM, 5) == nullptr);
+        CHECK(ws.findDeviceBank(fpe::VoicePatchType::DSG, 5) == nullptr);
+        auto* psgPatch = psgBank->findByProg(0);
+        CHECK(psgPatch != nullptr);
+        if (psgPatch) CHECK(psgPatch->ext.target_voice_patch_type == fpe::VoicePatchType::EPSG);
     }
 
     // PcmBank (ADPCM-A/B, PCM-D8): entries[] come from a separate

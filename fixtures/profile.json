@@ -9,6 +9,7 @@
     ],
     "hw_banks": [
       { "group": "OPM", "bank": 0, "file": "banks/OPM/dx27_dx100/00_default.hwbank.json" },
+      { "group": "PSG", "bank": 5, "file": "banks/PSG/psg_shared.hwbank.json" },
       { "group": "ADPCMA", "bank": 1, "file": "banks/PCM/test.pcmbank.json" }
     ],
     "pcm_banks": [

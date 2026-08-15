@@ -10,7 +10,7 @@
 
 | ファイル | 状態 | 内容 |
 |---|---|---|
-| `include/fpe/VoicePatchType.h` / `src/VoicePatchType.cpp` | ✅ | チップ系統の分類、CC#0直接デバイス選択値との対応 |
+| `include/fpe/VoicePatchType.h` / `src/VoicePatchType.cpp` | ✅ | チップ系統の分類、CC#0直接デバイス選択値との対応。DSG(YM2163、0x44)を含む。`group`文字列のエイリアス(`OPNA`/`OPNB`/`SCCP`/`PSG`/`PCM`等)、およびPSG系5チップが1つのバンク名前空間を共有する規約(`hwBankLookupVoicePatchType()`)もここ(D-053) |
 | `include/fpe/HwPatch.h` / `src/HwPatch.cpp` | ✅(D-028で重大なJSON形状不一致を修正、実データで検証済み) | HwPatch(デバイスボイスパッチ)、HwBank。FB/ALG/AMS/PMS/NFQ/FB2は実スキーマ通りトップレベル直下(以前は`"hw"`入れ子を使っており実データ読み込み時に無音でゼロ化・保存で恒久的に破壊するバグがあった)。`FmHwOp.PDT`(旧`FXV`)・`FmChipExt.FIX`(旧`DM0`)も実スキーマのキー名に修正 |
 | `include/fpe/SwPatch.h` / `src/SwPatch.cpp` | ✅ | SwPatch(パフォーマンスパッチ)、SwBank |
 | `include/fpe/LayeredPatch.h` / `src/LayeredPatch.cpp` | ✅ | ToneLayer / Patch(レイヤードパッチ) / PatchBank |
@@ -19,9 +19,9 @@
 | `include/fpe/PcmBank.h` / `src/PcmBank.cpp` | ✅ | PcmBankEntry / PcmBank(ADPCM-B/A・PCM-D8、`*.pcmbank.json`+参照先`adpcm_json`のentries[]、D-013) |
 | `include/fpe/Profile.h` / `src/Profile.cpp` | ✅(一部推測、D-002参照) | 最上位の *.profile.json |
 | `include/fpe/PatchWorkspace.h` / `src/PatchWorkspace.cpp` | ✅ | 読み込み/保存/CRUD/閲覧ツリーの統合クラス |
-| `include/fpe/BuiltinVoices.h` / `src/BuiltinVoices.cpp` | ✅(ステージング実データと突き合わせ済み) | FITOM_Xが内部で機械合成する2種のビルトイン音色(OPLL系ROM音色=バンク0、OPNA/OPLL内蔵リズム=`voice_patch_type` 0x70)の名前テーブルとアドレス変換規約。`hw_banks[]`/`*.hwbank.json`を一切経由しないため、`PatchWorkspace::deviceBanks()`の検索では原理的に解決できない(D-050) |
+| `include/fpe/BuiltinVoices.h` / `src/BuiltinVoices.cpp` | ✅(ステージング実データと突き合わせ済み) | FITOM_Xが内部で機械合成する3種のビルトイン音色(OPLL系ROM音色=バンク0、内蔵リズム=`voice_patch_type` 0x70でOPNA/OPLL/DSGの3チップ、DSG(YM2163)ビルトイン音色20件=バンク番号を問わず常時)の名前テーブルとアドレス変換規約。`hw_banks[]`/`*.hwbank.json`を一切経由しないため、`PatchWorkspace::deviceBanks()`の検索では原理的に解決できない(D-050、D-053) |
 | `include/fpe/JsonUtil.h` | ✅ | getOr/getRequiredヘルパー、JsonError |
-| `tests/smoke_test.cpp` | ✅ | 188項目のアサーション、クリーンビルドで全通過確認済み |
+| `tests/smoke_test.cpp` | ✅ | 235項目のアサーション、クリーンビルドで全通過確認済み |
 | `fixtures/*` | ✅ | テスト用サンプルプロファイル一式(PcmBank用フィクスチャ含む) |
 
 ### GUI (`fitom_patch_editor_gui`)
@@ -175,10 +175,11 @@
   プロファイル)にアクセスできる状況になり、照合・修正済み(詳細は
   D-008参照)。`banks`ネストの見落とし(重大)と`DrumNote`/`DrumKit`の
   フィールド不足を修正、実プロファイルでの動作も確認済み。
-- **`VoicePatchType.cpp`の`group`文字列テーブルが実スキーマのenumと
-  一部不一致** — 実スキーマ(`hw_banks[].group`)には`OPNA`/`OPNB`/
-  `SCCP`/`PSG`/`PCM`が含まれるが、`VoicePatchType.cpp`のテーブルには
-  未登録(D-008参照)。次に着手する際に追加・確認する。
+- ~~**`VoicePatchType.cpp`の`group`文字列テーブルが実スキーマのenumと
+  一部不一致**~~ — 2026-08-15、D-053で解消。`OPNA`/`OPNB`/`SCCP`/`PSG`/
+  `PCM`および`AY8930`/`SAA1099`/`YM2163`/`SD-1`〜`MA-7`を、FITOM_X本体の
+  `FITOMConfig::stringToVoicePatchType()`と1対1になるエイリアス表として
+  追加済み。
 - **`*.sccwave.json`の内容モデル化** — `Profile`に`scc_wave_banks[]`の
   ref(bank+file)は追加したが、参照先ファイル自体のデータモデル
   (`SccWaveBank`クラス)は未着手。`PatchWorkspace`はまだこの内容を
@@ -2344,3 +2345,61 @@
 - 次にやること: 利用者に実機で見た目と挙動(編集→リセットで開いた時点の
   値に戻ること、HwPatch編集画面ではFITOM_X側のライブプレビューも一緒に
   戻ること)を確認してもらう。
+
+### 2026-08-15 (同マシン、FITOM_X新規チップ DSG(YM2163)への追従 + PSG系共有バンク・group文字列エイリアスの取りこぼし修正、D-053)
+- やったこと: 利用者から「FITOM_X側で新規チップの対応などの更新があった。
+  パッチ名解決などの必要な追従を行ってほしい」という依頼を受け、
+  `..\FITOM_X`の2026-08-10〜2026-08-15のコミット群を確認して、本エディタの
+  追従が必要な変更を3件に切り分けて対応した(詳細はD-053)。
+  (1) **DSG(YM2163)= `VoicePatchType` 0x44 の新設**(FITOM_X `d882d82`/
+  `228c3d0`/`54830f3`)。値自体が無かったためあらゆる参照が解決不能だった。
+  DSGは**ユーザー音色を全く持たない**チップで、`*.hwbank.json`も
+  `hw_banks[].group`の選択肢も存在せず、音色ソースは波形5種×エンベロープ
+  4種=20音色の暗黙のバンクのみ。しかも`resolveDsgBuiltinVoice()`は
+  **`hw_bank`の値を一切見ない**(OPLL系ROM音色が「バンク0のときだけ」なのとは
+  異なる)。`fpe::dsgBuiltinVoices()`/`dsgBuiltinVoiceName()`/
+  `isDsgBuiltinVoiceRef()`(bankを引数に取らない)を新設し、GUIの
+  `resolveHwRefNames()`・2つのパッチピッカー(カテゴリ/バンク/プログラムの
+  3階層すべて)・`drumSourcePatchHasEditor()`に組み込んだ。内蔵リズム
+  (0x70)の対象チップにもDSG(5パート、OPNA/OPLLとは別のパート順)を追加し、
+  カテゴリのUIラベルを「内蔵リズム(OPNA/OPLL)」から「内蔵リズム」へ変更
+  (対応チップ一覧の情報源を`fpe::builtinRhythmChips()`に一本化)。
+  `role=="builtin_swpatch_meta"`バンクもOPLL専用ではなくなったため
+  `opllRomVoiceName()`を`builtinMetaVoiceName()`へ一般化した(`patch_no`の
+  値域が`patch_type`ごとに違う ―― OPLL系1-15 / DSG 0-19で**DSGはprog 0も
+  正規の音色**)。
+  (2) **PSG系共有バンク名前空間**(FITOM_X `42803dd`)。SSG/EPSG/DCSG/SAA/
+  SCCの5チップは族全体で1つのバンク名前空間を共有するのに、本エディタは
+  `{voice_patch_type, bank}`の完全一致で探していたため、SSG以外を指す参照は
+  構造上必ず解決できなかった。実データでも`../FITOM_staging`の
+  `unified.bankset.json`がPSG系4バンクを全て`group:"SSG"`で登録しており
+  机上の話ではない。`fpe::hwBankLookupVoicePatchType()`を新設し、
+  `PatchWorkspace::findDeviceBank()`・GUIの`findDeviceBankVectorIndex()`・
+  両ピッカーのバンク列挙が全てそこを通るようにした。ピッカーが書き戻す
+  `voice_patch_type`はバンク自身のタグではなく利用者が選んだカテゴリにしてある。
+  (3) **`group`文字列エイリアス**(D-008発見4として2026-07-17から残っていた
+  既知課題)。`OPNA`/`OPNB`/`SCCP`/`PSG`/`PCM`等でタグ付けされたバンクが
+  警告付きで丸ごと読み捨てられていたのを、FITOM_X本体の
+  `stringToVoicePatchType()`と1対1になるエイリアス表の追加で解消した。
+  検証は、`fixtures/profile.json`に`group:"PSG"`でタグ付けしたPSG系共有バンクの
+  フィクスチャを追加してスモークテストを188→235項目に拡張(全通過)。加えて
+  一時的な検証用実行ファイル(検証後削除)で
+  `../FITOM_staging/config/profiles/unified_preset.profile.json`(hw_banks
+  135件)を実読み込みし、警告ゼロで、PSG系4バンクが5チップ種別すべてから
+  解決されること(修正前はSSGのみ)・DSGからは解決されないこと・
+  `builtin_swpatch_meta`バンクが読めることを確認した。
+  ビルド(`cmake --build build/vs2026`)・`ctest`(235項目、全通過)も確認済み。
+- 未完了・既知の問題: GUIの実際のクリック確認は`CLAUDE.md`の方針により未実施
+  (利用者の目視確認待ち)。`../FITOM_staging`側には現時点でDSGを指す
+  `voice_patch_type=68`の実データが1件も無いため(DSGを積んだ
+  `emu_psg_stereo.profile.json`はバンク登録自体を持たない)、DSGの名前解決は
+  ユニットテストとFITOM_X本体のソース突き合わせでしか裏が取れていない。
+  `builtin_swpatch_meta`バンク(ステージングでは`Built-In Voice SwPatch Meta
+  (Skeleton)`、エントリ0件)にDSGエントリが入った実データでの確認も同様に未実施。
+  D-050時点からの既存の制約(メタバンクのエントリは`builtin`分岐で早期return
+  するため`sw_bank`/`sw_prog`を編集できない)も引き続き未対応。
+- 次にやること: 利用者に今回の追従(DSGカテゴリがパッチピッカーに現れて
+  20音色が選べること、内蔵リズムにDSGが加わったこと、PSG系のバンクが
+  EPSG/DCSG/SAA/SCCの各カテゴリからも見えること)を実機で確認してもらう。
+  上記`builtin_swpatch_meta`バンクの`sw_bank`/`sw_prog`編集を対応するかは
+  引き続き利用者の判断待ち。

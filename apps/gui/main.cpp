@@ -1006,9 +1006,13 @@ void openDrumNoteEditor(AppContext& ctx, size_t kitIndex, uint8_t note) {
 // findDeviceBankIndexByFile()'s "search by a stable key, not by vector
 // position" approach.
 std::optional<size_t> findDeviceBankVectorIndex(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, int bankIndex) {
+    // Keyed through hwBankLookupVoicePatchType() for the PSG family's shared
+    // bank namespace, exactly like PatchWorkspace::findDeviceBank().
+    const fpe::VoicePatchType key = fpe::hwBankLookupVoicePatchType(type);
     auto& banks = ws.deviceBanks();
     for (size_t i = 0; i < banks.size(); ++i) {
-        if (banks[i].voicePatchType == type && banks[i].bankIndex == bankIndex) return i;
+        if (fpe::hwBankLookupVoicePatchType(banks[i].voicePatchType) == key && banks[i].bankIndex == bankIndex)
+            return i;
     }
     return std::nullopt;
 }
@@ -1045,20 +1049,26 @@ std::optional<size_t> findLayeredPatchBankVectorIndex(fpe::PatchWorkspace& ws, i
 // legal HwBank tag (VoicePatchType.h) - but it IS a legal
 // voice_patch_type for a DrumNote (FITOM_X config_schema/drumkit.schema.json)
 // and FITOM_X本体's own patch picker lists it as its own category
-// ("内蔵リズム(OPNA/OPLL)", apps/fitom_gui/PatchPickerDialog.cpp's
-// kCategories), so supply that label here rather than showing "?". D-050.
+// ("内蔵リズム", apps/fitom_gui/PatchPickerDialog.cpp's kCategories), so
+// supply that label here rather than showing "?". D-050.
+//
+// The label deliberately does not enumerate the supported chips -
+// fpe::builtinRhythmChips() is the single source of truth for that list
+// (FITOM_X made the same change when DSG joined it, so that the label and
+// the list can't drift apart).
 std::string deviceCategoryLabel(fpe::VoicePatchType type) {
-    if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) return "内蔵リズム(OPNA/OPLL)";
+    if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) return "内蔵リズム";
     return fpe::voicePatchTypeToString(type);
 }
 
 // Resolves a {voice_patch_type, bank, prog} device (HW) reference into the
-// pair of names shown for it, covering the two FITOM_X families that have no
-// *.hwbank.json behind them at all and therefore can never be found by
-// searching ws.deviceBanks() (fpe/BuiltinVoices.h, D-050):
+// pair of names shown for it, covering the three FITOM_X families that have
+// no *.hwbank.json behind them at all and therefore can never be found by
+// searching ws.deviceBanks() (fpe/BuiltinVoices.h, D-050/D-053):
 //   - built-in rhythm (voice_patch_type 0x70): `bank` selects the chip
-//     (OPN2=OPNA / OPLL=OPLL), `prog` the rhythm part
+//     (OPN2=OPNA / OPLL=OPLL / DSG=DSG), `prog` the rhythm part
 //   - OPLL-family ROM voices (bank 0 of OPLL/OPLLP/OPLLX/VRC7)
+//   - DSG (YM2163) built-in voices, at *any* bank number
 // Anything else resolves the ordinary way, through deviceBanks().
 struct HwRefNames {
     std::string bankName;  // empty = unresolved
@@ -1072,6 +1082,16 @@ HwRefNames resolveHwRefNames(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, 
         r.builtin = true;
         r.bankName = fpe::builtinRhythmChipLabel(bank);
         r.patchName = fpe::builtinRhythmPartName(bank, prog);
+        return r;
+    }
+    if (fpe::isDsgBuiltinVoiceRef(type)) {
+        // Note the missing `bank` check: FITOM_X's resolveDsgBuiltinVoice()
+        // never looks at hw_bank, because DSG has no user banks for a bank
+        // number to select between. Resolving only at bank 0 (the OPLL ROM
+        // rule) would leave every other bank number silently unresolved.
+        r.builtin = true;
+        r.bankName = fpe::dsgBuiltinBankName();
+        r.patchName = fpe::dsgBuiltinVoiceName(prog);
         return r;
     }
     if (fpe::isOpllRomVoiceRef(type, bank)) {
@@ -1107,18 +1127,21 @@ HwRefNames resolveHwRefNames(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, 
 // "(N/A)" fallback shared by every resolved-reference label below.
 std::string orNA(const std::string& s) { return s.empty() ? std::string("(N/A)") : s; }
 
-// The four OPLL-family categories always have selectable content, because
-// their bank 0 ROM voices are synthesized inside FITOM_X rather than loaded
-// from a *.hwbank.json (fpe/BuiltinVoices.h). A picker that derives its
-// category list purely from the loaded banks would therefore drop them
-// entirely for a profile that registers no OPLL bank at all - and even for
-// one that does (staging registers OPLL banks 1-4, never 0), the ROM voices
-// would still be unreachable. FITOM_X本体's own picker sidesteps this by
-// hardcoding the whole category list (PatchPickerDialog.cpp's kCategories);
-// this editor keeps its data-driven list and just tops it up. D-050.
-void addOpllRomCategories(std::vector<fpe::VoicePatchType>& categories) {
+// The four OPLL-family categories and DSG always have selectable content,
+// because their voices are synthesized inside FITOM_X rather than loaded from
+// a *.hwbank.json (fpe/BuiltinVoices.h). A picker that derives its category
+// list purely from the loaded banks would therefore drop them entirely for a
+// profile that registers no OPLL bank at all - and even for one that does
+// (staging registers OPLL banks 1-4, never 0), the ROM voices would still be
+// unreachable. DSG is the stronger case still: it can never have a bank,
+// since it is not even a legal hw_banks[].group value. FITOM_X本体's own
+// picker sidesteps all of this by hardcoding the whole category list
+// (PatchPickerDialog.cpp's kCategories); this editor keeps its data-driven
+// list and just tops it up. D-050/D-053.
+void addBuiltinVoiceCategories(std::vector<fpe::VoicePatchType>& categories) {
     for (fpe::VoicePatchType c : {fpe::VoicePatchType::OPLL, fpe::VoicePatchType::OPLLP,
-                                  fpe::VoicePatchType::OPLLX, fpe::VoicePatchType::VRC7}) {
+                                  fpe::VoicePatchType::OPLLX, fpe::VoicePatchType::VRC7,
+                                  fpe::VoicePatchType::DSG}) {
         if (std::find(categories.begin(), categories.end(), c) == categories.end()) categories.push_back(c);
     }
 }
@@ -1129,7 +1152,23 @@ std::vector<fpe::VoicePatchType> collectDeviceCategories(const std::vector<fpe::
         if (std::find(categories.begin(), categories.end(), bank.voicePatchType) == categories.end())
             categories.push_back(bank.voicePatchType);
     }
-    addOpllRomCategories(categories);
+    addBuiltinVoiceCategories(categories);
+    // The PSG family shares one bank namespace, so a profile that registers
+    // its banks under "SSG" (as all of ../FITOM_staging's do) still has to
+    // offer the other four as categories of their own - picking one of them
+    // is how a reference says which chip should actually play those banks
+    // (fpe::hwBankLookupVoicePatchType(), FITOM_X's own picker does the
+    // same via hwBankLookupVoicePatchType).
+    if (std::find_if(categories.begin(), categories.end(), [](fpe::VoicePatchType c) {
+            return fpe::isPsgFamilyVoicePatchType(c);
+        }) != categories.end()) {
+        for (fpe::VoicePatchType c : {fpe::VoicePatchType::SSG, fpe::VoicePatchType::EPSG,
+                                      fpe::VoicePatchType::DCSG, fpe::VoicePatchType::SAA,
+                                      fpe::VoicePatchType::SCC}) {
+            if (std::find(categories.begin(), categories.end(), c) == categories.end())
+                categories.push_back(c);
+        }
+    }
     std::sort(categories.begin(), categories.end());
     return categories;
 }
@@ -1191,15 +1230,16 @@ std::string describeDrumSourcePatch(fpe::PatchWorkspace& ws, fpe::VoicePatchType
 // via openDrumSourcePatchEditor() - used to grey out the drum-note editor's
 // "編集" button, since PCM waveform entries and AWM sample zones have no
 // editor of their own to open (see openDrumSourcePatchEditor()'s comment).
-// The two built-in families (D-050) have no editable JSON patch behind them
-// at all - a built-in rhythm part is a fixed hardware instrument, and an
-// OPLL ROM voice is synthesized inside FITOM_X (its only editable aspect,
-// the performance patch bound to it, lives in the separate
-// role=="builtin_swpatch_meta" bank) - so they're excluded here too, which
-// is why this needs `bank` and not just `type`.
+// The three built-in families (D-050/D-053) have no editable JSON patch
+// behind them at all - a built-in rhythm part is a fixed hardware
+// instrument, and OPLL ROM / DSG built-in voices are synthesized inside
+// FITOM_X (their only editable aspect, the performance patch bound to them,
+// lives in the separate role=="builtin_swpatch_meta" bank) - so they're
+// excluded here too, which is why this needs `bank` and not just `type`.
 bool drumSourcePatchHasEditor(fpe::VoicePatchType type, int bank) {
     if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) return false;
     if (fpe::isOpllRomVoiceRef(type, bank)) return false;
+    if (fpe::isDsgBuiltinVoiceRef(type)) return false;
     return !fpe::isPcmWaveformVoicePatchType(type) && !fpe::isSampleBasedVoicePatchType(type);
 }
 
@@ -1774,9 +1814,22 @@ void renderHwPatchPicker(AppContext& ctx) {
         } else if (p.level == PatchPickerLevel::Bank) {
             ImGui::Text("バンクを選択してください: [%s]", fpe::voicePatchTypeToString(p.category).c_str());
             bool any = false;
+            // DSG has exactly one implicit bank and no JSON banks at all, so
+            // it short-circuits the whole list (FITOM_X's own
+            // getHwBankList() returns the single "Builtin" entry and
+            // returns early the same way). D-053.
+            const bool isDsg = fpe::isDsgBuiltinVoiceRef(p.category);
             // Synthesized OPLL-family ROM bank 0 first, mirroring FITOM_X's
             // own FITOMBridge::getHwBankList() (D-050).
             const bool hasOpllRom = fpe::opllRomVariantSel(p.category) >= 0;
+            if (isDsg) {
+                any = true;
+                const std::string label = "[bank 0] " + std::string(fpe::dsgBuiltinBankName());
+                if (ImGui::Selectable(label.c_str(), p.category == target.voice_patch_type)) {
+                    p.bank = 0;
+                    p.level = PatchPickerLevel::Program;
+                }
+            }
             if (hasOpllRom) {
                 any = true;
                 const std::string label = "[bank 0] " + std::string(fpe::opllRomBankName());
@@ -1787,7 +1840,16 @@ void renderHwPatchPicker(AppContext& ctx) {
                 }
             }
             for (auto& bank : hwBanks) {
-                if (bank.voicePatchType != p.category) continue;
+                // A profile *can* spell out group:"DSG" even though the
+                // schema doesn't allow it; FITOM_X would ignore such a bank
+                // outright (resolveTriple() leaves for the built-in voices
+                // before any registry lookup), so don't offer it here either.
+                if (isDsg) break;
+                // Matched through hwBankLookupVoicePatchType() so the PSG
+                // family's shared banks appear under all five of its
+                // categories, not only the one they were tagged with.
+                if (fpe::hwBankLookupVoicePatchType(bank.voicePatchType) !=
+                    fpe::hwBankLookupVoicePatchType(p.category)) continue;
                 // FITOM_X's resolveTriple() always routes OPLL-family bank 0
                 // to the ROM voices, so a JSON bank 0 registered for one of
                 // those families would never actually sound - hide it rather
@@ -1796,13 +1858,27 @@ void renderHwPatchPicker(AppContext& ctx) {
                 if (hasOpllRom && bank.bankIndex == 0) continue;
                 any = true;
                 const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
-                const bool selected = bank.voicePatchType == target.voice_patch_type && bank.bankIndex == target.hw_bank;
+                const bool selected = p.category == target.voice_patch_type && bank.bankIndex == target.hw_bank;
                 if (ImGui::Selectable(label.c_str(), selected)) {
                     p.bank = bank.bankIndex;
                     p.level = PatchPickerLevel::Program;
                 }
             }
             if (!any) ImGui::TextDisabled("(このチップファミリーのバンクがありません)");
+        } else if (fpe::isDsgBuiltinVoiceRef(p.category)) {
+            ImGui::Text("パッチを選択してください: [%s] %s", fpe::voicePatchTypeToString(p.category).c_str(),
+                        fpe::dsgBuiltinBankName());
+            for (const auto& voice : fpe::dsgBuiltinVoices()) {
+                const std::string label = "[prog " + std::to_string(voice.prog) + "] " + voice.name;
+                const bool selected = p.category == target.voice_patch_type && voice.prog == target.hw_prog;
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                    target.voice_patch_type = p.category;
+                    target.hw_bank = 0; // ignored by FITOM_X; written as 0 for a stable value
+                    target.hw_prog = voice.prog;
+                    p.open = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
         } else if (fpe::isOpllRomVoiceRef(p.category, p.bank)) {
             ImGui::Text("パッチを選択してください: [%s] %s", fpe::voicePatchTypeToString(p.category).c_str(),
                         fpe::opllRomBankName());
@@ -1820,17 +1896,17 @@ void renderHwPatchPicker(AppContext& ctx) {
             }
         } else {
             ImGui::Text("パッチを選択してください: [%s] bank %d", fpe::voicePatchTypeToString(p.category).c_str(), p.bank);
-            fpe::HwBank* bank = nullptr;
-            for (auto& b : hwBanks) {
-                if (b.voicePatchType == p.category && b.bankIndex == p.bank) { bank = &b; break; }
-            }
+            fpe::HwBank* bank = ctx.workspace.findDeviceBank(p.category, p.bank);
             if (bank) {
-                const bool isCurrentBank = bank->voicePatchType == target.voice_patch_type && bank->bankIndex == target.hw_bank;
+                const bool isCurrentBank = p.category == target.voice_patch_type && bank->bankIndex == target.hw_bank;
                 for (auto& hwPatch : bank->patches) {
                     const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
                     const bool selected = isCurrentBank && hwPatch.prog == target.hw_prog;
                     if (ImGui::Selectable(label.c_str(), selected)) {
-                        target.voice_patch_type = bank->voicePatchType;
+                        // The *requested* chip type, not the bank's own tag -
+                        // for a shared PSG bank those differ, and FITOM_X
+                        // treats CC#0 as the chip selector (D-053).
+                        target.voice_patch_type = p.category;
                         target.hw_bank = bank->bankIndex;
                         target.hw_prog = hwPatch.prog;
                         p.open = false;
@@ -1989,13 +2065,13 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
             collect(ctx.workspace.deviceBanks());
             collect(ctx.workspace.pcmBanks());
             collect(ctx.workspace.sampleZoneBanks());
-            // Neither of the two built-in families has a bank in any of those
-            // three registries, so they have to be appended explicitly or
-            // they can never be picked (D-050). 内蔵リズム(0x70) is a
+            // None of the built-in families has a bank in any of those three
+            // registries, so they have to be appended explicitly or they can
+            // never be picked (D-050/D-053). 内蔵リズム(0x70) is a
             // documented DrumNote voice_patch_type value (FITOM_X
             // config_schema/drumkit.schema.json) and staging's
             // opna_builtin/opll_rhythm kits are built entirely out of it.
-            addOpllRomCategories(categories);
+            addBuiltinVoiceCategories(categories);
             categories.push_back(fpe::VoicePatchType::BuiltinRhythmBankSelector);
             for (fpe::VoicePatchType c : categories) {
                 const std::string label =
@@ -2031,23 +2107,26 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 // Synthesized OPLL-family ROM bank 0 first, and hide any JSON
                 // bank 0 of the same family behind it - same precedence as
                 // FITOM_X's resolveTriple()/getHwBankList() (D-050,
-                // renderHwPatchPicker() does the identical thing).
+                // renderHwPatchPicker() does the identical thing). DSG's
+                // single implicit bank replaces the list outright (D-053).
+                const bool isDsg = fpe::isDsgBuiltinVoiceRef(p.category);
                 const bool hasOpllRom = fpe::opllRomVariantSel(p.category) >= 0;
-                if (hasOpllRom) {
+                if (isDsg) {
                     any = true;
-                    const std::string label = "[bank 0] " + std::string(fpe::opllRomBankName());
-                    const bool selected = p.category == *targetType && *targetBank == 0;
-                    if (ImGui::Selectable(label.c_str(), selected)) {
+                    const std::string label = "[bank 0] " + std::string(fpe::dsgBuiltinBankName());
+                    if (ImGui::Selectable(label.c_str(), p.category == *targetType)) {
                         p.bank = 0;
                         p.level = PatchPickerLevel::Program;
                     }
                 }
                 for (auto& bank : ctx.workspace.deviceBanks()) {
-                    if (bank.voicePatchType != p.category) continue;
+                    if (isDsg) break;
+                    if (fpe::hwBankLookupVoicePatchType(bank.voicePatchType) !=
+                        fpe::hwBankLookupVoicePatchType(p.category)) continue;
                     if (hasOpllRom && bank.bankIndex == 0) continue;
                     any = true;
                     const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
-                    const bool selected = bank.voicePatchType == *targetType && bank.bankIndex == *targetBank;
+                    const bool selected = p.category == *targetType && bank.bankIndex == *targetBank;
                     if (ImGui::Selectable(label.c_str(), selected)) {
                         p.bank = bank.bankIndex;
                         p.level = PatchPickerLevel::Program;
@@ -2104,6 +2183,8 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                             orNA(fpe::builtinRhythmChipLabel(p.bank)).c_str());
             } else if (fpe::isOpllRomVoiceRef(p.category, p.bank)) {
                 ImGui::Text("パッチを選択してください: [%s] %s", categoryLabel.c_str(), fpe::opllRomBankName());
+            } else if (fpe::isDsgBuiltinVoiceRef(p.category)) {
+                ImGui::Text("パッチを選択してください: [%s] %s", categoryLabel.c_str(), fpe::dsgBuiltinBankName());
             } else {
                 ImGui::Text("パッチを選択してください: [%s] bank %d", categoryLabel.c_str(), p.bank);
             }
@@ -2169,18 +2250,34 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                     }
                     break;
                 }
-                fpe::HwBank* bank = nullptr;
-                for (auto& b : ctx.workspace.deviceBanks()) {
-                    if (b.voicePatchType == p.category && b.bankIndex == p.bank) { bank = &b; break; }
+                if (fpe::isDsgBuiltinVoiceRef(p.category)) {
+                    // DSGビルトイン音色(D-053)。progは配列添字そのもので、
+                    // patch_bankは解決に一切使われない(0を書き込む)。
+                    found = true;
+                    for (const auto& voice : fpe::dsgBuiltinVoices()) {
+                        const std::string label = "[prog " + std::to_string(voice.prog) + "] " + voice.name;
+                        const bool selected = p.category == *targetType && voice.prog == *targetProg;
+                        if (ImGui::Selectable(label.c_str(), selected)) {
+                            *targetType = p.category;
+                            *targetBank = 0;
+                            *targetProg = voice.prog;
+                            p.open = false;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    break;
                 }
+                fpe::HwBank* bank = ctx.workspace.findDeviceBank(p.category, p.bank);
                 if (bank) {
                     found = true;
-                    const bool isCurrentBank = bank->voicePatchType == *targetType && bank->bankIndex == *targetBank;
+                    const bool isCurrentBank = p.category == *targetType && bank->bankIndex == *targetBank;
                     for (auto& hwPatch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
                         const bool selected = isCurrentBank && hwPatch.prog == *targetProg;
                         if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = bank->voicePatchType;
+                            // 要求されたチップ種別を書く(共有PSGバンクでは
+                            // バンク自身のタグとは異なる、D-053)。
+                            *targetType = p.category;
                             *targetBank = bank->bankIndex;
                             *targetProg = hwPatch.prog;
                             p.open = false;
@@ -3765,15 +3862,17 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     if (ImGui::InputText("名前", nameBuf, sizeof(nameBuf))) patch->name = nameBuf;
 
     if (builtin) {
-        // D-050: also resolve the reference to the ROM voice it actually
+        // D-050: also resolve the reference to the built-in voice it actually
         // names. The metadata bank's own entry names are free-form (staging
         // ships the bank empty as a skeleton), so without this the row said
         // nothing about which preset it binds a performance patch to.
-        const std::string romName =
-            fpe::opllRomVoiceName(patch->builtin->patch_type, patch->builtin->patch_no);
+        // One metadata bank mixes OPLL-family ROM voices and DSG built-in
+        // voices, told apart by patch_type (D-053).
+        const std::string voiceName =
+            fpe::builtinMetaVoiceName(patch->builtin->patch_type, patch->builtin->patch_no);
         ImGui::TextWrapped(
-            "内蔵ROM音色への参照(builtin)のため、ops[]による編集はできません(patch_type=%s, patch_no=%d: %s)。",
-            patch->builtin->patch_type.c_str(), patch->builtin->patch_no, orNA(romName).c_str());
+            "ビルトイン音色への参照(builtin)のため、ops[]による編集はできません(patch_type=%s, patch_no=%d: %s)。",
+            patch->builtin->patch_type.c_str(), patch->builtin->patch_no, orNA(voiceName).c_str());
         return;
     }
 

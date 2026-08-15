@@ -50,6 +50,24 @@ const char* const kOpnaRhythmNames[] = {
 const char* const kOpllRhythmNames[] = {
     "Hi-Hat", "Top Cymbal", "Tom", "Snare Drum", "Bass Drum"
 };
+// DSG(YM2163)はリズムトリガー(reg 0x90)のビット位置がそのままパート番号
+// (FITOM_X core/src/DSG_new.cpp の CDSGRhythm::kTriggerBit と同じ並び)。
+const char* const kDsgRhythmNames[] = {
+    "Bass Drum", "Hi Conga", "Snare Drum", "Hi-Hat Open", "Hi-Hat Close"
+};
+
+// DSGビルトイン音色の構成要素。FITOM_X core/src/PatchManager.cpp の
+// initDsgBuiltinPatches() をそのまま移植したもので、音色名も同じ規則
+// ("<波形名>.<エンベロープ名>") で機械的に生成する。
+// 波形名はデータシート表(W3W2W1)の2文字略名そのままで、W3W2W1=1-5が有効
+// (0/6/7は未定義=無音)のため添字0-4がW=1-5に対応する。
+const char* const kDsgWaveNames[] = {"St", "Or", "Cl", "Pf", "Hc"};
+// エンベロープ名(E2E1)。データシート図2の挙動に対応する通称。
+const char* const kDsgEnvNames[] = {"Percussive", "Wind", "Sustain", "Plateau"};
+
+constexpr int kDsgWaveCount = static_cast<int>(sizeof(kDsgWaveNames) / sizeof(kDsgWaveNames[0]));
+constexpr int kDsgEnvCount  = static_cast<int>(sizeof(kDsgEnvNames) / sizeof(kDsgEnvNames[0]));
+constexpr int kDsgVoiceCount = kDsgWaveCount * kDsgEnvCount;
 
 } // namespace
 
@@ -95,9 +113,33 @@ OpllRomVoiceRef opllRomVoiceByProg(int hwProg) {
     return ref;
 }
 
-std::string opllRomVoiceName(const std::string& patchType, int patchNo) {
+const char* dsgBuiltinBankName() { return "Builtin"; }
+
+bool isDsgBuiltinVoiceRef(VoicePatchType type) { return type == VoicePatchType::DSG; }
+
+std::vector<BuiltinVoiceEntry> dsgBuiltinVoices() {
+    std::vector<BuiltinVoiceEntry> result;
+    result.reserve(kDsgVoiceCount);
+    for (int wave = 0; wave < kDsgWaveCount; ++wave) {
+        for (int env = 0; env < kDsgEnvCount; ++env) {
+            BuiltinVoiceEntry e;
+            e.prog = wave * kDsgEnvCount + env;
+            e.name = std::string(kDsgWaveNames[wave]) + "." + kDsgEnvNames[env];
+            result.push_back(std::move(e));
+        }
+    }
+    return result;
+}
+
+std::string dsgBuiltinVoiceName(int hwProg) {
+    if (hwProg < 0 || hwProg >= kDsgVoiceCount) return std::string();
+    return std::string(kDsgWaveNames[hwProg / kDsgEnvCount]) + "." + kDsgEnvNames[hwProg % kDsgEnvCount];
+}
+
+std::string builtinMetaVoiceName(const std::string& patchType, int patchNo) {
     const std::optional<VoicePatchType> type = stringToVoicePatchType(patchType);
     if (!type) return std::string();
+    if (*type == VoicePatchType::DSG) return dsgBuiltinVoiceName(patchNo);
     const int variantSel = opllRomVariantSel(*type);
     if (variantSel < 0 || patchNo < 1 || patchNo > 15) return std::string();
     return kOpllRomNames[variantSel][patchNo];
@@ -107,6 +149,7 @@ std::vector<BuiltinRhythmChip> builtinRhythmChips() {
     return {
         {VoicePatchType::OPN2, "OPNA"},
         {VoicePatchType::OPLL, "OPLL"},
+        {VoicePatchType::DSG,  "DSG"},
     };
 }
 
@@ -126,6 +169,9 @@ std::vector<BuiltinVoiceEntry> builtinRhythmParts(int chipSel) {
     } else if (chipSel == static_cast<int>(VoicePatchType::OPLL)) {
         names = kOpllRhythmNames;
         count = sizeof(kOpllRhythmNames) / sizeof(kOpllRhythmNames[0]);
+    } else if (chipSel == static_cast<int>(VoicePatchType::DSG)) {
+        names = kDsgRhythmNames;
+        count = sizeof(kDsgRhythmNames) / sizeof(kDsgRhythmNames[0]);
     }
     std::vector<BuiltinVoiceEntry> result;
     result.reserve(count);

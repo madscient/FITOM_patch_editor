@@ -1,0 +1,16 @@
+{
+  "name": "PSG shared bank",
+  "patches": [
+    {
+      "prog": 0,
+      "name": "Square Lead",
+      "FB": 0, "ALG": 0, "AMS": 0, "PMS": 0, "NFQ": 0,
+      "ops": [
+        { "AR": 31, "DR": 0, "SL": 0, "RR": 8, "TL": 0, "MUL": 1 }
+      ],
+      "ext": { "target_voice_patch_type": 65 },
+      "sw_bank": -1,
+      "sw_prog": -1
+    }
+  ]
+}

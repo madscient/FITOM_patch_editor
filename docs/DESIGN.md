@@ -3726,6 +3726,110 @@ FITOM_X永続化SysExはAを直接シリアライズするため正しく送ら�
 開いた時点の値に戻します(保存はしません)」)を付けて区別しているが、
 紛らわしいようであればどちらかの文言を変える余地がある。
 
+### D-053: FITOM_X新規チップ DSG(YM2163)への追従と、PSG系共有バンク名前空間・group文字列エイリアスの取りこぼし修正
+
+**きっかけ**: 利用者から「FITOM_X側で新規チップの対応などの更新があった。
+パッチ名解決などの必要な追従を行ってほしい」という依頼。`..\FITOM_X`の
+2026-08-10〜2026-08-15のコミット群を確認し、本エディタの追従が必要な変更を
+3件に切り分けた。
+
+#### 1. DSG(YM2163)= VoicePatchType 0x44 の新設
+
+FITOM_X側のコミット`d882d82`(チップドライバCDSG/CDSGRhythm新設)・
+`228c3d0`(ビルトイン音色用swPatchメタバンクのチップ非依存化)・
+`54830f3`(パッチピッカーへの接続)で追加された。本エディタには
+`VoicePatchType`の値自体が無かったため、`hw_prog`/`patch_prog`のいずれの
+参照も解決できなかった。
+
+DSGは**FITOM_Xで唯一「ユーザー音色を全く持たない」楽音チップ**である点が
+特殊で、既存のOPLL系ROM音色(D-050)とも扱いが違う。
+
+- `*.hwbank.json`が存在しないだけでなく、`hw_banks[].group`の選択肢
+  (`profile.schema.json`のenum)にも**意図的に含まれていない**。
+  そのため`fpe::isValidHwBankTag(DSG)`はfalseを返すようにした
+  (`stringToVoicePatchType("DSG")`は認識する ―― FITOM_X本体の
+  `FITOMConfig::stringToVoicePatchType`と同じ非対称)。
+- 音色ソースは波形5種×エンベロープ4種=20音色の暗黙のバンクのみ。
+  名前は`"<波形名>.<エンベロープ名>"`(例: `St.Percussive`)で機械生成
+  される(`PatchManager::initDsgBuiltinPatches()`と同じ規則を
+  `fpe::dsgBuiltinVoices()`に移植)。
+- **`resolveDsgBuiltinVoice()`は`hw_bank`の値を一切見ない**。OPLL系ROM音色が
+  「バンク0のときだけ」合成バンクへ抜けるのとは異なり、DSGはどのバンク番号
+  でも常にビルトイン音色を引く。そのため`fpe::isDsgBuiltinVoiceRef()`は
+  `bank`を引数に取らない(`isOpllRomVoiceRef(type, bank)`と敢えて
+  シグネチャを変えてある)。バンク番号で条件を付けると、バンク0以外を指す
+  参照が黙って未解決のまま残る。
+- 内蔵リズム(`voice_patch_type == 0x70`)の対象チップにもDSGが加わった
+  (5パート、トリガーレジスタのビット順 = BD/HC/SDN/HHO/HHD)。OPNA(6)・
+  OPLL(5)とはパート順序が全く違うため、3つ目の独立したテーブルとして持つ。
+  あわせてカテゴリのUIラベルを「内蔵リズム(OPNA/OPLL)」から
+  「内蔵リズム」へ変更した ―― 対応チップ一覧の唯一の情報源を
+  `fpe::builtinRhythmChips()`に一本化し、ラベルとリストが片方だけ更新されて
+  食い違うのを防ぐため(FITOM_X側も`54830f3`で同じ変更をしている)。
+- `role=="builtin_swpatch_meta"`バンクはOPLL専用ではなくなり、1つの
+  バンクファイルにOPLL系とDSGのエントリが`patch_type`で区別されて混在する
+  (`hwbank.schema.json`の`builtin.patch_type`に`"DSG"`が追加、`patch_no`の
+  値域も0-19へ拡張)。`fpe::opllRomVoiceName()`を
+  `fpe::builtinMetaVoiceName()`へ改名・一般化した。**`patch_no`の値域が
+  `patch_type`ごとに違う**点に注意 ―― OPLL系は1-15(0はユーザー音色との
+  衝突回避で無音予約)だが、DSGは0-19で**prog 0(`St.Percussive`)も正規の
+  音色**。FITOM_X側も`BuiltinRef::isValid()`の条件を`patchNo>=1`から
+  `>=0`へ緩める修正を同時に行っている。
+
+#### 2. PSG系共有バンク名前空間(既存の取りこぼし)
+
+FITOM_Xのコミット`42803dd`で、HwBankの登録キーがチップ族単位から
+チップ種別単位へ変更された。その際、**PSG系(SSG/EPSG/DCSG/SAA/SCC)だけは
+族全体で1つのバンク名前空間を共有する**という既存設計が
+`PatchManager::hwBankLookupVoicePatchType()`として明示化された
+(実チップは各HwPatchの`ext.targetVoicePatchType`が決める)。
+
+本エディタは`{voice_patch_type, bank}`の完全一致でバンクを探していたため、
+`voice_patch_type=EPSG`等を指す参照は**構造上必ず解決できない**状態だった。
+実データでもこれは机上の話ではなく、`../FITOM_staging`の
+`unified.bankset.json`はPSG系4バンク(SSG共有/EPSG/SCC×2)を**全て
+`group:"SSG"`で登録している**。`fpe::hwBankLookupVoicePatchType()`を新設し、
+`PatchWorkspace::findDeviceBank()`・GUIの`findDeviceBankVectorIndex()`・
+両パッチピッカーのバンク列挙が全てそこを通るようにした。
+
+ピッカーが参照へ書き戻す`voice_patch_type`は、**バンク自身のタグではなく
+利用者が選んだカテゴリ**にしてある。共有バンクではこの2つが食い違い、
+FITOM_Xはあくまで CC#0(=カテゴリ)でどのチップが鳴るかを決めるため。
+同じ理由で、カテゴリ一覧はPSG系のバンクが1つでもあれば5チップ種別すべてを
+並べる(そうしないと「SSGで登録されたバンクをEPSGで鳴らす」参照を新規に
+作れない)。DSGをこの族に含めてはいけない点も重要で、FITOM_Xは一度含めて
+しまい「DSGカテゴリにSSGのバンクがずらりと並ぶ」不具合を出して
+`54830f3`で戻している。
+
+#### 3. `group`文字列エイリアス(長期の既知課題)
+
+`docs/STATUS.md`に「`VoicePatchType.cpp`のgroup文字列テーブルが実スキーマの
+enumと一部不一致(D-008発見4)」として2026-07-17から残っていた課題。
+`OPNA`/`OPNB`/`SCCP`/`PSG`/`PCM`はいずれも`profile.schema.json`のenumに
+含まれる正当な値だが、本エディタのテーブルに無かったため、これらで
+タグ付けされたバンクは**警告付きで丸ごと読み捨てられていた**。FITOM_X本体の
+`FITOMConfig::stringToVoicePatchType()`と1対1になるエイリアス表
+(`kAliases`)を追加した。`AY8930`/`SAA1099`/`YM2163`/`SD-1`〜`MA-7`も同様。
+
+エイリアスは**入力専用**で、`voicePatchTypeToString()`は常に正規名を返す。
+ただし`profile.json`への書き戻しで文字列が正規化される心配は無い ――
+`fpe::HwBankRef`が`group`の生文字列をそのまま保持・出力しており、
+`VoicePatchType`への変換は`HwBank`のランタイムタグにしか使われないため。
+
+#### 検証
+
+`fixtures/profile.json`に`group:"PSG"`(レガシーエイリアス)でタグ付けした
+PSG系共有バンクを追加し、スモークテストを188→235項目に拡張(エイリアス表・
+`hwBankLookupVoicePatchType()`・DSGビルトイン音色/内蔵リズム/メタバンク名
+解決・共有バンクの5チップ種別からの解決を回帰テスト)。あわせて一時的な
+検証用実行ファイル(検証後削除、リポジトリには含まれない)で
+`../FITOM_staging/config/profiles/unified_preset.profile.json`(hw_banks
+135件)を実際に読み込ませ、警告ゼロで、PSG系4バンクが
+SSG/EPSG/DCSG/SAA/SCCの**5種別すべてから**解決されること(修正前はSSGのみ)、
+DSGからは解決されないこと、`role=="builtin_swpatch_meta"`バンク
+(ステージング側でOPLL専用の名前から`Built-In Voice SwPatch Meta (Skeleton)`
+へ改名済み)が読めることを確認した。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に

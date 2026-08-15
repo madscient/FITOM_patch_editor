@@ -40,6 +40,7 @@ enum class VoicePatchType : uint8_t {
     EPSG         = 0x41,
     DCSG         = 0x42,
     SAA          = 0x43,
+    DSG          = 0x44, // YM2163. Has no *.hwbank.json of its own at all - see BuiltinVoices.h
     SCC          = 0x48,
     ADPCMB_Y8950 = 0x50,
     ADPCMB       = 0x51,
@@ -77,10 +78,32 @@ bool isPcmWaveformVoicePatchType(VoicePatchType t);
 // and the CC#0-only special values 0x70/0x78/0x79 and reserved gaps).
 bool isValidHwBankTag(VoicePatchType t);
 
+// True for the PSG family, which - alone among all chip families - shares a
+// single HwBank number namespace instead of getting one per chip type:
+// FITOM_X registers every one of these banks under SSG's key and lets each
+// individual patch name its real target chip via FmChipExt::
+// target_voice_patch_type (docs/patch-structure-design.md "PSG系共有バンク",
+// FITOM_X PatchManager::hwBankLookupVoicePatchType()). DSG (YM2163) is
+// deliberately NOT part of this - it has no user banks at all, so folding it
+// in here would make every SSG bank show up under the DSG category.
+bool isPsgFamilyVoicePatchType(VoicePatchType t);
+
+// The key to actually look a HwBank up under, given the chip type a
+// reference asks for. Identity for everything except the PSG family, which
+// collapses onto SSG (see above). Every {voice_patch_type, bank} -> HwBank
+// search has to go through this or PSG-family references resolve to nothing.
+VoicePatchType hwBankLookupVoicePatchType(VoicePatchType t);
+
 // Converts a profile.json `hw_banks[].group` string (e.g. "OPZ") to the
 // matching VoicePatchType. Returns std::nullopt for unrecognized names
 // (the caller should treat that as a load warning, not a hard failure,
 // consistent with FITOM_X's general "soft failure" philosophy).
+//
+// Accepts the same alias spellings as FITOM_X's own
+// FITOMConfig::stringToVoicePatchType() - real profiles do use them
+// ("OPNA"/"OPNB" collapse onto OPN2 because their voice parameters are
+// compatible, "SCCP" onto SCC, and the legacy coarse "PSG"/"PCM" tags onto
+// a representative member of each family).
 std::optional<VoicePatchType> stringToVoicePatchType(const std::string& group);
 
 // Inverse of stringToVoicePatchType(). Returns "?" for values with no

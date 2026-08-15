@@ -5,7 +5,7 @@
 #include "fpe/VoicePatchType.h"
 
 // BuiltinVoices: FITOM_X本体が「JSONのバンク定義(profile.jsonのhw_banks[]
-// → *.hwbank.json)を一切経由せずに」内部で機械合成する2種類の音色の、
+// → *.hwbank.json)を一切経由せずに」内部で機械合成する3種類の音色の、
 // 名前テーブルとアドレス変換規約。
 //
 // この2つは HwBankRegistry(このライブラリで言えば PatchWorkspace::
@@ -82,36 +82,66 @@ struct OpllRomVoiceRef {
 };
 OpllRomVoiceRef opllRomVoiceByProg(int hwProg);
 
-// role=="builtin_swpatch_meta" バンク(fpe::BuiltinRef)の
-// {patch_type, patch_no} からROM音色名を引く。FITOM_X本体の
-// HwBank::findByBuiltinRef() が使う (patchType, patchNo) の対応と同じ
-// (patch_type文字列 "OPLL"/"OPLLX"/"OPLLP"/"VRC7" が variantSel 0-3、
-// patch_no が instIndex 1-15)。該当なしなら空文字列。
-std::string opllRomVoiceName(const std::string& patchType, int patchNo);
+// ─── DSG(YM2163)ビルトイン音色 ───────────────────────────────────────
+//
+// DSGはユーザー音色を全く持たないチップで、`*.hwbank.json` も
+// `hw_banks[].group` の選択肢(profile.schema.jsonのenum)も存在しない。
+// 音色ソースは波形5種×エンベロープ4種=20音色の暗黙のバンクだけで、
+// FITOM_Xの resolveDsgBuiltinVoice() は **hw_bank の値を一切見ずに**
+// 常にこのバンクを引く(OPLL系ROM音色が「バンク0のときだけ」なのとは
+// 異なる点に注意)。
+// 出典: FITOM_X core/src/PatchManager.cpp initDsgBuiltinPatches() /
+// resolveDsgBuiltinVoice()、gui/bridge/FITOMBridge.cpp getHwBankList()。
+
+// このライブラリが合成バンクに与える表示名。FITOM_X本体の
+// FITOMBridge::getHwBankList() が使う "Builtin" と同じ。
+const char* dsgBuiltinBankName();
+
+// {voice_patch_type, bank} がDSGビルトイン音色を指しているか。bankを
+// 引数に取らないのは上記の通り意図的(どのバンク番号でも成立する)。
+bool isDsgBuiltinVoiceRef(VoicePatchType type);
+
+// ビルトイン音色20件。`prog` は配列添字そのもの(= 波形*4 + エンベロープ)。
+// OPLL系ROM音色のように上位ビットへチップ種別を埋め込む規約は無い。
+std::vector<BuiltinVoiceEntry> dsgBuiltinVoices();
+
+// hw_prog 1件分の音色名。範囲外(0-19以外)なら空文字列。
+std::string dsgBuiltinVoiceName(int hwProg);
+
+// ─── role=="builtin_swpatch_meta" バンク ─────────────────────────────
+
+// メタバンク(fpe::BuiltinRef)の {patch_type, patch_no} から音色名を引く。
+// FITOM_X本体の HwBank::findByBuiltinRef() が使う (patchType, patchNo) の
+// 対応と同じで、OPLL系ROM音色とDSGビルトイン音色が1つのバンクファイルを
+// 共有し patch_type で区別される(patch_no の値域も patch_type ごとに
+// 異なる ―― OPLL系 1-15 / DSG 0-19)。該当なしなら空文字列。
+std::string builtinMetaVoiceName(const std::string& patchType, int patchNo);
 
 // ─── 内蔵リズム音源(voice_patch_type == 0x70) ───────────────────────
 //
-// COPNARhythm(OPNA)/COPLLRhythm(OPLL)専用の解決経路
+// COPNARhythm(OPNA)/COPLLRhythm(OPLL)/CDSGRhythm(DSG)専用の解決経路
 // (PatchManager::resolveBuiltinRhythm())。`patch_bank` はバンク番号では
-// なく「対象チップのVoicePatchType」(OPN2=OPNA、OPLL=OPLL)、
+// なく「対象チップのVoicePatchType」(OPN2=OPNA、OPLL=OPLL、DSG=DSG)、
 // `patch_prog` はそのチップ内の楽器番号(=デバイスチャンネル番号)。
 // OPL系内蔵リズム(COPLRhythm)はこの経路を使わず、VoicePatchType::OPL_RHY
 // という通常のHwBankを使う点に注意(FITOM_X docs/terminology.md)。
 
 struct BuiltinRhythmChip {
     VoicePatchType chipSel = VoicePatchType::None; // patch_bank に入る値
-    std::string label;                             // "OPNA" / "OPLL"
+    std::string label;                             // "OPNA" / "OPLL" / "DSG"
 };
 
-// 選択可能な対象チップ一覧(固定2件)。
+// 選択可能な対象チップ一覧。FITOM_X gui/bridge/FITOMBridge.cpp の
+// kBuiltinRhythmChips[] と対で、対応チップ一覧の唯一の情報源として扱う
+// (UIのラベルにチップ名を並べない ―― 片方だけ更新されるのを防ぐため)。
 std::vector<BuiltinRhythmChip> builtinRhythmChips();
 
 // chipSel(= patch_bank の値)の表示名。該当なしなら空文字列。
 std::string builtinRhythmChipLabel(int chipSel);
 
 // chipSelの内蔵リズムパート一覧(実機固定・チャンネル番号順)。
-// OPNA=6パート、OPLL=5パート(DeviceFactory::defaultChCount()と一致)。
-// 該当なしなら空。各エントリの `prog` はそのままパート番号。
+// OPNA=6パート、OPLL=5パート、DSG=5パート(DeviceFactory::defaultChCount()
+// と一致)。該当なしなら空。各エントリの `prog` はそのままパート番号。
 std::vector<BuiltinVoiceEntry> builtinRhythmParts(int chipSel);
 
 // chipSel/progからパート名を1件解決する。範囲外なら空文字列。
