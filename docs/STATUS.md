@@ -2403,3 +2403,36 @@
   EPSG/DCSG/SAA/SCCの各カテゴリからも見えること)を実機で確認してもらう。
   上記`builtin_swpatch_meta`バンクの`sw_bank`/`sw_prog`編集を対応するかは
   引き続き利用者の判断待ち。
+
+### 2026-08-16 (同マシン、パッチピッカーをシングルクリック=試聴/ダブルクリック=確定に変更、D-054)
+- やったこと: 利用者の依頼「パッチピッカー画面で、パッチをシングルクリックで
+  プレビュー発音、ダブルクリックで選択決定」をピッカー3種すべてに実装した
+  (`renderSwPatchPicker()` / `renderHwPatchPicker()` /
+  `renderDrumSourcePatchPicker()`)。詳細は`docs/DESIGN.md` D-054。
+  - Program階層の各行を`ImGuiSelectableFlags_AllowDoubleClick`付きにし、
+    1クリックは試聴+pending選択の記録のみ、確定はダブルクリックか新設の
+    「OK」ボタンでのみ行うようにした(D-045のプレイノート・キーボード
+    ピッカーと同じ意味論)。ヘッダに「クリックで試聴、ダブルクリック
+    またはOKで確定」を表示。一覧のハイライトも現在値ではなくpending値を
+    参照するようにしたので、聴き比べ中の選択状態が分かる。
+  - D-044の1ショットプレビューをドラムノート専用から一般化
+    (`OneShotPreviewState`/`startOneShotPreview()`/`stopOneShotPreview()`/
+    `updateOneShotPreview()`、旧`DrumNoteListPreview*`)。D-046の
+    SwPatchオーバーライド送信も`sendResolvedSwPatchOverride(bank, prog)`に
+    一般化した。
+  - 鳴らし方はピッカーごとに異なる。HW=候補パッチをC4で、ドラムソース=
+    そのノートの`play_note`+ノート自身の`sw_bank`/`sw_prog`付きで
+    (directキットはC4を`[note_min, note_max]`にクランプ)、SW=ターゲット
+    自身が指すデバイスを下敷きに候補のSwPatchをオーバーライドして鳴らす
+    (SwPatchは単体では鳴らせないため)。
+  - ビルド(`cmake --build build/vs2026`、警告なし)・`ctest`(1テスト
+    /235項目、全通過)を確認。データモデル層は無変更のため既存テストの
+    追加・変更はしていない。
+- 未完了・既知の問題: GUIの実際のクリック確認は`CLAUDE.md`の方針により未実施
+  (利用者の目視確認待ち)。特に、試聴音そのもの(FITOM_X接続時に候補パッチが
+  期待通り鳴るか、SWピッカーのオーバーライドが実際に音色に反映されるか)は
+  実機でしか確認できない。オフライン(プレビューバックエンド無し)では
+  シングルクリックはpendingの記録だけになる。
+- 次にやること: 利用者に3ピッカーでの試聴・確定操作を実機確認してもらう。
+  試聴時間(`kOneShotPreviewDuration` = 0.4秒)やピッチ(C4固定)が
+  聴き比べに短すぎ/低すぎる等の要望があれば調整する。

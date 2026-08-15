@@ -72,7 +72,10 @@
 // sw_prog treatment in renderPatchEditor(), D-034) rather than raw integer
 // fields, plus a trailing "編集" button that opens that HwPatch's own
 // modeless editor (reused as-is - no separate "modal" editor was built for
-// this).
+// this). In all three patch pickers a single click on a patch only auditions
+// it (a short one-shot preview through whatever preview backend is
+// available); only a double click, or the "OK" button, commits the selection
+// (D-054).
 //
 // Selecting a Performance patch from BankDetail opens a third modeless
 // editor (renderPerformancePatchEditors()/renderPerformancePatchEditor())
@@ -446,6 +449,15 @@ struct SwPatchPickerState {
     // no Category level (performance banks have no chip-family axis).
     PatchPickerLevel level = PatchPickerLevel::Bank;
     int bank = 0; // chosen SwBank::bankIndex
+
+    // Pending (previewed but not yet committed)選択 - D-054, same split as
+    // DrumNoteKeyboardPickerState::selectedNote: a single click on a patch
+    // only auditions it and records it here, and only a double click or the
+    // "OK" button writes it into the target's sw_bank/sw_prog. Primed from
+    // the target's current value at open time (primeSwPatchPickerSelection())
+    // so "OK" without clicking anything is a no-op; -1 = 参照なし.
+    int pendingBank = -1;
+    int pendingProg = -1;
 };
 
 // A single modeless "layered patch editor" window
@@ -535,6 +547,15 @@ struct HwPatchPickerState {
     PatchPickerLevel level = PatchPickerLevel::Category;
     fpe::VoicePatchType category = fpe::VoicePatchType::None; // chosen chip family
     int bank = 0; // chosen HwBank::bankIndex within that category
+
+    // Pending (previewed but not yet committed) selection - D-054, see
+    // SwPatchPickerState's own pendingBank/pendingProg. The whole triple is
+    // pending, not just the prog, since the bank/category a patch belongs to
+    // is part of what gets written on commit.
+    bool hasPending = false;
+    fpe::VoicePatchType pendingType = fpe::VoicePatchType::None;
+    int pendingBank = 0;
+    int pendingProg = 0;
 };
 
 // "ソースパッチ" picker for a DrumNote's (or, when isDirect, a whole "direct"
@@ -561,6 +582,16 @@ struct DrumSourcePatchPickerState {
     PatchPickerLevel level = PatchPickerLevel::Program;
     fpe::VoicePatchType category = fpe::VoicePatchType::None;
     int bank = 0;
+
+    // Pending (previewed but not yet committed) selection - D-054, see
+    // SwPatchPickerState's own pendingBank/pendingProg. `hasPending` is a
+    // separate flag rather than a sentinel value for the same reason this
+    // picker has no "unset" state at all: {None,0,0} is a legitimate
+    // selection here, not a marker.
+    bool hasPending = false;
+    fpe::VoicePatchType pendingType = fpe::VoicePatchType::None;
+    int pendingBank = 0;
+    int pendingProg = 0;
 };
 
 // On-screen keyboard popup for a DrumNote's play_note field (D-038),
@@ -624,18 +655,19 @@ struct KioskDrumKitWindow {
     size_t kitIndex = 0; // index into ws.drumKits()
 };
 
-// One-shot preview state for a single click on a drum-note list row
-// (renderDrumKitDetail(), D-044) - distinct from the note editor's own
-// press-and-hold "試聴" button (D-038), since a plain click has no
-// "release" event to key off of; instead this auto-stops after
-// kDrumNoteListPreviewDuration via updateDrumNoteListPreview(), called once
-// per frame regardless of screen/kiosk-vs-normal (main()'s render loop) so
-// a note can't keep sounding after the user navigates away or the app
-// otherwise stops polling this specific screen.
-struct DrumNoteListPreviewState {
+// One-shot preview state for any single click that has no "release" event to
+// key a noteOff off of, the way the note editor's press-and-hold "試聴"
+// button (D-038) does - a drum-note list row (renderDrumKitDetail(), D-044),
+// a key in the play_note keyboard picker (D-045), or a patch row in any of
+// the three patch pickers (D-054). Instead this auto-stops after
+// kOneShotPreviewDuration via updateOneShotPreview(), called once per frame
+// regardless of screen/kiosk-vs-normal (main()'s render loop) so a note
+// can't keep sounding after the user navigates away or the app otherwise
+// stops polling this specific screen.
+struct OneShotPreviewState {
     bool active = false;
     uint8_t channel = 0;     // channel noteOn() was actually sent on, for noteOff() to match
-    uint8_t channelNote = 0; // DrumNote::play_note actually sent
+    uint8_t channelNote = 0; // MIDI note actually sent
     double startTime = 0.0;  // ImGui::GetTime() at noteOn() time
 };
 
@@ -684,7 +716,7 @@ struct AppContext {
     HwPatchPickerState hwPatchPicker; // shared HW-patch picker (for ToneLayer refs), see HwPatchPickerState/openHwPatchPicker()
     DrumSourcePatchPickerState drumSourcePatchPicker; // shared drum-note source-patch picker, see openDrumSourcePatchPicker()
     DrumNoteKeyboardPickerState drumNoteKeyboardPicker; // shared drum-note play_note keyboard picker, see openDrumNoteKeyboardPicker()
-    DrumNoteListPreviewState drumNoteListPreview; // one-shot single-click preview, see startDrumNoteListPreview() (D-044)
+    OneShotPreviewState oneShotPreview; // one-shot single-click preview, see startOneShotPreview() (D-044/D-054)
     DirectDrumKitBaseline directDrumKitBaseline;  // "リセット" snapshot for the direct-kit inline form (D-052)
 
     // Selection driving the BankDetail screen - which category/index into
@@ -718,21 +750,21 @@ struct AppContext {
     KioskDrumKitWindow kioskDrumEditor;
 };
 
-// A single click (drum-note list row, D-044; or a key in
-// renderDrumNoteKeyboardPicker(), D-045) lasts one frame - there is no
-// "release" to key a noteOff off of the way the note editor's press-and-hold
-// "試聴" button does (D-038) - so this fixed duration stands in for that,
-// short enough to feel like a quick preview blip rather than a sustained
-// note.
-constexpr double kDrumNoteListPreviewDuration = 0.4;
+// A single click (drum-note list row, D-044; a key in
+// renderDrumNoteKeyboardPicker(), D-045; a patch row in a picker, D-054)
+// lasts one frame - there is no "release" to key a noteOff off of the way the
+// note editor's press-and-hold "試聴" button does (D-038) - so this fixed
+// duration stands in for that, short enough to feel like a quick preview blip
+// rather than a sustained note.
+constexpr double kOneShotPreviewDuration = 0.4;
 
 // Sends noteOff for whatever's currently previewing via
-// startDrumNoteListPreview(), if anything - safe to call unconditionally.
-// Used both to auto-stop after kDrumNoteListPreviewDuration and to cut a
+// startOneShotPreview(), if anything - safe to call unconditionally.
+// Used both to auto-stop after kOneShotPreviewDuration and to cut a
 // still-sounding preview short when a new one starts (D-044) - previews
 // never overlap/stack.
-void stopDrumNoteListPreview(AppContext& ctx) {
-    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+void stopOneShotPreview(AppContext& ctx) {
+    OneShotPreviewState& p = ctx.oneShotPreview;
     if (!p.active) return;
     ctx.previewOutput.noteOff(p.channel, p.channelNote, 0);
     p.active = false;
@@ -761,12 +793,18 @@ void stopDrumNoteListPreview(AppContext& ctx) {
 // HwPatch's was. Must be sent before the note-on it's meant to affect - the
 // doc states a SwPatch override "以後のノートオンから反映されます" (applies
 // starting from the next note-on, not retroactively to an already-sounding
-// note). No-op if the note has no override (sw_bank/sw_prog == -1) - in that
+// note). No-op if there is no override (sw_bank/sw_prog == -1) - in that
 // case the resolved HwPatch's own default sw_bank/sw_prog is already in
 // effect from the selectDevice() call, so there's nothing to send.
-void sendDrumNoteSwPatchOverride(AppContext& ctx, uint8_t channel, const fpe::DrumNote& note) {
-    if (note.sw_bank < 0 || note.sw_prog < 0) return;
-    const fpe::SwPatch* swPatch = ctx.workspace.resolvePerformancePatch(note.sw_bank, note.sw_prog);
+//
+// Takes the reference as a bare {bank, prog} pair rather than a DrumNote so
+// the SW patch picker can push the *candidate* performance patch the same way
+// while auditioning it (D-054) - a SwPatch has no synthesis parameters of its
+// own to sound, so previewing one means layering it over whatever device the
+// picker's target already selects.
+void sendResolvedSwPatchOverride(AppContext& ctx, uint8_t channel, int swBank, int swProg) {
+    if (swBank < 0 || swProg < 0) return;
+    const fpe::SwPatch* swPatch = ctx.workspace.resolvePerformancePatch(swBank, swProg);
     if (swPatch) ctx.previewOutput.sendSwPatchOverride(channel, nlohmann::json(*swPatch).dump());
 }
 
@@ -804,35 +842,43 @@ nlohmann::json buildDrumKitOverrideJson(const fpe::DrumKit& kit) {
     return j;
 }
 
-// One-shot preview triggered by a single click - either a drum-note list row
-// (D-044, renderDrumKitDetail()) or a key in the play_note keyboard picker
-// (D-045, renderDrumNoteKeyboardPicker()) - selects `note`'s source patch and
-// sounds `note.play_note`, auto-stopping after kDrumNoteListPreviewDuration
-// (see updateDrumNoteListPreview()) rather than requiring press-and-hold,
-// since a plain click has no "release" event. No-op if no preview backend is
-// currently available (offline).
-void startDrumNoteListPreview(AppContext& ctx, const fpe::DrumNote& note) {
-    stopDrumNoteListPreview(ctx);
+// One-shot preview triggered by a single click - a drum-note list row (D-044,
+// renderDrumKitDetail()), a key in the play_note keyboard picker (D-045,
+// renderDrumNoteKeyboardPicker()), or a patch row in one of the three patch
+// pickers (D-054). Direct-selects the device identified by {type, bank,
+// prog}, layers the {swBank, swProg} performance patch over it if set, and
+// sounds `playNote`, auto-stopping after kOneShotPreviewDuration (see
+// updateOneShotPreview()) rather than requiring press-and-hold, since a plain
+// click has no "release" event. No-op if no preview backend is currently
+// available (offline).
+void startOneShotPreview(AppContext& ctx, fpe::VoicePatchType type, int bank, int prog, uint8_t playNote,
+                         int swBank, int swProg) {
+    stopOneShotPreview(ctx);
     if (ctx.previewOutput.ensureReady() == PreviewOutput::ActiveBackend::None) return;
     const uint8_t ch = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
-    ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(note.voice_patch_type),
-                                    static_cast<uint8_t>(note.patch_bank), static_cast<uint8_t>(note.patch_prog));
-    sendDrumNoteSwPatchOverride(ctx, ch, note); // D-046 - must precede noteOn(), see comment above
-    ctx.previewOutput.noteOn(ch, note.play_note, 100);
-    DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
+    ctx.previewOutput.selectDevice(ch, static_cast<uint8_t>(type), static_cast<uint8_t>(bank),
+                                    static_cast<uint8_t>(prog));
+    sendResolvedSwPatchOverride(ctx, ch, swBank, swProg); // D-046 - must precede noteOn(), see comment above
+    ctx.previewOutput.noteOn(ch, playNote, 100);
+    OneShotPreviewState& p = ctx.oneShotPreview;
     p.active = true;
     p.channel = ch;
-    p.channelNote = note.play_note;
+    p.channelNote = playNote;
     p.startTime = ImGui::GetTime();
+}
+
+void startDrumNotePreview(AppContext& ctx, const fpe::DrumNote& note) {
+    startOneShotPreview(ctx, note.voice_patch_type, note.patch_bank, note.patch_prog, note.play_note, note.sw_bank,
+                        note.sw_prog);
 }
 
 // Called once per frame regardless of screen/kiosk-vs-normal (main()'s
 // render loop, D-044) - auto-stops a single-click preview once its fixed
 // duration has elapsed. A no-op most frames (active is usually false).
-void updateDrumNoteListPreview(AppContext& ctx) {
-    const DrumNoteListPreviewState& p = ctx.drumNoteListPreview;
-    if (p.active && ImGui::GetTime() - p.startTime >= kDrumNoteListPreviewDuration) {
-        stopDrumNoteListPreview(ctx);
+void updateOneShotPreview(AppContext& ctx) {
+    const OneShotPreviewState& p = ctx.oneShotPreview;
+    if (p.active && ImGui::GetTime() - p.startTime >= kOneShotPreviewDuration) {
+        stopOneShotPreview(ctx);
     }
 }
 
@@ -1535,15 +1581,17 @@ void renderPathPicker(AppContext& ctx) {
     if (!stayOpen) p.open = false;
 }
 
-// Primes a SwPatchPickerState's Bank/Program drill-down state from the
-// reference's *current* bank value, mirroring FITOM_X本体's own
+// Primes a SwPatchPickerState's Bank/Program drill-down state and its pending
+// selection from the reference's *current* value, mirroring FITOM_X本体's own
 // PatchPickerDialog::open(): jump straight to the Program level showing the
 // bank already referenced (if any), rather than forcing the user back
 // through the Bank level every time they reopen the picker on an
 // already-set reference. -1 (not set yet, HwPatch/Patch/DrumNote's own
 // convention) starts at the Bank level instead, same as if none had been
 // picked.
-void primeSwPatchPickerLevel(SwPatchPickerState& p, int currentBank) {
+void primeSwPatchPickerSelection(SwPatchPickerState& p, int currentBank, int currentProg) {
+    p.pendingBank = currentBank;
+    p.pendingProg = currentProg;
     if (currentBank >= 0) {
         p.bank = currentBank;
         p.level = PatchPickerLevel::Program;
@@ -1562,7 +1610,7 @@ void openSwPatchPicker(AppContext& ctx, size_t deviceBankIndex, int devicePatchP
     p.devicePatchProg = devicePatchProg;
     auto& deviceBanks = ctx.workspace.deviceBanks();
     fpe::HwPatch* hwPatch = deviceBankIndex < deviceBanks.size() ? deviceBanks[deviceBankIndex].findByProg(devicePatchProg) : nullptr;
-    primeSwPatchPickerLevel(p, hwPatch ? hwPatch->sw_bank : -1);
+    primeSwPatchPickerSelection(p, hwPatch ? hwPatch->sw_bank : -1, hwPatch ? hwPatch->sw_prog : -1);
     p.open = true;
 }
 
@@ -1576,7 +1624,7 @@ void openLayeredSwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int laye
     p.layeredPatchProg = layeredPatchProg;
     auto& layeredBanks = ctx.workspace.layeredPatchBanks();
     fpe::Patch* patch = layeredBankIndex < layeredBanks.size() ? layeredBanks[layeredBankIndex].findByProg(layeredPatchProg) : nullptr;
-    primeSwPatchPickerLevel(p, patch ? patch->sw_bank : -1);
+    primeSwPatchPickerSelection(p, patch ? patch->sw_bank : -1, patch ? patch->sw_prog : -1);
     p.open = true;
 }
 
@@ -1592,12 +1640,24 @@ void openDrumNoteSwPatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
     p.drumNote = note;
     auto& kits = ctx.workspace.drumKits();
     fpe::DrumNote* drumNote = kitIndex < kits.size() ? kits[kitIndex].findNote(note) : nullptr;
-    primeSwPatchPickerLevel(p, drumNote ? drumNote->sw_bank : -1);
+    primeSwPatchPickerSelection(p, drumNote ? drumNote->sw_bank : -1, drumNote ? drumNote->sw_prog : -1);
     p.open = true;
 }
 
-// Modal picking a performance (SW) bank/patch - clicking a patch writes its
-// {bank,prog} into the target's sw_bank/sw_prog fields.
+// Pitch every patch picker auditions a candidate patch at (D-054) - middle C,
+// the same note the editors' own preview keyboards center on. Only the drum
+// pickers override it, with the play_note the picked source patch would
+// actually be sounded at.
+constexpr uint8_t kPatchPickerPreviewNote = 60;
+
+// Hint line shown above each picker's Program-level list (D-054), wording
+// mirrored from renderDrumNoteKeyboardPicker()'s own single-click-previews
+// split (D-045).
+constexpr const char* kPatchPickerClickHint = "クリックで試聴、ダブルクリックまたはOKで確定";
+
+// Modal picking a performance (SW) bank/patch - a single click auditions a
+// patch, a double click (or "OK") writes its {bank,prog} into the target's
+// sw_bank/sw_prog fields (D-054).
 //
 // Drills down Bank->Program one level per frame, mirroring FITOM_X本体's own
 // PatchPickerDialog UX (apps/fitom_gui/PatchPickerDialog.cpp in the FITOM_X
@@ -1617,32 +1677,50 @@ void renderSwPatchPicker(AppContext& ctx) {
 
     int* targetSwBank = nullptr;
     int* targetSwProg = nullptr;
+    // What a candidate performance patch gets auditioned *through* (D-054):
+    // a SwPatch has no synthesis parameters of its own to sound (see this
+    // file's header), so previewing one means layering it over the device the
+    // picker's own target already selects.
+    fpe::VoicePatchType previewType = fpe::VoicePatchType::None;
+    int previewBank = 0;
+    int previewProg = 0;
+    uint8_t previewNote = kPatchPickerPreviewNote;
     if (p.target == SwPatchPickerTarget::Device) {
         auto& deviceBanks = ctx.workspace.deviceBanks();
         if (p.deviceBankIndex >= deviceBanks.size()) {
             p.open = false;
             return;
         }
-        fpe::HwPatch* hwPatch = deviceBanks[p.deviceBankIndex].findByProg(p.devicePatchProg);
+        fpe::HwBank& deviceBank = deviceBanks[p.deviceBankIndex];
+        fpe::HwPatch* hwPatch = deviceBank.findByProg(p.devicePatchProg);
         if (!hwPatch) {
             p.open = false;
             return;
         }
         targetSwBank = &hwPatch->sw_bank;
         targetSwProg = &hwPatch->sw_prog;
+        previewType = deviceBank.voicePatchType;
+        previewBank = deviceBank.bankIndex;
+        previewProg = hwPatch->prog;
     } else if (p.target == SwPatchPickerTarget::Layered) {
         auto& layeredBanks = ctx.workspace.layeredPatchBanks();
         if (p.layeredBankIndex >= layeredBanks.size()) {
             p.open = false;
             return;
         }
-        fpe::Patch* layeredPatch = layeredBanks[p.layeredBankIndex].findByProg(p.layeredPatchProg);
+        fpe::PatchBank& layeredBank = layeredBanks[p.layeredBankIndex];
+        fpe::Patch* layeredPatch = layeredBank.findByProg(p.layeredPatchProg);
         if (!layeredPatch) {
             p.open = false;
             return;
         }
         targetSwBank = &layeredPatch->sw_bank;
         targetSwProg = &layeredPatch->sw_prog;
+        // CC#0=0 ("normal mode") - a layered patch is selected by bank+prog
+        // alone, no chip-family tag (DrumKit.h's own note on the duality).
+        previewType = fpe::VoicePatchType::None;
+        previewBank = layeredBank.bankIndex;
+        previewProg = layeredPatch->prog;
     } else {
         auto& kits = ctx.workspace.drumKits();
         if (p.drumKitIndex >= kits.size()) {
@@ -1656,6 +1734,10 @@ void renderSwPatchPicker(AppContext& ctx) {
         }
         targetSwBank = &note->sw_bank;
         targetSwProg = &note->sw_prog;
+        previewType = note->voice_patch_type;
+        previewBank = note->patch_bank;
+        previewProg = note->patch_prog;
+        previewNote = note->play_note;
     }
     auto& swBanks = ctx.workspace.performanceBanks();
 
@@ -1663,8 +1745,33 @@ void renderSwPatchPicker(AppContext& ctx) {
     ImGui::OpenPopup(title);
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Commits whatever the pending selection currently holds - shared by
+        // the double click on a row and the "OK" button (D-054).
+        auto commitPending = [&]() {
+            *targetSwBank = p.pendingBank;
+            *targetSwProg = p.pendingProg;
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        };
+        // One click auditions the patch and records it as pending, a double
+        // click commits it. Selectable() returns true on both clicks of a
+        // double click (ImGuiSelectableFlags_AllowDoubleClick), so the first
+        // one previews and the second one commits - the same pattern the
+        // drum-note list uses (D-044).
+        auto pickPatch = [&](int bankIndex, int prog) {
+            p.pendingBank = bankIndex;
+            p.pendingProg = prog;
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                commitPending();
+            } else {
+                startOneShotPreview(ctx, previewType, previewBank, previewProg, previewNote, bankIndex, prog);
+            }
+        };
+
         if (p.level != PatchPickerLevel::Bank) {
             if (ImGui::Button("↑ 上へ")) p.level = PatchPickerLevel::Bank;
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", kPatchPickerClickHint);
             ImGui::Separator();
         }
 
@@ -1673,7 +1780,7 @@ void renderSwPatchPicker(AppContext& ctx) {
             ImGui::TextUnformatted("参照するパフォーマンスバンクを選択してください。");
             for (auto& bank : swBanks) {
                 const std::string label = "[bank " + std::to_string(bank.bankIndex) + "] " + bank.name;
-                if (ImGui::Selectable(label.c_str(), bank.bankIndex == *targetSwBank)) {
+                if (ImGui::Selectable(label.c_str(), bank.bankIndex == p.pendingBank)) {
                     p.bank = bank.bankIndex;
                     p.level = PatchPickerLevel::Program;
                 }
@@ -1686,15 +1793,12 @@ void renderSwPatchPicker(AppContext& ctx) {
                 if (b.bankIndex == p.bank) { bank = &b; break; }
             }
             if (bank) {
-                const bool isCurrentBank = bank->bankIndex == *targetSwBank;
+                const bool isPendingBank = bank->bankIndex == p.pendingBank;
                 for (auto& patch : bank->patches) {
                     const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
-                    const bool selected = isCurrentBank && patch.prog == *targetSwProg;
-                    if (ImGui::Selectable(label.c_str(), selected)) {
-                        *targetSwBank = bank->bankIndex;
-                        *targetSwProg = patch.prog;
-                        p.open = false;
-                        ImGui::CloseCurrentPopup();
+                    const bool selected = isPendingBank && patch.prog == p.pendingProg;
+                    if (ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+                        pickPatch(bank->bankIndex, patch.prog);
                     }
                 }
                 if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
@@ -1705,6 +1809,10 @@ void renderSwPatchPicker(AppContext& ctx) {
         ImGui::EndChild();
 
         ImGui::Separator();
+        ImGui::BeginDisabled(p.pendingBank < 0 || p.pendingProg < 0);
+        if (ImGui::Button("OK", ImVec2(120, 0))) commitPending();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
         if (ImGui::Button("参照解除", ImVec2(120, 0))) {
             *targetSwBank = -1;
             *targetSwProg = -1;
@@ -1738,6 +1846,7 @@ void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatc
     p.layerIndex = layerIndex;
 
     p.level = PatchPickerLevel::Category;
+    p.hasPending = false;
     auto& layeredBanks = ctx.workspace.layeredPatchBanks();
     if (layeredBankIndex < layeredBanks.size()) {
         fpe::Patch* patch = layeredBanks[layeredBankIndex].findByProg(layeredPatchProg);
@@ -1747,6 +1856,12 @@ void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatc
                 p.category = layer.voice_patch_type;
                 p.bank = layer.hw_bank;
                 p.level = PatchPickerLevel::Program;
+                // Pending selection starts at the current reference (D-054) so
+                // "OK" without clicking anything writes back the same value.
+                p.hasPending = true;
+                p.pendingType = layer.voice_patch_type;
+                p.pendingBank = layer.hw_bank;
+                p.pendingProg = layer.hw_prog;
             }
         }
     }
@@ -1754,8 +1869,9 @@ void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatc
 }
 
 // Modal picking a device (HW) voice patch for a ToneLayer's hw_bank/hw_prog -
-// clicking a patch writes its {voice_patch_type, bank, prog} into the target
-// ToneLayer's fields. Scoped to HW/device patches only (per the project
+// a single click auditions a patch, a double click (or "OK") writes its
+// {voice_patch_type, bank, prog} into the target ToneLayer's fields (D-054).
+// Scoped to HW/device patches only (per the project
 // owner's request - ToneLayer's other reference kind, Patch::sw_bank/sw_prog,
 // is not this picker).
 //
@@ -1791,9 +1907,41 @@ void renderHwPatchPicker(AppContext& ctx) {
     ImGui::OpenPopup(title);
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Single click = 試聴 + pending, double click / "OK" = 確定 (D-054) -
+        // see renderSwPatchPicker()'s identical pair of lambdas.
+        auto commitPending = [&]() {
+            // The *requested* chip type, not the bank's own tag - for a shared
+            // PSG bank those differ, and FITOM_X treats CC#0 as the chip
+            // selector (D-053).
+            target.voice_patch_type = p.pendingType;
+            target.hw_bank = p.pendingBank;
+            target.hw_prog = p.pendingProg;
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        };
+        auto pickPatch = [&](fpe::VoicePatchType type, int bankIndex, int prog) {
+            p.hasPending = true;
+            p.pendingType = type;
+            p.pendingBank = bankIndex;
+            p.pendingProg = prog;
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                commitPending();
+            } else {
+                startOneShotPreview(ctx, type, bankIndex, prog, kPatchPickerPreviewNote, -1, -1);
+            }
+        };
+        auto isPending = [&](fpe::VoicePatchType type, int bankIndex, int prog) {
+            return p.hasPending && p.pendingType == type && p.pendingBank == bankIndex && p.pendingProg == prog;
+        };
+
+        const bool atProgramLevel = p.level == PatchPickerLevel::Program;
         if (p.level != PatchPickerLevel::Category) {
             if (ImGui::Button("↑ 上へ")) {
-                p.level = (p.level == PatchPickerLevel::Program) ? PatchPickerLevel::Bank : PatchPickerLevel::Category;
+                p.level = atProgramLevel ? PatchPickerLevel::Bank : PatchPickerLevel::Category;
+            }
+            if (atProgramLevel) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", kPatchPickerClickHint);
             }
             ImGui::Separator();
         }
@@ -1870,47 +2018,32 @@ void renderHwPatchPicker(AppContext& ctx) {
                         fpe::dsgBuiltinBankName());
             for (const auto& voice : fpe::dsgBuiltinVoices()) {
                 const std::string label = "[prog " + std::to_string(voice.prog) + "] " + voice.name;
-                const bool selected = p.category == target.voice_patch_type && voice.prog == target.hw_prog;
-                if (ImGui::Selectable(label.c_str(), selected)) {
-                    target.voice_patch_type = p.category;
-                    target.hw_bank = 0; // ignored by FITOM_X; written as 0 for a stable value
-                    target.hw_prog = voice.prog;
-                    p.open = false;
-                    ImGui::CloseCurrentPopup();
+                // hw_bank is ignored by FITOM_X here; 0 is written for a stable value
+                if (ImGui::Selectable(label.c_str(), isPending(p.category, 0, voice.prog),
+                                      ImGuiSelectableFlags_AllowDoubleClick)) {
+                    pickPatch(p.category, 0, voice.prog);
                 }
             }
         } else if (fpe::isOpllRomVoiceRef(p.category, p.bank)) {
             ImGui::Text("パッチを選択してください: [%s] %s", fpe::voicePatchTypeToString(p.category).c_str(),
                         fpe::opllRomBankName());
-            const bool isCurrentBank = p.category == target.voice_patch_type && target.hw_bank == 0;
             for (const auto& rom : fpe::opllRomVoices(p.category)) {
                 const std::string label = "[prog " + std::to_string(rom.prog) + "] " + rom.name;
-                const bool selected = isCurrentBank && rom.prog == target.hw_prog;
-                if (ImGui::Selectable(label.c_str(), selected)) {
-                    target.voice_patch_type = p.category;
-                    target.hw_bank = 0;
-                    target.hw_prog = rom.prog; // (variantSel<<4)|instIndex, not the list index
-                    p.open = false;
-                    ImGui::CloseCurrentPopup();
+                // rom.prog is (variantSel<<4)|instIndex, not the list index
+                if (ImGui::Selectable(label.c_str(), isPending(p.category, 0, rom.prog),
+                                      ImGuiSelectableFlags_AllowDoubleClick)) {
+                    pickPatch(p.category, 0, rom.prog);
                 }
             }
         } else {
             ImGui::Text("パッチを選択してください: [%s] bank %d", fpe::voicePatchTypeToString(p.category).c_str(), p.bank);
             fpe::HwBank* bank = ctx.workspace.findDeviceBank(p.category, p.bank);
             if (bank) {
-                const bool isCurrentBank = p.category == target.voice_patch_type && bank->bankIndex == target.hw_bank;
                 for (auto& hwPatch : bank->patches) {
                     const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
-                    const bool selected = isCurrentBank && hwPatch.prog == target.hw_prog;
-                    if (ImGui::Selectable(label.c_str(), selected)) {
-                        // The *requested* chip type, not the bank's own tag -
-                        // for a shared PSG bank those differ, and FITOM_X
-                        // treats CC#0 as the chip selector (D-053).
-                        target.voice_patch_type = p.category;
-                        target.hw_bank = bank->bankIndex;
-                        target.hw_prog = hwPatch.prog;
-                        p.open = false;
-                        ImGui::CloseCurrentPopup();
+                    if (ImGui::Selectable(label.c_str(), isPending(p.category, bank->bankIndex, hwPatch.prog),
+                                          ImGuiSelectableFlags_AllowDoubleClick)) {
+                        pickPatch(p.category, bank->bankIndex, hwPatch.prog);
                     }
                 }
                 if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
@@ -1921,6 +2054,10 @@ void renderHwPatchPicker(AppContext& ctx) {
         ImGui::EndChild();
 
         ImGui::Separator();
+        ImGui::BeginDisabled(!p.hasPending);
+        if (ImGui::Button("OK", ImVec2(120, 0))) commitPending();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
         if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
             p.open = false;
             ImGui::CloseCurrentPopup();
@@ -1949,6 +2086,12 @@ void openDrumSourcePatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
     p.category = drumNote ? drumNote->voice_patch_type : fpe::VoicePatchType::None;
     p.bank = drumNote ? drumNote->patch_bank : 0;
     p.level = PatchPickerLevel::Program;
+    // Pending selection starts at the note's current triple (D-054) so "OK"
+    // without clicking anything writes back the same value.
+    p.hasPending = drumNote != nullptr;
+    p.pendingType = p.category;
+    p.pendingBank = p.bank;
+    p.pendingProg = drumNote ? drumNote->patch_prog : 0;
     p.open = true;
 }
 
@@ -1963,11 +2106,17 @@ void openDrumSourcePatchPickerDirect(AppContext& ctx, size_t kitIndex) {
     if (kitIndex < kits.size()) {
         p.category = kits[kitIndex].voice_patch_type;
         p.bank = kits[kitIndex].patch_bank;
+        p.pendingProg = kits[kitIndex].patch_prog;
+        p.hasPending = true;
     } else {
         p.category = fpe::VoicePatchType::None;
         p.bank = 0;
+        p.pendingProg = 0;
+        p.hasPending = false;
     }
     p.level = PatchPickerLevel::Program;
+    p.pendingType = p.category;
+    p.pendingBank = p.bank;
     p.open = true;
 }
 
@@ -1995,7 +2144,9 @@ DrumSourceKind classifyDrumSourceCategory(fpe::VoicePatchType category) {
 }
 } // namespace
 
-// Modal picking a DrumNote's (or "direct" DrumKit's) source patch - the same
+// Modal picking a DrumNote's (or "direct" DrumKit's) source patch - a single
+// click auditions a patch at the note's own play_note, a double click (or
+// "OK") commits it (D-054). The reference itself has the same
 // dual "normal mode vs direct mode" semantics as CC#0 itself (see
 // DrumSourcePatchPickerState's comment): normal mode indexes a layered
 // PatchBank/Patch, direct mode indexes one of three differently-shaped
@@ -2025,10 +2176,23 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
     fpe::VoicePatchType* targetType = nullptr;
     int* targetBank = nullptr;
     int* targetProg = nullptr;
+    // What a candidate source patch gets auditioned at (D-054) - the same
+    // pitch and performance-patch override the note would actually sound
+    // with, so the preview matches the note editor's own "試聴" button.
+    uint8_t previewNote = kPatchPickerPreviewNote;
+    int previewSwBank = -1;
+    int previewSwProg = -1;
     if (p.isDirect) {
         targetType = &kit.voice_patch_type;
         targetBank = &kit.patch_bank;
         targetProg = &kit.patch_prog;
+        // A direct kit sounds every note in its range at its own pitch
+        // (DrumKit::effectiveNotes()), so any note within the range is a
+        // representative preview pitch.
+        previewNote = static_cast<uint8_t>(
+            std::clamp<int>(kPatchPickerPreviewNote, kit.note_min, std::max(kit.note_min, kit.note_max)));
+        previewSwBank = kit.sw_bank;
+        previewSwProg = kit.sw_prog;
     } else {
         fpe::DrumNote* note = kit.findNote(p.note);
         if (!note) {
@@ -2038,15 +2202,47 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
         targetType = &note->voice_patch_type;
         targetBank = &note->patch_bank;
         targetProg = &note->patch_prog;
+        previewNote = note->play_note;
+        previewSwBank = note->sw_bank;
+        previewSwProg = note->sw_prog;
     }
 
     const char* title = "パッチピッカー (ドラムノート ソースパッチ)";
     ImGui::OpenPopup(title);
     bool stayOpen = true;
     if (ImGui::BeginPopupModal(title, &stayOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        // Single click = 試聴 + pending, double click / "OK" = 確定 (D-054) -
+        // see renderSwPatchPicker()'s identical pair of lambdas.
+        auto commitPending = [&]() {
+            *targetType = p.pendingType;
+            *targetBank = p.pendingBank;
+            *targetProg = p.pendingProg;
+            p.open = false;
+            ImGui::CloseCurrentPopup();
+        };
+        auto pickPatch = [&](fpe::VoicePatchType type, int bankIndex, int prog) {
+            p.hasPending = true;
+            p.pendingType = type;
+            p.pendingBank = bankIndex;
+            p.pendingProg = prog;
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                commitPending();
+            } else {
+                startOneShotPreview(ctx, type, bankIndex, prog, previewNote, previewSwBank, previewSwProg);
+            }
+        };
+        auto isPending = [&](fpe::VoicePatchType type, int bankIndex, int prog) {
+            return p.hasPending && p.pendingType == type && p.pendingBank == bankIndex && p.pendingProg == prog;
+        };
+
+        const bool atProgramLevel = p.level == PatchPickerLevel::Program;
         if (p.level != PatchPickerLevel::Category) {
             if (ImGui::Button("↑ 上へ")) {
-                p.level = (p.level == PatchPickerLevel::Program) ? PatchPickerLevel::Bank : PatchPickerLevel::Category;
+                p.level = atProgramLevel ? PatchPickerLevel::Bank : PatchPickerLevel::Category;
+            }
+            if (atProgramLevel) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", kPatchPickerClickHint);
             }
             ImGui::Separator();
         }
@@ -2197,16 +2393,12 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 }
                 if (bank) {
                     found = true;
-                    const bool isCurrentBank = *targetType == fpe::VoicePatchType::None && bank->bankIndex == *targetBank;
                     for (auto& patch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
-                        const bool selected = isCurrentBank && patch.prog == *targetProg;
-                        if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = fpe::VoicePatchType::None;
-                            *targetBank = bank->bankIndex;
-                            *targetProg = patch.prog;
-                            p.open = false;
-                            ImGui::CloseCurrentPopup();
+                        if (ImGui::Selectable(label.c_str(),
+                                              isPending(fpe::VoicePatchType::None, bank->bankIndex, patch.prog),
+                                              ImGuiSelectableFlags_AllowDoubleClick)) {
+                            pickPatch(fpe::VoicePatchType::None, bank->bankIndex, patch.prog);
                         }
                     }
                     if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
@@ -2217,16 +2409,11 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 // patch_prog は楽器(=デバイスチャンネル)番号そのもの(D-050)。
                 const auto parts = fpe::builtinRhythmParts(p.bank);
                 found = !parts.empty();
-                const bool isCurrentChip = *targetType == p.category && p.bank == *targetBank;
                 for (const auto& part : parts) {
                     const std::string label = "[prog " + std::to_string(part.prog) + "] " + part.name;
-                    const bool selected = isCurrentChip && part.prog == *targetProg;
-                    if (ImGui::Selectable(label.c_str(), selected)) {
-                        *targetType = p.category;
-                        *targetBank = p.bank;
-                        *targetProg = part.prog;
-                        p.open = false;
-                        ImGui::CloseCurrentPopup();
+                    if (ImGui::Selectable(label.c_str(), isPending(p.category, p.bank, part.prog),
+                                          ImGuiSelectableFlags_AllowDoubleClick)) {
+                        pickPatch(p.category, p.bank, part.prog);
                     }
                 }
                 break;
@@ -2236,16 +2423,11 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                     // 合成されたROM音色バンク0(D-050)。progは配列添字ではなく
                     // (variantSel<<4)|instIndex を書き込む。
                     found = true;
-                    const bool isCurrentBank = p.category == *targetType && *targetBank == 0;
                     for (const auto& rom : fpe::opllRomVoices(p.category)) {
                         const std::string label = "[prog " + std::to_string(rom.prog) + "] " + rom.name;
-                        const bool selected = isCurrentBank && rom.prog == *targetProg;
-                        if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = p.category;
-                            *targetBank = 0;
-                            *targetProg = rom.prog;
-                            p.open = false;
-                            ImGui::CloseCurrentPopup();
+                        if (ImGui::Selectable(label.c_str(), isPending(p.category, 0, rom.prog),
+                                              ImGuiSelectableFlags_AllowDoubleClick)) {
+                            pickPatch(p.category, 0, rom.prog);
                         }
                     }
                     break;
@@ -2256,13 +2438,9 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                     found = true;
                     for (const auto& voice : fpe::dsgBuiltinVoices()) {
                         const std::string label = "[prog " + std::to_string(voice.prog) + "] " + voice.name;
-                        const bool selected = p.category == *targetType && voice.prog == *targetProg;
-                        if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = p.category;
-                            *targetBank = 0;
-                            *targetProg = voice.prog;
-                            p.open = false;
-                            ImGui::CloseCurrentPopup();
+                        if (ImGui::Selectable(label.c_str(), isPending(p.category, 0, voice.prog),
+                                              ImGuiSelectableFlags_AllowDoubleClick)) {
+                            pickPatch(p.category, 0, voice.prog);
                         }
                     }
                     break;
@@ -2270,18 +2448,13 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 fpe::HwBank* bank = ctx.workspace.findDeviceBank(p.category, p.bank);
                 if (bank) {
                     found = true;
-                    const bool isCurrentBank = p.category == *targetType && bank->bankIndex == *targetBank;
                     for (auto& hwPatch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(hwPatch.prog) + "] " + hwPatch.name;
-                        const bool selected = isCurrentBank && hwPatch.prog == *targetProg;
-                        if (ImGui::Selectable(label.c_str(), selected)) {
-                            // 要求されたチップ種別を書く(共有PSGバンクでは
-                            // バンク自身のタグとは異なる、D-053)。
-                            *targetType = p.category;
-                            *targetBank = bank->bankIndex;
-                            *targetProg = hwPatch.prog;
-                            p.open = false;
-                            ImGui::CloseCurrentPopup();
+                        // 要求されたチップ種別を書く(共有PSGバンクでは
+                        // バンク自身のタグとは異なる、D-053)。
+                        if (ImGui::Selectable(label.c_str(), isPending(p.category, bank->bankIndex, hwPatch.prog),
+                                              ImGuiSelectableFlags_AllowDoubleClick)) {
+                            pickPatch(p.category, bank->bankIndex, hwPatch.prog);
                         }
                     }
                     if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
@@ -2295,16 +2468,13 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 }
                 if (bank) {
                     found = true;
-                    const bool isCurrentBank = bank->voicePatchType == *targetType && bank->bankIndex == *targetBank;
                     for (size_t i = 0; i < bank->entries.size(); ++i) {
                         const std::string label = "[" + std::to_string(i) + "] " + bank->entries[i].name;
-                        const bool selected = isCurrentBank && static_cast<int>(i) == *targetProg;
-                        if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = bank->voicePatchType;
-                            *targetBank = bank->bankIndex;
-                            *targetProg = static_cast<int>(i);
-                            p.open = false;
-                            ImGui::CloseCurrentPopup();
+                        const int prog = static_cast<int>(i);
+                        if (ImGui::Selectable(label.c_str(),
+                                              isPending(bank->voicePatchType, bank->bankIndex, prog),
+                                              ImGuiSelectableFlags_AllowDoubleClick)) {
+                            pickPatch(bank->voicePatchType, bank->bankIndex, prog);
                         }
                     }
                     if (bank->entries.empty()) ImGui::TextDisabled("(エントリがありません)");
@@ -2318,16 +2488,12 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 }
                 if (bank) {
                     found = true;
-                    const bool isCurrentBank = bank->voicePatchType == *targetType && bank->bankIndex == *targetBank;
                     for (auto& patch : bank->patches) {
                         const std::string label = "[prog " + std::to_string(patch.prog) + "] " + patch.name;
-                        const bool selected = isCurrentBank && patch.prog == *targetProg;
-                        if (ImGui::Selectable(label.c_str(), selected)) {
-                            *targetType = bank->voicePatchType;
-                            *targetBank = bank->bankIndex;
-                            *targetProg = patch.prog;
-                            p.open = false;
-                            ImGui::CloseCurrentPopup();
+                        if (ImGui::Selectable(label.c_str(),
+                                              isPending(bank->voicePatchType, bank->bankIndex, patch.prog),
+                                              ImGuiSelectableFlags_AllowDoubleClick)) {
+                            pickPatch(bank->voicePatchType, bank->bankIndex, patch.prog);
                         }
                     }
                     if (bank->patches.empty()) ImGui::TextDisabled("(パッチがありません)");
@@ -2344,6 +2510,10 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
         ImGui::EndChild();
 
         ImGui::Separator();
+        ImGui::BeginDisabled(!p.hasPending);
+        if (ImGui::Button("OK", ImVec2(120, 0))) commitPending();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
         if (ImGui::Button("キャンセル", ImVec2(120, 0))) {
             p.open = false;
             ImGui::CloseCurrentPopup();
@@ -3498,7 +3668,7 @@ void renderDrumNoteKeyboardPicker(AppContext& ctx) {
                 p.selectedNote = kb.pressedNote;
                 fpe::DrumNote previewNote = *note;
                 previewNote.play_note = static_cast<uint8_t>(kb.pressedNote);
-                startDrumNoteListPreview(ctx, previewNote);
+                startDrumNotePreview(ctx, previewNote);
             }
         }
 
@@ -4607,7 +4777,7 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
     // (D-046 - 実際のリズムトラック再生と音が異なるという報告を受けて
     // FITOM_X本体を調査した結果、CC#0/32/PCによる直接デバイス選択だけでは
     // 反映されないドラムノート固有のオーバーライドだと判明したため、
-    // sendDrumNoteSwPatchOverride()で明示的に送るようにした)。
+    // sendResolvedSwPatchOverride()で明示的に送るようにした)。
     {
         const PreviewOutput::ActiveBackend backend = ctx.previewOutput.ensureReady();
         const bool connected = backend != PreviewOutput::ActiveBackend::None;
@@ -4626,7 +4796,8 @@ void renderDrumNoteEditor(AppContext& ctx, DrumNoteEditorWindow& editor) {
             ctx.previewOutput.selectDevice(previewChannel, static_cast<uint8_t>(note->voice_patch_type),
                                             static_cast<uint8_t>(note->patch_bank),
                                             static_cast<uint8_t>(note->patch_prog));
-            sendDrumNoteSwPatchOverride(ctx, previewChannel, *note); // D-046 - must precede noteOn(), see comment above
+            // D-046 - must precede noteOn(), see comment above
+            sendResolvedSwPatchOverride(ctx, previewChannel, note->sw_bank, note->sw_prog);
             ctx.previewOutput.noteOn(previewChannel, note->play_note, 100);
             editor.heldPreviewNote = note->play_note;
         }
@@ -4797,7 +4968,7 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
         // ドラムノート選択画面 (D-038): 0-127の全MIDIノートを表示し、
         // 未割当のノートも一覧できるようにする(依頼通り)。割当済みの
         // 行はシングルクリックでその場でプレビュー発音
-        // (startDrumNoteListPreview()、D-044)、ダブルクリックでドラム
+        // (startDrumNotePreview()、D-044)、ダブルクリックでドラム
         // ノート編集画面(モードレス、openDrumNoteEditor())を開き、末尾に
         // 複製・削除ボタンを用意する。未割当の行は「作成」ボタンで
         // デフォルト値のDrumNoteを追加した上で編集画面を開く。複製・削除は
@@ -4822,7 +4993,7 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         openDrumNoteEditor(ctx, kitIndex, static_cast<uint8_t>(n));
                     } else {
-                        startDrumNoteListPreview(ctx, *note);
+                        startDrumNotePreview(ctx, *note);
                     }
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックで試聴、ダブルクリックで編集");
@@ -5325,11 +5496,11 @@ int main(int argc, char** argv) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // D-044: auto-stops a drum-note list single-click preview once its
-        // fixed duration elapses - unconditional so it still fires even if
-        // the user navigated away from the drum-note screen mid-preview
+        // D-044: auto-stops a single-click preview once its fixed duration
+        // elapses - unconditional so it still fires even if the user
+        // navigated away from the screen (or closed the picker) mid-preview
         // (kiosk or normal, doesn't matter which screen is showing now).
-        updateDrumNoteListPreview(ctx);
+        updateOneShotPreview(ctx);
 
         if (ctx.kioskMode) {
             // No outer "FITOM_X Patch Editor" menu/outline frame at all in
