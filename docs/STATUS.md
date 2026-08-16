@@ -2436,3 +2436,44 @@
 - 次にやること: 利用者に3ピッカーでの試聴・確定操作を実機確認してもらう。
   試聴時間(`kOneShotPreviewDuration` = 0.4秒)やピッチ(C4固定)が
   聴き比べに短すぎ/低すぎる等の要望があれば調整する。
+
+### 2026-08-16 (同マシン、SSG hwpatch編集画面の範囲修正+未使用パラメータ非表示、D-055)
+- やったこと: 利用者の依頼「SSG hwpatch編集画面の各パラメータの範囲が
+  スキーマと合っていない。SSGで使用しないパラメータを非表示に」を実装した。
+  詳細は`docs/DESIGN.md` D-055。
+  - `ssgVoiceRanges()`/`ssgOpRanges()`を新設(SSGはD-016以来
+    `generic*Ranges()`の0-99・全表示のままだった)。範囲は
+    FITOM_X `docs/manuals/hwpatch-reference.md`8節/9節と
+    `core/src/PSG_new.cpp`の`CSSG::updateVoice()`/`CPSGBase`の実
+    レジスタ書き込みを突き合わせて決めた。ALG 0-3 / NFQ 0-31 /
+    AR・DR・SR 0-31 / SL・RR 0-15 / TL 0-127 / EGT 0-15。
+  - SSGのNFQは表示条件がOPM/OPZ/OPZ2に限られていたためスライダ自体が
+    無く、ノイズ周期をそもそも編集できなかった。SSGを追加した。
+  - 未使用フィールドはチャンネル帯のFBとOPパネルのWSを非活性ではなく
+    非表示にした(D-031でOPパネル「詳細」に入れた規則の拡張)。副作用と
+    して、波形画像を持たずWSも使わないOPNでもWSの数値ボックスが消える。
+    OPMのWS(非活性で常時表示)はD-031の明示要望どおり従来のまま。
+  - PSG系はSSG名義のバンク名前空間を共有する(D-053)ため、チップ種別を
+    バンクのタグではなくパッチの`ext.target_voice_patch_type`から引く
+    `effectiveVoicePatchType()`を新設し、範囲・表示条件をすべて通した。
+    これが無いと、`group:"SSG"`で登録されている
+    `../FITOM_staging/banks/PSG/epsg_preset.hwbank.json`のEPSGパッチに
+    SSGの範囲が当たり、EPSGが実際に使うFB(拡張8bitノイズ周波数)と
+    WS(デューティ比)が消える。プレビューのデバイス選択SysExは従来
+    どおりバンクのタグを送る。
+  - ビルド(`cmake --build build/vs2026`、警告なし)・`ctest`(1テスト
+    /235項目、全通過)を確認。データモデル層は無変更のため既存テストの
+    追加・変更はしていない。キオスクモード
+    (`fitom_patch_editor_gui.exe <profile> device
+    banks/PSG/psg_shared_preset.hwbank.json 0`)でスクリーンショット1枚を
+    撮り、チャンネル帯がALG+NFQのみ・OP1がAR/DR/SL/SR/RR/TL+「詳細」
+    のみになっていることを目視で確認した。
+- 未完了・既知の問題: EPSG/DCSG/SAA/SCCは引き続き`generic*Ranges()`
+  (0-99・全表示)で、それぞれの実範囲は未対応。`ext.HWEP`(SSGの
+  HWエンベロープ周期、0-65535)には今も編集UIが無く、
+  `buildHwPatchDiffJson()`も`ext`を差分に含めないため、HWエンベロープを
+  編集可能にするならUIと差分送信の両方が必要。GUIのクリック操作確認は
+  `CLAUDE.md`の方針により未実施(上記スクリーンショット1枚の受動確認のみ)。
+- 次にやること: 利用者にSSG編集画面の表示内容を確認してもらう。
+  `ext.HWEP`の編集UIを追加するか、残りのPSG系4チップにも範囲を与えるかは
+  利用者の判断待ち。
