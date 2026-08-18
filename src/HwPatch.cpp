@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "fpe/ChipCapabilities.h"
 #include "fpe/JsonUtil.h"
 
 namespace fpe {
@@ -146,7 +147,18 @@ const HwPatch* HwBank::findByBuiltinRef(const std::string& patchType, int patchN
 }
 
 void to_json(nlohmann::json& j, const HwBank& v) {
-    j = nlohmann::json{{"name", v.name}, {"patches", v.patches}};
+    // Pruning happens here rather than in to_json(HwPatch) because a HwPatch
+    // does not know its own chip - the VoicePatchType tag lives on the bank
+    // (docs/patch-structure-design.md "HwBank 側のタグ付けルール"). Callers
+    // that serialize a bare HwPatch (e.g. the preview SysEx override) still
+    // get the full field set, which is what that wire format wants.
+    nlohmann::json patches = nlohmann::json::array();
+    for (const auto& p : v.patches) {
+        nlohmann::json pj = p;
+        pruneHwPatchJson(pj, v.voicePatchType, p);
+        patches.push_back(std::move(pj));
+    }
+    j = nlohmann::json{{"name", v.name}, {"patches", std::move(patches)}};
 }
 void from_json(const nlohmann::json& j, HwBank& v) {
     v.name = getOr<std::string>(j, "name", "");

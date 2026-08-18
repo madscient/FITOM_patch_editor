@@ -56,11 +56,11 @@
 // running, falling back to a real MIDI output port (RtMidi, configured via
 // the "プリファレンス" dialog) otherwise - see PreviewOutput and
 // docs/DESIGN.md D-018 (this superseded D-015's original "no fallback"
-// decision). Field sliders use each chip
-// family's confirmed register width where known (OPN/OPN2 so far - see
-// getVoiceFieldRanges()/getOpFieldRanges(), D-016) and grey out fields the
-// chip doesn't read; other chip families still fall back to a generic
-// 0-99 range until similarly confirmed. OPN/OPN2 also show the ALG
+// decision). Field sliders take each chip's real register width, effective
+// range and step from FITOM_X's spec/chip-capabilities.json
+// (buildVoiceRanges()/buildOpRanges(), D-057), hide fields the chip never
+// reads at all, and grey out ones whose activation condition is not
+// currently met. OPN/OPN2 also show the ALG
 // connection-diagram image for the current algorithm (assets/alg_diagrams,
 // D-016).
 //
@@ -148,6 +148,7 @@
 #include "Preferences.h"
 #include "PreviewOutput.h"
 #include "fpe/BuiltinVoices.h"
+#include "fpe/ChipCapabilities.h"
 #include "fpe/PatchWorkspace.h"
 #include "fpe/VoicePatchType.h"
 
@@ -2815,569 +2816,150 @@ void renderToneLayerEditor(AppContext& ctx, size_t layeredBankIndex, int layered
 
 // --- Patch editor (Device/HwPatch only for now - see D-015) --------------
 
-// Per-field valid range for a given chip family, used to size sliders and
-// grey out fields the chip doesn't actually read (D-016). `used=false`
-// fields stay visible-but-disabled for the always-shown controls (the
-// main AR/DR/SL/SR/RR/TL sliders and the WS band), so the form's layout
-// doesn't jump around when switching between patches of different chip
-// families - but are hidden entirely inside the OP panel's "詳細"
-// fold-out (D-031), since that section doesn't have this layout-jump
-// concern (one already-open editor is bound to one bank's fixed chip
-// family) and showing every rarely-used field disabled for every chip
-// family there was mostly clutter once OPM/OPZ added several more of
-// them.
+
+// Per-field capabilities for one chip, sourced from FITOM_X's
+// spec/chip-capabilities.json (fpe::ChipCapabilities, D-057). This used to
+// be ~350 lines of hand-transcribed per-chip tables here; the spec file is
+// now the single source of truth and covers every VoicePatchType rather
+// than the eleven that had been done by hand.
+//
+// `used` still means what it always did - the chip's driver never reads
+// this field, so there is nothing to edit - and remains the flag that hides
+// a control. `active` is new and weaker: the chip does read the field, but
+// its `condition` is not satisfied right now (SSG's AR while the hardware
+// envelope flag is set, say), so the control greys out and comes back when
+// the controlling field changes.
 struct FieldRange {
     int minV = 0;
-    int maxV = 99;
-    bool used = true;
+    int maxV = 0;
+    bool used = false;
+    // Sub-range that actually reaches the hardware. Equal to minV/maxV when
+    // the spec declares no narrower one.
+    int effMin = 0;
+    int effMax = 0;
+    // Patch-value step for one hardware register step; edits snap to it.
+    int quantum = 1;
+    bool active = true;
+    // Enum labels / bit meanings / prose note for this field on this chip,
+    // or null. Points into the capabilities registry, which outlives the UI.
+    const std::vector<fpe::ParamEnumValue>* values = nullptr;
+    const std::vector<fpe::ParamBit>* bits = nullptr;
+    const std::vector<int>* channels = nullptr;
+    std::string note;
 };
-// HWEP lives in FmChipExt rather than FmHwVoice, but it is a channel-level
-// (once per patch) value like the rest of these, so it is ranged and drawn
-// with them. Only the PSG family's hardware-envelope chips use it, and each
-// reads a different width of it (SSG the full 16bit period, SAA1099 the low
-// 6 bits repacked as mode/resolution/clockSrc/rightInvert flags).
 struct HwVoiceFieldRanges {
-    FieldRange FB, ALG, AMS, PMS, NFQ, FB2, HWEP;
+    FieldRange FB, ALG, AMS, PMS, NFQ, FB2, HWEP, FIX, ALG_EXT, TARGET;
 };
 struct HwOpFieldRanges {
     FieldRange AR, DR, SL, SR, RR, TL, KSR, KSL, MUL, DT1, DT2, PDT, AM, VIB, EGT, WS, REV, EGS, DT3;
 };
 
-// OPN(YM2203)/OPN2 family register widths, confirmed against FITOM_X's
-// actual register-write masks in core/src/OPN_new.cpp (FB&7, ALG&7,
-// DT1&7, MUL&0xF, TL&0x7F, AR/DR/SR&0x1F, KSR&3, SL/RR&0xF, EGT&0xF) and
-// docs/voice-parameter-reference.md's OPN section (fields not listed
-// there - DT2/KSL/PDT/AM/VIB/WS/REV/EGS/DT3/AMS/PMS/NFQ/FB2 - are unused
-// by OPN and marked used=false).
-HwVoiceFieldRanges opnVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 7, true};
-    r.ALG = {0, 7, true};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 0, false};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
+// The slider/spinner bound to use for a field: its effective range, widened
+// if the patch already holds a value outside it. Widening matters because a
+// legally-loaded file may carry a value the chip saturates (SSG TL is
+// declared 0-127 but only 0-63 does anything) - clamping the control to the
+// effective range would misrepresent, and on the first drag destroy, what is
+// actually stored.
+int fieldDisplayMax(const FieldRange& r, int current) {
+    return (current > r.effMax) ? std::min(current, r.maxV) : r.effMax;
+}
+// Scale the envelope preview normalises against: the effective maximum, so a
+// chip whose declared range is wider than what reaches the hardware (SSG's
+// TL is 0-127 on paper but saturates at 63) still draws a full-height curve
+// at its own real maximum. Never zero, since this is a divisor.
+int envCurveMax(const FieldRange& r) {
+    return std::max(1, r.effMax);
+}
+int fieldDisplayMin(const FieldRange& r, int current) {
+    return (current < r.effMin) ? std::max(current, r.minV) : r.effMin;
+}
+
+FieldRange capsField(fpe::VoicePatchType t, const char* name, const fpe::HwPatch& patch, int opIndex) {
+    FieldRange r;
+    const fpe::ChipCapabilities& caps = fpe::ChipCapabilities::instance();
+    if (!caps.loaded()) {
+        // No spec file (a broken install - it ships next to the executable).
+        // Blocking every field would make the editor useless, so fall back to
+        // the old wide-open behavior and let renderPatchEditor()'s banner say
+        // why the ranges cannot be trusted.
+        r.used = true;
+        r.maxV = 127;
+        r.effMax = 127;
+        return r;
+    }
+    const auto resolved = caps.resolve(t, name, patch, opIndex);
+    if (!resolved) return r; // absent from params[] = never read by this chip
+    r.used = true;
+    r.minV = resolved->minV;
+    r.maxV = resolved->maxV;
+    r.effMin = resolved->effMin;
+    r.effMax = resolved->effMax;
+    r.quantum = resolved->quantum;
+    r.active = resolved->active;
+    r.values = resolved->values;
+    r.bits = resolved->bits;
+    r.channels = resolved->channels;
+    r.note = resolved->note;
     return r;
 }
-HwOpFieldRanges opnOpRanges() {
+
+HwVoiceFieldRanges buildVoiceRanges(fpe::VoicePatchType t, const fpe::HwPatch& patch) {
+    HwVoiceFieldRanges r;
+    r.FB = capsField(t, "FB", patch, -1);
+    r.ALG = capsField(t, "ALG", patch, -1);
+    r.AMS = capsField(t, "AMS", patch, -1);
+    r.PMS = capsField(t, "PMS", patch, -1);
+    r.NFQ = capsField(t, "NFQ", patch, -1);
+    r.FB2 = capsField(t, "FB2", patch, -1);
+    r.HWEP = capsField(t, "HWEP", patch, -1);
+    r.FIX = capsField(t, "FIX", patch, -1);
+    r.ALG_EXT = capsField(t, "ALG_EXT", patch, -1);
+    r.TARGET = capsField(t, "target_voice_patch_type", patch, -1);
+    return r;
+}
+
+HwOpFieldRanges buildOpRanges(fpe::VoicePatchType t, const fpe::HwPatch& patch, int opIndex) {
     HwOpFieldRanges r;
-    r.AR = {0, 31, true};
-    r.DR = {0, 31, true};
-    r.SL = {0, 15, true};
-    r.SR = {0, 31, true};
-    r.RR = {0, 15, true};
-    r.TL = {0, 127, true};
-    r.KSR = {0, 3, true};
-    r.KSL = {0, 0, false};
-    r.MUL = {0, 15, true};
-    r.DT1 = {0, 7, true};
-    r.DT2 = {0, 0, false};
-    r.PDT = {0, 0, false};
-    r.AM = {0, 0, false};
-    r.VIB = {0, 0, false};
-    r.EGT = {0, 15, true};
-    r.WS = {0, 0, false};
-    r.REV = {0, 0, false};
-    r.EGS = {0, 0, false};
-    r.DT3 = {0, 0, false};
-    return r;
-}
-
-// OPL(YM3526)/OPL2(YM3812)/OPL3_2(YMF262 2op residual) family - confirmed
-// against core/src/OPL_new.cpp's actual register-write masks (FB&7,
-// ALG&1, AR/DR&0x1F, SL&0xF, RR read as a plain 4bit value, SR&0x1F
-// (shifted into the same 4bit RR register when >0 - see
-// docs/voice-parameter-reference.md's OPL section for the SR/RR/EGT
-// conversion table), KSL as a 2bit field packed into TL's register,
-// MUL&0xF, TL&0x7F) and docs/hwpatch-reference.md (now explicit that
-// OPL/OPLL only take the field's upper bits on the wire - AR/DR/SR/TL
-// keep the same on-disk/editable width as every other chip (5bit/0-31,
-// 7bit/0-127); it's the chip driver, not the schema, that discards the
-// low bit(s) - D-023 briefly narrowed these to the post-shift width,
-// which the user corrected back per the updated FITOM_X doc, D-024).
-// DT1/DT2/EGT are explicitly called out as "無関係" for this family
-// (SR/RR cover the same ground EGT would) and REV/EGS/DT3 are OPZ-only.
-// WS differs per chip: OPL has no waveform register at all (always
-// sine), OPL2 is 2bit (0-3), OPL3_2 (the real OPL3 chip's 2op mode) is
-// 3bit (0-7) - see D-021.
-HwVoiceFieldRanges oplVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 7, true};
-    r.ALG = {0, 1, true};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 0, false};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-
-// OPL3 (YMF262) 4OP mode - VOICE_PATCH_OPL3 (0x30), distinct from the 2OP
-// residual VOICE_PATCH_OPL3_2 (0x22, oplVoiceRanges() above). Confirmed
-// against core/src/OPL_new.cpp's COPL3::updateVoice(): `hw.ALG & 0x7` is
-// used as a single 3bit packed value (`alValue()`) - bit0=CON1 (front pair
-// M1/C1 connection), bit1=CON2 (back pair M2/C2 connection), bit2=
-// ConnectionSEL (4OP link, drives the 0x104 CONNECTIONSEL register bit and
-// carmsk[] carrier-mask lookup) - matching the 8 assets/alg_diagrams/
-// opl3_al<0-7>.png diagrams (one per packed value) rather than the 2OP
-// family's single ALG-bit0 opl_alg<0-1>.png pair. `hw.FB`/`hw.FB2` are each
-// written to their own independent 0xC0 register (front/back pair) -
-// `(p.hw.FB & 7)`/`(p.hw.FB2 & 7)` - unlike the 2OP family where FB2 is
-// unused. AMS/PMS/NFQ aren't referenced (OPM/PSG-only fields).
-HwVoiceFieldRanges opl3FourOpVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 7, true};
-    r.ALG = {0, 7, true};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 0, false};
-    r.FB2 = {0, 7, true};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-// `pdtUsed` is only true for OPL3 4op mode's front/back-pair pseudo-detune
-// (ops[0]/ops[2] only - see getOpFieldRanges()'s OPL3 branch); every other
-// caller in this family (OPL/OPL2/OPL3_2, none of which have a per-pair
-// pseudo-detune concept per docs/voice-parameter-reference.md) leaves it at
-// the default false.
-HwOpFieldRanges oplOpRanges(int wsMax, bool pdtUsed = false) {
-    HwOpFieldRanges r;
-    r.AR = {0, 31, true};
-    r.DR = {0, 31, true};
-    r.SL = {0, 15, true};
-    r.SR = {0, 31, true};
-    r.RR = {0, 15, true};
-    r.TL = {0, 127, true};
-    r.KSR = {0, 1, true};
-    r.KSL = {0, 3, true};
-    r.MUL = {0, 15, true};
-    r.DT1 = {0, 0, false};
-    r.DT2 = {0, 0, false};
-    r.PDT = pdtUsed ? FieldRange{-32768, 32767, true} : FieldRange{0, 0, false};
-    r.AM = {0, 1, true};
-    r.VIB = {0, 1, true};
-    r.EGT = {0, 0, false};
-    r.WS = (wsMax > 0) ? FieldRange{0, wsMax, true} : FieldRange{0, 0, false};
-    r.REV = {0, 0, false};
-    r.EGS = {0, 0, false};
-    r.DT3 = {0, 0, false};
-    return r;
-}
-
-// OPLL family (YM2413/YM2420/YMF281B/YM2423-X and the OPLLP/OPLLX/VRC7
-// variants - docs/voice-parameter-reference.md groups these as sharing
-// identical field semantics, confirmed here by core/src/OPLL_new.cpp:
-// COPLLP/COPLLX/CVRC7/COPLL2 all derive from COPLL without overriding
-// updateVoice, so they share the same register masks). Same 2op envelope
-// widths as OPL/OPL2/OPL3_2 (AR/DR/SL/SR/RR/KSR/KSL/MUL/AM/VIB/TL - the
-// doc's "ops[1].TL only" note describes the carrier's perceived loudness,
-// but op[0]'s TL is still written to hardware (register 0x02) and affects
-// modulation depth, so both stay used=true here). ALG is fixed at 0 for
-// every patch this editor's common ops[]-editable layout ever shows
-// (D-023 correction to D-021): hw.ALG is only read at all when
-// ext.ALG_EXT bit0 (preset flag) is set (`instNo = preset ? ALG&0xF : 0`
-// in core/src/OPLL_new.cpp), and preset/ROM patches are exactly the
-// `isBuiltinRef()==true` case that never reaches this ops[] editor in the
-// first place (see D-021's addendum on OPLL builtin banks) - so within
-// this editor, ALG is always the ignored/0 user-tone case, hence
-// unused=false here (not a connection selector, unlike OPL/OPL2/OPL3_2 -
-// see isOplAlgFamily()). WS is a genuine but narrower field than the rest
-// of the OPL family: 1 bit per operator (core/src/OPLL_new.cpp:
-// `(WS&1)<<3`/`(WS&1)<<4`), not mentioned in the doc's OPLL field table
-// at all - confirmed by reading the actual register-write code since the
-// doc has a gap here.
-HwVoiceFieldRanges opllVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 7, true};
-    r.ALG = {0, 0, false};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 0, false};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-HwOpFieldRanges opllOpRanges() {
-    HwOpFieldRanges r = oplOpRanges(1); // same envelope widths as OPL family, WS is 1bit (0-1)
-    return r;
-}
-
-// OPM (YM2151) - confirmed against FITOM_X's docs/voice-parameter-
-// reference.md OPM section and the actual register-write masks in
-// core/src/OPM_new.cpp's COPM::updateVoice() (FB&7/ALG&7 in reg 0x20+ch;
-// DT1&7/MUL&0xF in reg 0x40+op*8+ch; TL written unmasked - 7bit per the
-// real YM2151 register, matching every other chip's TL width; KSR&3/AR
-// (5bit, no mask loss - a 2026年7月 bugfix removed an erroneous extra
-// shift that had been discarding AR/DR/SR's low 2 bits) in reg
-// 0x80+op*8+ch; AM&1/DR(5bit) in reg 0xA0+...; DT2&3/SR(5bit) in reg
-// 0xC0+...; SL(4bit)/RR(4bit) in reg 0xE0+...; AMS&3/PMS&7 via
-// enableAM()/enablePM()'s reg 0x38+ch writes).
-// NOTE ON CONFIDENCE: NFQ (noise frequency, reg 0x0F) isn't explicitly
-// masked in the driver (`0x80 | p.hw.NFQ`), but the real YM2151's NFRQ
-// register is a well-documented 5bit field - values above 31 would
-// corrupt the adjacent noise-enable bit the driver ORs in, so 5bit is
-// used here as the safe editable range rather than confirmed via an
-// explicit source mask.
-// KSL/PDT/VIB/EGT/WS/REV/EGS/DT3/FB2 aren't referenced anywhere in
-// COPM::updateVoice() - marked unused=false (WS/REV/EGS/DT3 are OPZ-only,
-// see opzOpRanges() below).
-HwVoiceFieldRanges opmVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 7, true};
-    r.ALG = {0, 7, true};
-    r.AMS = {0, 3, true};
-    r.PMS = {0, 7, true};
-    r.NFQ = {0, 31, true};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-HwOpFieldRanges opmOpRanges() {
-    HwOpFieldRanges r;
-    r.AR = {0, 31, true};
-    r.DR = {0, 31, true};
-    r.SL = {0, 15, true};
-    r.SR = {0, 31, true};
-    r.RR = {0, 15, true};
-    r.TL = {0, 127, true};
-    r.KSR = {0, 3, true};
-    r.KSL = {0, 0, false};
-    r.MUL = {0, 15, true};
-    r.DT1 = {0, 7, true};
-    r.DT2 = {0, 3, true};
-    r.PDT = {0, 0, false};
-    r.AM = {0, 1, true};
-    r.VIB = {0, 0, false};
-    r.EGT = {0, 0, false};
-    r.WS = {0, 0, false}; // OPM has no waveform-select register at all (OPZ-only)
-    r.REV = {0, 0, false};
-    r.EGS = {0, 0, false};
-    r.DT3 = {0, 0, false};
-    return r;
-}
-
-// OPZ (YM2414)/OPZ2 (YM2424, shares the COPZ driver - FITOM_X's
-// docs/chip-driver-architecture.md lists both under "COPZ（共用）") -
-// COPZ derives from COPM and doesn't override hw-level field handling, so
-// opzVoiceRanges() is just opmVoiceRanges() (see getVoiceFieldRanges()).
-// Adds REV/EGS/WS/DT3 on the op level - core/src/OPM_new.cpp's
-// COPZ::updateVoice(): `(o.WS & 7) << 4` / `(o.DT3 & 0xF)` in reg
-// 0x40+op*8+ch, `(o.EGS & 0x3) << 6` / `(o.REV & 0x1F)` in reg
-// 0xC0+op*8+ch.
-//
-// NOTE ON CONFIDENCE: docs/manuals/hwpatch-reference.md declares REV as
-// 0-15(4bit)/EGS as 0-127(7bit)/DT3 as 0-15(4bit) - used below, following
-// this project's established D-024 precedent (schema's declared width is
-// the editable range even where a driver's actual register write masks
-// away some bits). REV's driver mask (`&0x1F`, 5bit) is actually *wider*
-// than the declared 4bit range, so no truncation happens there - but
-// EGS's driver mask (`&0x3`, 2bit) captures only 2 of the declared 7
-// bits. Whether that's a genuine FITOM_X driver bug (like the AR/DR/SR
-// shift bug OPM_new.cpp's comments mention having just been fixed) or an
-// intentional real YM2414 hardware limit hasn't been confirmed here -
-// that's FITOM_X's own scope to resolve, not this editor's; the
-// documented schema width is used as usual pending that.
-HwOpFieldRanges opzOpRanges() {
-    HwOpFieldRanges r = opmOpRanges();
-    r.WS = {0, 7, true};
-    r.REV = {0, 15, true};
-    r.EGS = {0, 127, true};
-    r.DT3 = {0, 15, true};
-    return r;
-}
-
-// SSG (YM2149/AY-3-8910) - VOICE_PATCH_SSG (0x40). Confirmed against
-// docs/manuals/hwpatch-reference.md sections 8 (PSG系共通) / 9 (SSG) and the
-// actual register writes in core/src/PSG_new.cpp: CSSG::updateVoice() reads
-// only `hw.ALG & 3` (mix select: 0=tone/1=noise/2=both/3=mute),
-// `hw.NFQ & 0x1F` (noise period, written only when ALG selects noise),
-// `hwOp[0].EGT & 0xF` (HW envelope shape, with bit3 doubling as the
-// "use HW envelope instead of the software one" flag) and `ext.HWEP`
-// (16bit HW envelope period); CPSGBase adds `hwOp[0].TL` as the base
-// loudness and runs AR/DR/SL/SR/RR through the generic software envelope.
-//
-// Envelope fields keep the schema's full declared widths (AR/DR/SR 0-31,
-// SL/RR 0-15, TL 0-127) with no chip-side truncation at all - unlike every
-// FM family here, the envelope is computed in software and only its result
-// reaches the chip's 4bit volume register, which is exactly what the doc
-// means by「スキーマ上の値がそのまま1刻みで反映されます」.
-//
-// Everything else is absent from this chip rather than merely narrow: no
-// feedback path (FB/FB2), no hardware LFO sensitivity (AMS/PMS), and none
-// of the per-operator FM fields (KSR/KSL/MUL/DT1/DT2/PDT/AM/VIB/WS/REV/
-// EGS/DT3) are read anywhere in CSSG or CPSGBase. Only the sibling PSG
-// chips give some of those fields a meaning (e.g. DCSG's FB bit0 = noise
-// type), and they each get their own ranges when their turn comes - the
-// shared PSG bank namespace (D-053) does not make their fields shared.
-HwVoiceFieldRanges ssgVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 0, false};
-    r.ALG = {0, 3, true};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 31, true};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 65535, true}; // 0x0B(Fine)+0x0C(Coarse) as one indivisible 16bit period
-    return r;
-}
-HwOpFieldRanges ssgOpRanges() {
-    HwOpFieldRanges r;
-    r.AR = {0, 31, true};
-    r.DR = {0, 31, true};
-    r.SL = {0, 15, true};
-    r.SR = {0, 31, true};
-    r.RR = {0, 15, true};
-    r.TL = {0, 127, true};
-    r.KSR = {0, 0, false};
-    r.KSL = {0, 0, false};
-    r.MUL = {0, 0, false};
-    r.DT1 = {0, 0, false};
-    r.DT2 = {0, 0, false};
-    r.PDT = {0, 0, false};
-    r.AM = {0, 0, false};
-    r.VIB = {0, 0, false};
-    // The low 4 bits go to the chip's envelope-shape register as-is; bit3
-    // (the AY-3-8910 shape register's own CONT bit) doubles as FITOM_X's
-    // "use the HW envelope" flag, so it is not a separate field to split out.
-    r.EGT = {0, 15, true};
-    r.WS = {0, 0, false};
-    r.REV = {0, 0, false};
-    r.EGS = {0, 0, false};
-    r.DT3 = {0, 0, false};
-    return r;
-}
-
-// The four remaining PSG-family chips. They share SSG's software envelope
-// (CPSGBase: AR/DR/SL/SR/RR + `hwOp[0].TL` as the base loudness, all at the
-// schema's full declared width for the same "no register truncation, the
-// envelope is computed in software" reason ssgOpRanges() explains), so each
-// of these only differs from SSG in its channel-level fields and in which
-// one per-operator field, if any, the chip repurposes.
-//
-// EPSG (AY8930) - core/src/PSG_new.cpp CEPSG::updateVoice(),
-// docs/manuals/hwpatch-reference.md 12. A superset of SSG: same `hw.ALG & 3`
-// mix semantics, but the noise-frequency register is 8bit and is assembled
-// from TWO fields - `(hw.NFQ & 0x1F) | ((hw.FB & 7) << 5)` - so FB, unused
-// on plain SSG, is a real (if oddly named) field here. `hwOp[0].WS & 0xF` is
-// the chip's duty-ratio extension, unrelated to SCC's waveform number below
-// despite sharing the field. ext.HWEP is NOT read: EPSG's HW envelope period
-// comes from SL/RR/DR/SR packed into its own registers instead, which is
-// also why those four keep their schema widths here even though the HW
-// envelope path only writes their low 4 bits (the software envelope path
-// uses them at full width, and D-024's precedent is to range on the
-// declared width regardless).
-HwVoiceFieldRanges epsgVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 7, true}; // high 3 bits of the 8bit extended noise frequency
-    r.ALG = {0, 3, true};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 31, true};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-HwOpFieldRanges epsgOpRanges() {
-    HwOpFieldRanges r = ssgOpRanges();
-    r.WS = {0, 15, true}; // duty ratio; 0-8 spans 3.125%-96.875%, 9-15 repeat 8
-    return r;
-}
-
-// DCSG (SN76489) - CDCSG::updateVoice(), hwpatch-reference 10. No hardware
-// envelope generator exists on this chip at all, so EGT (whose bit3 is the
-// "use the HW envelope" flag everywhere else in this family) is deliberately
-// unused: the field is documented as ignored here, and setting bit3 anyway
-// would make CPSGBase skip the software envelope and leave the voice silent.
-HwVoiceFieldRanges dcsgVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 1, true}; // noise type: 0=periodic, 1=white
-    r.ALG = {0, 1, true}; // 1 = noise (dedicated channel)
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 3, true};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-HwOpFieldRanges dcsgOpRanges() {
-    HwOpFieldRanges r = ssgOpRanges();
-    r.EGT = {0, 0, false};
-    return r;
-}
-
-// SAA1099 - CSAA1099::updateVoice(), hwpatch-reference 13. Its HW envelope
-// generator is configured entirely through ext.HWEP's low 6 bits (bit0-2
-// mode, bit3 resolution, bit4 clockSrc, bit5 rightInvert) rather than a
-// period, so EGT is read for its bit3 enable flag only - the shape bits SSG
-// puts in EGT's low nibble live in HWEP here. ALG stops at 2: the driver
-// derives tone/noise enables as `(ALG&3)!=1` / `(ALG&3)!=0`, which makes 3
-// a duplicate of 1 rather than SSG's "both off".
-HwVoiceFieldRanges saaVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 0, false};
-    r.ALG = {0, 2, true};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 3, true};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 63, true};
-    return r;
-}
-HwOpFieldRanges saaOpRanges() {
-    return ssgOpRanges(); // EGT stays 0-15; only bit3 is read (see above)
-}
-
-// SCC/SCC+ (K051649/K052539) - CSCC::updateVoice(), hwpatch-reference 11.
-// The only wavetable chip in the family: `hwOp[0].WS & 0x7F` indexes the
-// waveform memory. It reads no channel-level field at all (no mix select, no
-// noise generator) and, like DCSG, has no HW envelope generator - so EGT is
-// unused here for the same reason.
-HwVoiceFieldRanges sccVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 0, false};
-    r.ALG = {0, 0, false};
-    r.AMS = {0, 0, false};
-    r.PMS = {0, 0, false};
-    r.NFQ = {0, 0, false};
-    r.FB2 = {0, 0, false};
-    r.HWEP = {0, 0, false};
-    return r;
-}
-HwOpFieldRanges sccOpRanges() {
-    HwOpFieldRanges r = ssgOpRanges();
-    r.EGT = {0, 0, false};
-    r.WS = {0, 127, true}; // waveform-memory index
-    return r;
-}
-
-// Generic wide-open fallback for chip families whose exact register widths
-// haven't been confirmed against FITOM_X's source yet (D-016 tracks which
-// ones still need this) - every field shown and editable, 0-99 (or the
-// PDT field's full int16 range), so nothing is artificially blocked before
-// its real range is known.
-HwVoiceFieldRanges genericVoiceRanges() {
-    HwVoiceFieldRanges r;
-    r.FB = {0, 99, true};
-    r.ALG = {0, 99, true};
-    r.AMS = {0, 99, true};
-    r.PMS = {0, 99, true};
-    r.NFQ = {0, 99, true};
-    r.FB2 = {0, 99, true};
-    r.HWEP = {0, 65535, true};
-    return r;
-}
-HwOpFieldRanges genericOpRanges() {
-    HwOpFieldRanges r;
-    const FieldRange w{0, 99, true};
-    r.AR = w;
-    r.DR = w;
-    r.SL = w;
-    r.SR = w;
-    r.RR = w;
-    r.TL = w;
-    r.KSR = w;
-    r.KSL = w;
-    r.MUL = w;
-    r.DT1 = w;
-    r.DT2 = w;
-    r.PDT = {-32768, 32767, true};
-    r.AM = w;
-    r.VIB = w;
-    r.EGT = w;
-    r.WS = w;
-    r.REV = w;
-    r.EGS = w;
-    r.DT3 = w;
+    r.AR = capsField(t, "AR", patch, opIndex);
+    r.DR = capsField(t, "DR", patch, opIndex);
+    r.SL = capsField(t, "SL", patch, opIndex);
+    r.SR = capsField(t, "SR", patch, opIndex);
+    r.RR = capsField(t, "RR", patch, opIndex);
+    r.TL = capsField(t, "TL", patch, opIndex);
+    r.KSR = capsField(t, "KSR", patch, opIndex);
+    r.KSL = capsField(t, "KSL", patch, opIndex);
+    r.MUL = capsField(t, "MUL", patch, opIndex);
+    r.DT1 = capsField(t, "DT1", patch, opIndex);
+    r.DT2 = capsField(t, "DT2", patch, opIndex);
+    r.PDT = capsField(t, "PDT", patch, opIndex);
+    r.AM = capsField(t, "AM", patch, opIndex);
+    r.VIB = capsField(t, "VIB", patch, opIndex);
+    r.EGT = capsField(t, "EGT", patch, opIndex);
+    r.WS = capsField(t, "WS", patch, opIndex);
+    r.REV = capsField(t, "REV", patch, opIndex);
+    r.EGS = capsField(t, "EGS", patch, opIndex);
+    r.DT3 = capsField(t, "DT3", patch, opIndex);
     return r;
 }
 
 // OPLL and its ROM-preset-table siblings (OPLLP/OPLLX/VRC7) share identical
-// register semantics from FITOM_X's perspective - see opllVoiceRanges()/
-// opllOpRanges() above.
+// register semantics; the capabilities file expresses that as
+// same_params_as, but these two predicates still exist because which
+// diagram/waveform image set to draw is a UI choice the spec says nothing
+// about.
 bool isOpllFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPLL || t == fpe::VoicePatchType::OPLLP ||
            t == fpe::VoicePatchType::OPLLX || t == fpe::VoicePatchType::VRC7;
 }
-
-// OPZ2 (YM2424) shares the COPZ driver with OPZ (YM2414) - FITOM_X's
-// docs/chip-driver-architecture.md lists them as "共用" (shared) - so they
-// take identical field ranges (opzOpRanges()).
 bool isOpzFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPZ || t == fpe::VoicePatchType::OPZ2;
 }
 
-HwVoiceFieldRanges getVoiceFieldRanges(fpe::VoicePatchType t) {
-    if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnVoiceRanges();
-    if (t == fpe::VoicePatchType::OPM || isOpzFamily(t)) return opmVoiceRanges();
-    if (t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
-        t == fpe::VoicePatchType::OPL3_2 || t == fpe::VoicePatchType::OPL_RHY) {
-        // OPL_RHY (COPLRhythm): confirmed against core/src/OPL_new.cpp's
-        // updateVoice() - the FB/ALG channel register write
-        // (`0xC0+physCh = 0x30 | (FB&7)<<1 | (ALG&1)`) is byte-for-byte the
-        // same as plain OPL/OPL2/OPL3_2's, so it takes identical ranges
-        // (and, per isOplAlgFamily() below, the same opl_alg<0-1>.png
-        // series/parallel diagrams) despite being an otherwise very
-        // different editing surface (see the "Inst." combo/op-count logic
-        // in renderPatchEditor(), D-033).
-        return oplVoiceRanges();
-    }
-    if (t == fpe::VoicePatchType::OPL3) return opl3FourOpVoiceRanges();
-    if (isOpllFamily(t)) return opllVoiceRanges();
-    if (t == fpe::VoicePatchType::SSG) return ssgVoiceRanges();
-    if (t == fpe::VoicePatchType::EPSG) return epsgVoiceRanges();
-    if (t == fpe::VoicePatchType::DCSG) return dcsgVoiceRanges();
-    if (t == fpe::VoicePatchType::SAA) return saaVoiceRanges();
-    if (t == fpe::VoicePatchType::SCC) return sccVoiceRanges();
-    return genericVoiceRanges();
-}
-// `opIndex` (-1 = "don't know/not applicable") only matters for OPL3 4OP
-// mode's PDT field, which is a per-pair (not per-operator) concept - see
-// opl3FourOpVoiceRanges()'s comment and COPL3::updateFnumber() (only
-// ops[0].PDT/ops[2].PDT are ever read). Every other chip family ignores it.
-HwOpFieldRanges getOpFieldRanges(fpe::VoicePatchType t, int opIndex = -1) {
-    if (t == fpe::VoicePatchType::OPN || t == fpe::VoicePatchType::OPN2) return opnOpRanges();
-    if (t == fpe::VoicePatchType::OPM) return opmOpRanges();
-    if (isOpzFamily(t)) return opzOpRanges();
-    if (t == fpe::VoicePatchType::OPL) return oplOpRanges(0);        // no WS register at all - always sine
-    // OPL2 and OPL_RHY both mask WS with `& 0x3` (2bit) in their respective
-    // drivers (COPL2::updateVoice()/COPLRhythm::writeOperatorRegs()) - same
-    // range, reused here rather than duplicated.
-    if (t == fpe::VoicePatchType::OPL2 || t == fpe::VoicePatchType::OPL_RHY) return oplOpRanges(3);
-    if (t == fpe::VoicePatchType::OPL3_2) return oplOpRanges(7);     // 3bit WS (0-7)
-    if (t == fpe::VoicePatchType::OPL3) {
-        // 3bit WS (same register width as OPL3_2), PDT used only on the
-        // front/back pair's lead operator (index 0/2).
-        return oplOpRanges(7, opIndex == 0 || opIndex == 2);
-    }
-    if (isOpllFamily(t)) return opllOpRanges();
-    if (t == fpe::VoicePatchType::SSG) return ssgOpRanges();
-    if (t == fpe::VoicePatchType::EPSG) return epsgOpRanges();
-    if (t == fpe::VoicePatchType::DCSG) return dcsgOpRanges();
-    if (t == fpe::VoicePatchType::SAA) return saaOpRanges();
-    if (t == fpe::VoicePatchType::SCC) return sccOpRanges();
-    return genericOpRanges();
-}
-
-// The chip an individual HwPatch is actually written for, which for the PSG
-// family is NOT its bank's tag: all five PSG chips share one bank namespace
-// registered under SSG (D-053), and each patch names its real target in
-// `ext.target_voice_patch_type`. Real data relies on this -
-// ../FITOM_staging/banks/PSG/epsg_preset.hwbank.json is registered as
-// `group:"SSG"` while every patch in it carries
-// target_voice_patch_type=0x41(EPSG) - so field ranges and per-chip
-// visibility have to follow the patch, or an EPSG patch would be shown
-// SSG's ranges and lose FB/WS, which EPSG genuinely uses (extended 8bit
-// noise frequency / duty ratio, docs/manuals/hwpatch-reference.md 12).
-// Only for range/visibility decisions: the preview wire protocol's device
-// select still takes the bank's own tag, which is what FITOM_X looks the
-// bank up by.
+// Shorthand over fpe::effectiveVoicePatchType() for the bank+patch pair this
+// UI always has in hand. The preview wire protocol deliberately keeps using
+// the bank's own tag, which is the key FITOM_X looks the bank up by.
 fpe::VoicePatchType effectiveVoicePatchType(const fpe::HwBank& bank, const fpe::HwPatch& patch) {
-    if (fpe::isPsgFamilyVoicePatchType(bank.voicePatchType) &&
-        fpe::isPsgFamilyVoicePatchType(patch.ext.target_voice_patch_type)) {
-        return patch.ext.target_voice_patch_type;
-    }
-    return bank.voicePatchType;
+    return fpe::effectiveVoicePatchType(bank.voicePatchType, patch);
 }
 
 // The directory the running executable itself lives in - not the current
@@ -3659,7 +3241,7 @@ nlohmann::json buildHwPatchDiffJson(const fpe::HwPatch& prev, const fpe::HwPatch
 // FmHwOp's own field comments: higher AR/DR/RR = faster (shorter visual
 // ramp); TL is an attenuation (0 = loudest, max = silent - common Yamaha
 // FM convention), so peak height scales from TL's own confirmed range
-// (`ranges.TL.maxV`, not a hardcoded constant - D-024 fix: this used to
+// (`envCurveMax(ranges.TL)`, not a hardcoded constant - D-024 fix: this used to
 // normalize every chip against a fixed /99, so a chip whose real range is
 // narrower than 0-99 (e.g. OPN/OPL/OPLL's 0-31 AR/DR/SR) could never
 // visually reach "full speed" even at its own maximum value); SL is ALSO
@@ -3691,14 +3273,14 @@ void renderEnvelopeCurve(const fpe::FmHwOp& op, const HwOpFieldRanges& ranges) {
         return std::min<float>(level, maxLevel) / denom;
     };
 
-    const float peak = 1.0f - attenuationToNorm(op.TL, ranges.TL.maxV);
-    const float sustain = peak * (1.0f - attenuationToNorm(op.SL, ranges.SL.maxV));
+    const float peak = 1.0f - attenuationToNorm(op.TL, envCurveMax(ranges.TL));
+    const float sustain = peak * (1.0f - attenuationToNorm(op.SL, envCurveMax(ranges.SL)));
     const bool percussive = op.SR > 0;
 
-    const float attackW = rateToSegWidth(op.AR, ranges.AR.maxV, size.x * 0.30f);
-    const float decayW = rateToSegWidth(op.DR, ranges.DR.maxV, size.x * 0.25f);
-    const float sustainW = percussive ? rateToSegWidth(op.SR, ranges.SR.maxV, size.x * 0.20f) : size.x * 0.20f;
-    const float releaseW = rateToSegWidth(op.RR, ranges.RR.maxV, size.x * 0.25f);
+    const float attackW = rateToSegWidth(op.AR, envCurveMax(ranges.AR), size.x * 0.30f);
+    const float decayW = rateToSegWidth(op.DR, envCurveMax(ranges.DR), size.x * 0.25f);
+    const float sustainW = percussive ? rateToSegWidth(op.SR, envCurveMax(ranges.SR), size.x * 0.20f) : size.x * 0.20f;
+    const float releaseW = rateToSegWidth(op.RR, envCurveMax(ranges.RR), size.x * 0.25f);
 
     const float baseY = p0.y + size.y - 2.0f;
     const float topY = p0.y + 2.0f;
@@ -3925,29 +3507,140 @@ void sliderI16(const char* label, int16_t& field, int minV, int maxV) {
     if (ImGui::SliderInt(label, &v, minV, maxV)) field = static_cast<int16_t>(std::clamp(v, minV, maxV));
 }
 
-// *Ranged wrappers grey out (but still show, to keep the layout stable
-// across chip families) fields the current VoicePatchType doesn't
-// actually read, and use its confirmed register width for the rest -
-// see FieldRange/getVoiceFieldRanges()/getOpFieldRanges() (D-016).
+// Human-readable "what this field does on this chip" text, shown on hover
+// for every capability-backed control: the spec's own note, the effective
+// range and step where they are narrower than the declared range, the bit
+// meanings of a bitfield, and the sounding-channel restriction where one
+// applies. Empty when the spec had nothing to add.
+std::string fieldTooltip(const FieldRange& r) {
+    std::string s;
+    auto line = [&](const std::string& t) {
+        if (t.empty()) return;
+        if (!s.empty()) s += "\n";
+        s += t;
+    };
+    if (!r.active) line("現在の設定では参照されません(他のフィールドの条件を満たしていません)。");
+    line(r.note);
+    if (r.effMin != r.minV || r.effMax != r.maxV) {
+        line("実際に音へ反映される範囲: " + std::to_string(r.effMin) + "-" + std::to_string(r.effMax) +
+             "(外れた値は飽和します)");
+    }
+    if (r.quantum > 1) {
+        line("実機レジスタ1段 = " + std::to_string(r.quantum) + "刻み(その間の値は同じ結果になります)");
+    }
+    if (r.bits) {
+        for (const auto& b : *r.bits) {
+            line("  bit mask " + std::to_string(b.mask) + ": " + b.label);
+        }
+    }
+    if (r.channels && !r.channels->empty()) {
+        std::string chs;
+        for (int c : *r.channels) chs += (chs.empty() ? "" : ", ") + std::to_string(c);
+        line("実機の発音チャンネル " + chs + " でのみ意味を持ちます(この値を設定すると、そのchへ割り当てられます)。");
+    }
+    return s;
+}
+
+void applyFieldTooltip(const FieldRange& r) {
+    if (!ImGui::IsItemHovered()) return;
+    const std::string t = fieldTooltip(r);
+    if (!t.empty()) ImGui::SetTooltip("%s", t.c_str());
+}
+
+// Snaps to the field's quantum, so dragging a slider can only land on values
+// the hardware can actually distinguish. Anchored at minV rather than 0 so a
+// range that doesn't start at zero still lines up with real register steps.
+int snapToQuantum(int v, const FieldRange& r) {
+    if (r.quantum <= 1) return v;
+    const int off = v - r.minV;
+    return r.minV + ((off + r.quantum / 2) / r.quantum) * r.quantum;
+}
+
+// *Ranged wrappers grey out fields the chip cannot use: `used == false` is
+// the chip never reading it (callers usually hide those outright instead),
+// `active == false` is a condition that isn't currently met. Bounds come
+// from the effective range, widened to whatever the patch already holds -
+// see fieldDisplayMin()/fieldDisplayMax() (D-057).
 void sliderU8Ranged(const char* label, uint8_t& field, const FieldRange& range) {
-    if (!range.used) ImGui::BeginDisabled();
-    sliderU8(label, field, range.minV, range.maxV);
-    if (!range.used) ImGui::EndDisabled();
+    const bool disabled = !range.used || !range.active;
+    if (disabled) ImGui::BeginDisabled();
+    const int lo = fieldDisplayMin(range, field);
+    const int hi = fieldDisplayMax(range, field);
+    int v = field;
+    if (ImGui::SliderInt(label, &v, lo, hi)) {
+        field = static_cast<uint8_t>(std::clamp(snapToQuantum(v, range), range.minV, range.maxV));
+    }
+    if (disabled) ImGui::EndDisabled();
+    applyFieldTooltip(range);
 }
 void inputU8Ranged(const char* label, uint8_t& field, const FieldRange& range) {
-    if (!range.used) ImGui::BeginDisabled();
+    const bool disabled = !range.used || !range.active;
+    if (disabled) ImGui::BeginDisabled();
     inputU8(label, field, range.minV, range.maxV);
-    if (!range.used) ImGui::EndDisabled();
+    if (disabled) ImGui::EndDisabled();
+    applyFieldTooltip(range);
 }
 void inputI16Ranged(const char* label, int16_t& field, const FieldRange& range) {
-    if (!range.used) ImGui::BeginDisabled();
+    const bool disabled = !range.used || !range.active;
+    if (disabled) ImGui::BeginDisabled();
     inputI16(label, field, range.minV, range.maxV);
-    if (!range.used) ImGui::EndDisabled();
+    if (disabled) ImGui::EndDisabled();
+    applyFieldTooltip(range);
 }
 void inputU16Ranged(const char* label, uint16_t& field, const FieldRange& range) {
-    if (!range.used) ImGui::BeginDisabled();
+    const bool disabled = !range.used || !range.active;
+    if (disabled) ImGui::BeginDisabled();
     inputU16(label, field, range.minV, range.maxV);
-    if (!range.used) ImGui::EndDisabled();
+    if (disabled) ImGui::EndDisabled();
+    applyFieldTooltip(range);
+}
+
+// A field the spec gives discrete labelled values for is a dropdown of those
+// labels rather than a bare number - SSG's tone/noise mix, EPSG's nine duty
+// ratios, OPN's FX-mode select, the shared-PSG-bank target chip. Falls back
+// to a plain number for a value not in the table (out-of-spec data stays
+// visible instead of silently snapping to the first entry).
+void enumU8Ranged(const char* label, uint8_t& field, const FieldRange& range) {
+    if (!range.values) {
+        inputU8Ranged(label, field, range);
+        return;
+    }
+    const bool disabled = !range.used || !range.active;
+    if (disabled) ImGui::BeginDisabled();
+    std::string preview = std::to_string(field) + " (定義外)";
+    for (const auto& v : *range.values) {
+        if (v.value == static_cast<int>(field)) {
+            preview = v.label;
+            break;
+        }
+    }
+    if (ImGui::BeginCombo(label, preview.c_str())) {
+        for (const auto& v : *range.values) {
+            const bool selected = (v.value == static_cast<int>(field));
+            if (ImGui::Selectable(v.label.c_str(), selected)) field = static_cast<uint8_t>(v.value);
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (disabled) ImGui::EndDisabled();
+    applyFieldTooltip(range);
+}
+
+// A single-bit bitfield (only ALG_EXT, on OPM/OPZ and the OPLL family) reads
+// far better as a checkbox than as a 0/1 spinner, and the spec already
+// supplies the label for the bit.
+void bitFlagRanged(uint8_t& field, const FieldRange& range) {
+    const bool disabled = !range.used || !range.active;
+    if (disabled) ImGui::BeginDisabled();
+    const uint32_t mask = (range.bits && !range.bits->empty()) ? range.bits->front().mask : 1u;
+    const std::string label =
+        (range.bits && !range.bits->empty()) ? range.bits->front().label : std::string("ALG_EXT");
+    bool on = (field & mask) != 0;
+    if (ImGui::Checkbox(label.c_str(), &on)) {
+        field = static_cast<uint8_t>(on ? (field | mask) : (field & ~mask));
+    }
+    if (disabled) ImGui::EndDisabled();
+    applyFieldTooltip(range);
 }
 
 // Chip families whose WS field has a real waveform-select image
@@ -3955,15 +3648,14 @@ void inputU16Ranged(const char* label, uint16_t& field, const FieldRange& range)
 // OPL/OPL2/OPL3_2/OPL3/OPL_RHY (2/3bit WS - OPL3 4OP mode's WS is the same
 // 3bit register width as OPL3_2's, `o.WS & 0x7` in COPL3::updateVoice(), and
 // OPL_RHY's is the same 2bit width as OPL2's, `o.WS & 0x3` in
-// COPLRhythm::writeOperatorRegs() - see getOpFieldRanges() - so both reuse
-// this same ws<0-7>.png set rather than needing their own) and the OPLL
-// family (1bit WS, confirmed from core/src/OPLL_new.cpp - see
-// opllOpRanges()). Deliberately broader than the ALG-family checks in
+// COPLRhythm::writeOperatorRegs() - so both reuse this same ws<0-7>.png set
+// rather than needing their own) and the OPLL family (1bit WS).
+// Deliberately broader than the ALG-family checks in
 // renderPatchEditor() (which treat OPL3 4OP mode's ALG separately from the
 // 2OP family's, and exclude OPLL entirely, since OPLL's ALG isn't a
 // connection selector) - WS's meaning (waveform shape) is consistent across
 // all of these, only its bit width differs (already reflected in
-// ranges.WS via getOpFieldRanges()).
+// ranges.WS, which comes from the capabilities data).
 bool isOplWsImageFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPL || t == fpe::VoicePatchType::OPL2 ||
            t == fpe::VoicePatchType::OPL3_2 || t == fpe::VoicePatchType::OPL3 ||
@@ -3979,8 +3671,11 @@ bool isOplWsImageFamily(fpe::VoicePatchType t) {
 // pattern to use (opl_alg<n>.png vs ws<n>.png).
 void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value, const FieldRange& range,
                          float displayW, const std::function<GLuint(int, int&, int&)>& getTexture) {
-    if (!range.used) ImGui::BeginDisabled();
+    const bool spinnerDisabled = !range.used || !range.active;
+    if (spinnerDisabled) ImGui::BeginDisabled();
     int v = value;
+    const int spinLo = fieldDisplayMin(range, v);
+    const int spinHi = fieldDisplayMax(range, v);
     int texW = 0, texH = 0;
     const GLuint tex = getTexture(std::clamp(v, range.minV, range.maxV), texW, texH);
     ImGui::PushButtonRepeat(true);
@@ -3992,7 +3687,7 @@ void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value,
 
         ImGui::SetCursorPosY(buttonCenterY);
         ImGui::PushID((std::string("minus") + idSuffix).c_str());
-        if (ImGui::ArrowButton("##minus", ImGuiDir_Left) && v > range.minV) value = static_cast<uint8_t>(v - 1);
+        if (ImGui::ArrowButton("##minus", ImGuiDir_Left) && v > spinLo) value = static_cast<uint8_t>(v - 1);
         ImGui::PopID();
         ImGui::SameLine();
         ImGui::SetCursorPosY(rowTopY);
@@ -4000,22 +3695,22 @@ void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value,
         ImGui::SameLine();
         ImGui::SetCursorPosY(buttonCenterY);
         ImGui::PushID((std::string("plus") + idSuffix).c_str());
-        if (ImGui::ArrowButton("##plus", ImGuiDir_Right) && v < range.maxV) value = static_cast<uint8_t>(v + 1);
+        if (ImGui::ArrowButton("##plus", ImGuiDir_Right) && v < spinHi) value = static_cast<uint8_t>(v + 1);
         ImGui::PopID();
     } else {
         ImGui::PushID((std::string("minus") + idSuffix).c_str());
-        if (ImGui::ArrowButton("##minus", ImGuiDir_Left) && v > range.minV) value = static_cast<uint8_t>(v - 1);
+        if (ImGui::ArrowButton("##minus", ImGuiDir_Left) && v > spinLo) value = static_cast<uint8_t>(v - 1);
         ImGui::PopID();
         ImGui::SameLine();
         ImGui::Text("%s %d", label, v);
         ImGui::SameLine();
         ImGui::PushID((std::string("plus") + idSuffix).c_str());
-        if (ImGui::ArrowButton("##plus", ImGuiDir_Right) && v < range.maxV) value = static_cast<uint8_t>(v + 1);
+        if (ImGui::ArrowButton("##plus", ImGuiDir_Right) && v < spinHi) value = static_cast<uint8_t>(v + 1);
         ImGui::PopID();
     }
 
     ImGui::PopButtonRepeat();
-    if (!range.used) ImGui::EndDisabled();
+    if (spinnerDisabled) ImGui::EndDisabled();
 }
 
 // OPL_RHY (VOICE_PATCH_OPL_RHY, COPLRhythm) only - renders `ext.rhythm_ch`
@@ -4045,24 +3740,26 @@ void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value,
 // merely-loaded/unopened patch, so correctly-sized data from disk is never
 // silently touched before the user interacts with the dropdown.
 void renderRhythmInstrumentCombo(fpe::HwPatch& patch) {
-    static constexpr std::pair<uint8_t, const char*> kInstruments[5] = {
-        {0, "HH"}, {1, "CYM"}, {2, "TOM"}, {3, "SD"}, {4, "BD"},
-    };
+    const fpe::ChipCapabilities& caps = fpe::ChipCapabilities::instance();
+    const fpe::ParamCaps* def = caps.param(fpe::VoicePatchType::OPL_RHY, "rhythm_ch");
+    if (!def || def->values.empty()) return; // capabilities data missing - nothing to offer
+
     const uint8_t current = patch.ext.rhythm_ch;
-    const char* preview = "(未設定)";
-    for (const auto& [v, label] : kInstruments) {
-        if (v == current) {
-            preview = label;
+    std::string preview = "(未設定)";
+    for (const auto& v : def->values) {
+        if (v.value == static_cast<int>(current)) {
+            preview = v.label;
             break;
         }
     }
     ImGui::SetNextItemWidth(90);
-    if (ImGui::BeginCombo("Inst.", preview)) {
-        for (const auto& [v, label] : kInstruments) {
-            const bool selected = (v == current);
-            if (ImGui::Selectable(label, selected)) {
-                patch.ext.rhythm_ch = v;
-                patch.ops.resize((v == 4) ? 2 : 1);
+    if (ImGui::BeginCombo("Inst.", preview.c_str())) {
+        for (const auto& v : def->values) {
+            const bool selected = (v.value == static_cast<int>(current));
+            if (ImGui::Selectable(v.label.c_str(), selected)) {
+                patch.ext.rhythm_ch = static_cast<uint8_t>(v.value);
+                const int n = caps.operatorCount(fpe::VoicePatchType::OPL_RHY, patch);
+                if (n > 0) patch.ops.resize(static_cast<size_t>(n));
             }
             if (selected) ImGui::SetItemDefaultFocus();
         }
@@ -4105,6 +3802,8 @@ void renderHwOpEditor(int index, fpe::FmHwOp& op, const HwOpFieldRanges& ranges,
     } else if (isOplWsImageFamily(groupType)) {
         renderImageSpinner("ws", "WS", op.WS, ranges.WS, 100.0f,
                             [](int v, int& w, int& h) { return getWsTexture(v, w, h); });
+    } else if (ranges.WS.used && ranges.WS.values) {
+        enumU8Ranged("WS", op.WS, ranges.WS);
     } else if (ranges.WS.used) {
         inputU8Ranged("WS", op.WS, ranges.WS);
     }
@@ -4318,18 +4017,27 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         ImGui::EndDisabled();
     }
 
+    if (!fpe::ChipCapabilities::instance().loaded()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+                            "spec/chip-capabilities.json を読み込めません: %s\n"
+                            "チップごとの範囲・未使用フィールドの判定ができないため、全項目を暫定表示しています。",
+                            fpe::ChipCapabilities::instance().loadError().c_str());
+        ImGui::Separator();
+    }
+
     // Everything below picks widgets/ranges per chip, so it goes through
     // the patch's effective chip type, not the bank's tag - see
     // effectiveVoicePatchType(). They differ only for the PSG family.
     const fpe::VoicePatchType chipType = effectiveVoicePatchType(bank, *patch);
-    const HwVoiceFieldRanges voiceRanges = getVoiceFieldRanges(chipType);
+    const HwVoiceFieldRanges voiceRanges = buildVoiceRanges(chipType, *patch);
 
-    // SCC reads no channel-level field at all (sccVoiceRanges()), so for it
-    // this whole band - header and separator included - collapses away
-    // rather than leaving an empty labelled section.
+    // SCC reads no channel-level field at all, so for it this whole band -
+    // header and separator included - collapses away rather than leaving an
+    // empty labelled section.
     const bool anyVoiceFieldUsed = voiceRanges.FB.used || voiceRanges.ALG.used || voiceRanges.AMS.used ||
                                    voiceRanges.PMS.used || voiceRanges.NFQ.used || voiceRanges.FB2.used ||
-                                   voiceRanges.HWEP.used || chipType == fpe::VoicePatchType::OPL_RHY;
+                                   voiceRanges.HWEP.used || voiceRanges.FIX.used ||
+                                   voiceRanges.ALG_EXT.used || voiceRanges.TARGET.used;
     if (anyVoiceFieldUsed) {
         ImGui::Separator();
         ImGui::Text("チャンネルパラメータ");
@@ -4340,10 +4048,9 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         // same 3bit 0-7 ALG semantics per docs/voice-parameter-reference.md;
         // OPL/OPL2/OPL3_2/OPL_RHY: opl_alg<0-1>.png, D-021 (OPL_RHY added in
         // D-033 - COPLRhythm's FB/ALG channel register write is identical to
-        // plain OPL/OPL2/OPL3_2's, see getVoiceFieldRanges()) - OPLL is
-        // excluded, see isOplAlgFamily()); OPL3 4OP mode: opl3_al<0-7>.png (its
-        // own 3bit packed ALG semantics - CON1/CON2/ConnectionSEL - distinct
-        // from both of the above, see opl3FourOpVoiceRanges()) has the current
+        // plain OPL/OPL2/OPL3_2's) - OPLL is excluded, see isOplAlgFamily());
+        // OPL3 4OP mode: opl3_al<0-7>.png (its own 3bit packed ALG semantics -
+        // CON1/CON2/ConnectionSEL - distinct from both of the above) has the current
         // ALG value burned into its own top-left corner (so the image itself
         // represents the setting, not a separate "ALG n" text widget), flanked
         // left/right by spin buttons - at the left edge of this band, rather
@@ -4372,6 +4079,12 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
             } else if (isOpl3FourOpAlgFamily) {
                 renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
                                     [](int v, int& w, int& h) { return getOpl3AlgTexture(v, w, h); });
+            } else if (voiceRanges.ALG.values) {
+                // No connection diagram for this chip, but the spec names
+                // every value (SSG's tone/noise mix, DCSG's noise select),
+                // so it reads as a dropdown instead of a bare number.
+                ImGui::SetNextItemWidth(210);
+                enumU8Ranged("ALG", patch->hw.ALG, voiceRanges.ALG);
             } else {
                 renderImageSpinner("alg", "ALG", patch->hw.ALG, voiceRanges.ALG, 150.0f,
                                     [](int, int& w, int& h) {
@@ -4392,49 +4105,54 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
             ImGui::SetNextItemWidth(150);
             sliderU8Ranged("FB", patch->hw.FB, voiceRanges.FB);
         }
-        if (chipType == fpe::VoicePatchType::OPM || chipType == fpe::VoicePatchType::OPZ ||
-            chipType == fpe::VoicePatchType::OPZ2 || chipType == fpe::VoicePatchType::OPN2) {
+        if (voiceRanges.AMS.used) {
             ImGui::SetNextItemWidth(150);
             sliderU8Ranged("AMS", patch->hw.AMS, voiceRanges.AMS);
             ImGui::SameLine();
+        }
+        if (voiceRanges.PMS.used) {
             ImGui::SetNextItemWidth(150);
             sliderU8Ranged("PMS", patch->hw.PMS, voiceRanges.PMS);
             ImGui::SameLine();
         }
-        // Driven off `used` rather than a chip list, because every chip family
-        // that reads NFQ at all now has real ranges saying so (the whole PSG
-        // family included - SSG's noise period had no control here at all until
-        // then, so its noise pitch was simply not editable). AMS/PMS above stay
-        // an explicit list: opnVoiceRanges() marks them unused for OPN2, which
-        // this band has always overridden by showing them greyed, and correcting
-        // that is a separate question about OPN2's own ranges.
         if (voiceRanges.NFQ.used) {
             ImGui::SetNextItemWidth(150);
             sliderU8Ranged("NFQ", patch->hw.NFQ, voiceRanges.NFQ);
             ImGui::SameLine();
         }
-        if (chipType == fpe::VoicePatchType::OPL3) {
+        if (voiceRanges.FB2.used) {
             ImGui::SetNextItemWidth(150);
             sliderU8Ranged("FB2", patch->hw.FB2, voiceRanges.FB2);
             ImGui::SameLine();
         }
-        // ext.HWEP - the PSG family's hardware envelope. An InputInt rather than
-        // a slider because SSG's is a full 16bit period where single steps
-        // matter. It only does anything once OP1's EGT bit3 is set, which is
-        // buried in the op panel's "詳細" fold-out, so the tooltip says so.
+        // ext.* fields. HWEP is an InputInt rather than a slider because
+        // SSG's is a full 16bit period where single steps matter; the rest
+        // are dropdowns or a checkbox built from the spec's own value tables.
+        // All of them grey out on their own when their condition is not met
+        // (HWEP until OP1's EGT bit3 is set, say), with the tooltip saying so.
         if (voiceRanges.HWEP.used) {
             ImGui::SetNextItemWidth(150);
             inputU16Ranged("HWEP", patch->ext.HWEP, voiceRanges.HWEP);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip(
-                    chipType == fpe::VoicePatchType::SAA
-                        ? "ハードウェアエンベロープ設定(下位6bit: bit0-2=波形 / bit3=分解能 /\n"
-                          "bit4=クロック源 / bit5=右ch反転)。\n"
-                          "OP1の「詳細」でEGTのbit3(=8)を立てたときのみ有効です。"
-                        : "ハードウェアエンベロープ周期(16bit)。\n"
-                          "OP1の「詳細」でEGTのbit3(=8)を立てたときのみ有効です。\n"
-                          "この間はOP1のAR/DR/SL/SR/RRは完全に無視されます。");
-            }
+            ImGui::SameLine();
+        }
+        if (voiceRanges.FIX.used) {
+            ImGui::SetNextItemWidth(210);
+            enumU8Ranged("FIX", patch->ext.FIX, voiceRanges.FIX);
+            ImGui::SameLine();
+        }
+        if (voiceRanges.ALG_EXT.used) {
+            bitFlagRanged(patch->ext.ALG_EXT, voiceRanges.ALG_EXT);
+            ImGui::SameLine();
+        }
+        if (voiceRanges.TARGET.used) {
+            // PSG-family only: which chip in the shared SSG bank namespace
+            // this patch is really for (D-053). Editing it re-picks the whole
+            // form's chip on the next frame, since effectiveVoicePatchType()
+            // reads exactly this field.
+            ImGui::SetNextItemWidth(210);
+            uint8_t target = static_cast<uint8_t>(patch->ext.target_voice_patch_type);
+            enumU8Ranged("対象チップ", target, voiceRanges.TARGET);
+            patch->ext.target_voice_patch_type = static_cast<fpe::VoicePatchType>(target);
             ImGui::SameLine();
         }
         // OPL_RHY-only: "Inst." combo picks which of COPLRhythm's 5 fixed
@@ -4451,12 +4169,12 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
 
     ImGui::Separator();
     // Recomputed per operator index (rather than hoisted once outside the
-    // loop) because OPL3 4OP mode's PDT field's `used` flag depends on the
-    // index (front/back pair lead operators only, 0/2 - see
-    // getOpFieldRanges()); every other chip family ignores the index and
-    // returns the same ranges regardless.
+    // loop) because a parameter can be restricted to specific operators -
+    // OPL3's PDT exists only on each pair's lead operator, OPLL's carrier TL
+    // is coarser than its modulator's - and because a condition can key off
+    // that same operator's own fields (SSG's AR against its EGT).
     for (size_t i = 0; i < patch->ops.size(); ++i) {
-        const HwOpFieldRanges opRanges = getOpFieldRanges(chipType, static_cast<int>(i));
+        const HwOpFieldRanges opRanges = buildOpRanges(chipType, *patch, static_cast<int>(i));
         renderHwOpEditor(static_cast<int>(i), patch->ops[i], opRanges, chipType);
         if (i + 1 < patch->ops.size()) ImGui::SameLine();
     }

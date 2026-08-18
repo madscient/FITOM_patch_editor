@@ -2512,3 +2512,49 @@
   ため、HWEP編集が実際に音に反映されるかも未検証。
 - 次にやること: 利用者にSSG/EPSG/DCSG/SAA/SCCの各編集画面の表示と、
   HWEP編集がFITOM_X接続時に音へ反映されるかを実機確認してもらう。
+
+### 2026-08-19 (同マシン、チップ別パラメータ定義への全面移行、D-057)
+- やったこと: FITOM_X に新設された `spec/chip-capabilities.json`(チップ
+  種別ごとのパラメータ定義)を採用し、手書きのチップ別範囲テーブルを
+  全廃した。利用者の指示により方式A(実行時読み込み)でフェーズ1-3を
+  一括実装。詳細は `docs/DESIGN.md` D-057。
+  - `fpe::ChipCapabilities`(`include/fpe/ChipCapabilities.h` /
+    `src/ChipCapabilities.cpp`)を新設。同期コピーを `spec/` に置き
+    (`spec/README.md` に更新手順)、上位方向探索で読む。GUI ビルド時は
+    実行ファイルの隣にもコピーする。
+  - `apps/gui/main.cpp` の手書き範囲テーブル約350行を削除し、
+    `buildVoiceRanges()`/`buildOpRanges()` に置き換えた。対応チップが
+    11→31 に増え、`generic*Ranges()` の 0-99 フォールバックは消えた。
+  - **手書きテーブルの誤りが5件見つかり修正した**(ドライバのソースでも
+    裏を取った): OPN/OPN2 の `AM` を未使用扱いしていた / OPZ の `REV` が
+    0-15(実際は0-7)/ OPZ の `EGS` の実効範囲 0-3 / OPL系 `AR/DR/SR` の
+    刻み2 / OPLL の `ALG` を D-056 で無条件非表示にしたが実際は
+    `ALG_EXT` bit0 依存。
+  - `effective_range`/`quantum`/`condition`/`values[]`/`bits[]`/
+    `operator_count` をUIに反映。SSGで `EGT` bit3 を立てると AR〜RR が
+    灰色になり HWEP が活性化する、といった連動が自動で効く。
+    ALG/FIX/デューティ比などがシンボルのドロップダウンになった。
+  - UIが無かった `ext.FIX`・`ext.ALG_EXT`・`ext.target_voice_patch_type`
+    を追加した。
+  - 保存時に、そのチップが読まないフィールドを省くようにした
+    (`pruneHwPatchJson()` を `to_json(HwBank)` で適用)。**ただし
+    デフォルト値でないキーは未使用でも必ず残す**。実データ検査で
+    OPN2 タグのパッチ109件が非ゼロの `PMS` を持つのに仕様書側に AMS/PMS
+    が無いことが判明したため(下記)。実データ58バンクでの計測では
+    出力キー数 318,022 → 193,351(39%削減)で、FITOM_X 自身のファイルの
+    187,123 キーにほぼ一致する。
+  - `effectiveVoicePatchType()` をGUIからデータモデル層へ移動。範囲・
+    表示・省略の3経路すべてが PSG系共有バンクを正しく扱う。
+  - ビルド(警告なし)・`ctest`(235→305項目、全通過)を確認。
+- 未完了・既知の問題:
+  - **FITOM_X 側へ確認したい点が2つある。**(1) `chip-capabilities.json`
+    の OPN2 に AMS/PMS が無いが、`../FITOM_staging` の OPN2 タグのバンクに
+    非ゼロの `PMS` を持つパッチが109件ある。バンクのタグ違いか仕様書の
+    漏れか。(2) `per_op` の意味。「列挙されたオペレータでのみ有効」と
+    解釈したが(OPL3の`PDT`=ops0/2、OPLLの`TL`=全op、の両方に一致するのは
+    この解釈のみ)、仕様書の文言は「上書き定義」となっている。
+  - 表示の目視確認は未実施(`CLAUDE.md` の方針により、利用者の確認待ち)。
+    特に、新設した FIX/ALG_EXT/対象チップの各コントロールと、条件による
+    灰色表示の切り替わりは実際の画面で見ていない。
+- 次にやること: 上記2点を FITOM_X 側で確認する。仕様書が更新されたら
+  `spec/chip-capabilities.json` を差し替えて `ctest` を通す。

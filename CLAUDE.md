@@ -147,8 +147,14 @@ Claude Codeにはマシンをまたいだ記憶がないため、**gitリポジ�
 - C++17。`nlohmann::json` の `to_json`/`from_json` フリー関数パターン
   (ADL)を各構造体に用意する。
 - JSON読み込みは緩く(欠落フィールドはドキュメント記載のデフォルト値
-  にフォールバック)、書き込みは明示的に(正規のフィールド一式を常に
-  出力)。詳細は `README.md` の「設計上のポイント」。
+  にフォールバック)。書き込みは、`*.hwbank.json`のみ
+  `spec/chip-capabilities.json`を見てそのチップが読まないフィールドを
+  省き(デフォルト値でないキーは必ず残す)、それ以外は正規のフィールド
+  一式を出力する。詳細は `README.md` の「設計上のポイント」。
+- チップごとのパラメータ範囲・未使用判定・有効条件を**コードに手書き
+  しない**。`spec/chip-capabilities.json`(FITOM_X `spec/` からの同期
+  コピー)が唯一の情報源で、`fpe::ChipCapabilities` 経由で読む。
+  FITOM_X側が更新されたらコピーを差し替えて `ctest` を通す。
 - サードパーティ依存はすべて vcpkg マニフェストモード
   (`vcpkg.json`)経由。リポジトリにベンダリング・submodule化しない
   (理由は `docs/DESIGN.md` 参照)。

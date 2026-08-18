@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "fpe/BuiltinVoices.h"
+#include "fpe/ChipCapabilities.h"
 #include "fpe/PatchWorkspace.h"
 #include "fpe/VoicePatchType.h"
 
@@ -610,6 +611,240 @@ static void testSaveOnlyRewritesChangedFiles(const fs::path& scratchDir) {
     CHECK(readFile(drumKitFile) == drumKitBefore);
 }
 
+// spec/chip-capabilities.json (D-057). These checks double as a regression
+// guard on the file itself: if a synced copy from FITOM_X ever changes a
+// range or drops a parameter, the ones asserted here fail loudly instead of
+// silently changing what the editor offers.
+static void testChipCapabilities() {
+    const fpe::ChipCapabilities& caps = fpe::ChipCapabilities::instance();
+    CHECK(caps.loaded());
+    if (!caps.loaded()) {
+        std::fprintf(stderr, "  (chip-capabilities load error: %s)\n", caps.loadError().c_str());
+        return;
+    }
+    CHECK(caps.chips().size() >= 30);
+
+    // A chip's params[] is exhaustive: what is absent is never read.
+    const fpe::ChipCaps* ssg = caps.chip(fpe::VoicePatchType::SSG);
+    CHECK(ssg != nullptr);
+    if (ssg) {
+        CHECK(ssg->kind == fpe::ChipPatchKind::Fm);
+        CHECK(ssg->operatorCount.value_or(0) == 1);
+        CHECK(ssg->params.count("ALG") == 1);
+        CHECK(ssg->params.count("NFQ") == 1);
+        CHECK(ssg->params.count("HWEP") == 1);
+        CHECK(ssg->params.count("FB") == 0);   // no feedback path on plain SSG
+        CHECK(ssg->params.count("MUL") == 0);
+        CHECK(ssg->params.count("WS") == 0);
+    }
+    // DSG has no user voices at all; SCC reads no channel-level field.
+    const fpe::ChipCaps* dsg = caps.chip(fpe::VoicePatchType::DSG);
+    CHECK(dsg && dsg->kind == fpe::ChipPatchKind::BuiltinRom);
+    const fpe::ChipCaps* scc = caps.chip(fpe::VoicePatchType::SCC);
+    CHECK(scc && scc->params.count("ALG") == 0 && scc->params.count("WS") == 1);
+
+    // same_params_as is resolved at load, not deferred to callers.
+    const fpe::ChipCaps* opz = caps.chip(fpe::VoicePatchType::OPZ);
+    const fpe::ChipCaps* opz2 = caps.chip(fpe::VoicePatchType::OPZ2);
+    CHECK(opz && opz2 && opz->params.size() == opz2->params.size());
+    CHECK(opz2 && opz2->params.count("EGS") == 1);
+    const fpe::ChipCaps* vrc7 = caps.chip(fpe::VoicePatchType::VRC7);
+    CHECK(vrc7 && vrc7->params.count("ALG_EXT") == 1);
+
+    fpe::HwPatch p;
+    p.ops.resize(4);
+
+    // Ranges the editor used to hand-maintain, including the three its own
+    // tables had wrong before this file existed (D-057).
+    auto range = [&](fpe::VoicePatchType t, const char* name, int op) {
+        return caps.resolve(t, name, p, op);
+    };
+    const auto opnAm = range(fpe::VoicePatchType::OPN, "AM", 0);
+    CHECK(opnAm && opnAm->maxV == 1); // was marked "unused" by the old table
+    const auto opzRev = range(fpe::VoicePatchType::OPZ, "REV", 0);
+    CHECK(opzRev && opzRev->maxV == 7); // old table said 15
+    const auto opzEgs = range(fpe::VoicePatchType::OPZ, "EGS", 0);
+    CHECK(opzEgs && opzEgs->maxV == 127 && opzEgs->effMax == 3);
+    const auto oplAr = range(fpe::VoicePatchType::OPL, "AR", 0);
+    CHECK(oplAr && oplAr->maxV == 31 && oplAr->quantum == 2);
+    const auto oplTl = range(fpe::VoicePatchType::OPL, "TL", 0);
+    CHECK(oplTl && oplTl->effMax == 63);
+    const auto ssgTl = range(fpe::VoicePatchType::SSG, "TL", 0);
+    CHECK(ssgTl && ssgTl->maxV == 127 && ssgTl->effMax == 63 && ssgTl->quantum == 4);
+    const auto epsgWs = range(fpe::VoicePatchType::EPSG, "WS", 0);
+    CHECK(epsgWs && epsgWs->maxV == 15 && epsgWs->effMax == 8 && epsgWs->values != nullptr);
+
+    // condition: SSG's software envelope and its HW envelope period are
+    // mutually exclusive, switched by EGT bit3 on the same operator.
+    p.ops[0].EGT = 0;
+    CHECK(range(fpe::VoicePatchType::SSG, "AR", 0)->active == true);
+    CHECK(range(fpe::VoicePatchType::SSG, "HWEP", -1)->active == false);
+    p.ops[0].EGT = 8;
+    CHECK(range(fpe::VoicePatchType::SSG, "AR", 0)->active == false);
+    CHECK(range(fpe::VoicePatchType::SSG, "HWEP", -1)->active == true);
+    p.ops[0].EGT = 0;
+
+    // condition on a channel-scope field: SSG's noise period only matters
+    // when ALG selects noise.
+    p.hw.ALG = 0;
+    CHECK(range(fpe::VoicePatchType::SSG, "NFQ", -1)->active == false);
+    p.hw.ALG = 2;
+    CHECK(range(fpe::VoicePatchType::SSG, "NFQ", -1)->active == true);
+
+    // A `channels`-only condition must NOT gate the control - the patch's own
+    // value is what routes it to that channel in the first place.
+    const auto opnFix = range(fpe::VoicePatchType::OPN, "FIX", -1);
+    CHECK(opnFix && opnFix->active == true && opnFix->values != nullptr);
+    CHECK(opnFix && opnFix->channels != nullptr);
+
+    // per_op: OPL3's pseudo-detune exists only on each pair's lead operator.
+    CHECK(range(fpe::VoicePatchType::OPL3, "PDT", 0).has_value());
+    CHECK(!range(fpe::VoicePatchType::OPL3, "PDT", 1).has_value());
+    CHECK(range(fpe::VoicePatchType::OPL3, "PDT", 2).has_value());
+    CHECK(!range(fpe::VoicePatchType::OPL3, "PDT", 3).has_value());
+    // per_op overrides: OPLL's carrier TL is coarser than its modulator's.
+    const auto opllTl0 = range(fpe::VoicePatchType::OPLL, "TL", 0);
+    const auto opllTl1 = range(fpe::VoicePatchType::OPLL, "TL", 1);
+    CHECK(opllTl0 && opllTl1 && opllTl0->quantum == 1 && opllTl1->quantum == 4);
+
+    // per_condition: EPSG's DR is repurposed as a HW envelope period nibble.
+    p.ops[0].EGT = 0;
+    const auto epsgDrSw = range(fpe::VoicePatchType::EPSG, "DR", 0);
+    CHECK(epsgDrSw && epsgDrSw->effMax == 31);
+    p.ops[0].EGT = 8;
+    const auto epsgDrHw = range(fpe::VoicePatchType::EPSG, "DR", 0);
+    CHECK(epsgDrHw && epsgDrHw->effMax == 15);
+    p.ops[0].EGT = 0;
+
+    // operator_count, including OPL_RHY's per-instrument variation (only the
+    // bass drum is a 2-operator voice).
+    CHECK(caps.operatorCount(fpe::VoicePatchType::OPM, p) == 4);
+    CHECK(caps.operatorCount(fpe::VoicePatchType::OPLL, p) == 2);
+    p.ext.rhythm_ch = 0;
+    CHECK(caps.operatorCount(fpe::VoicePatchType::OPL_RHY, p) == 1);
+    p.ext.rhythm_ch = 4;
+    CHECK(caps.operatorCount(fpe::VoicePatchType::OPL_RHY, p) == 2);
+    p.ext.rhythm_ch = 255;
+    CHECK(caps.operatorCount(fpe::VoicePatchType::OPL_RHY, p) == 0); // unset
+
+    // An unknown/reserved type must resolve to nothing rather than throwing.
+    CHECK(caps.chip(fpe::VoicePatchType::None) == nullptr);
+    CHECK(!caps.resolve(fpe::VoicePatchType::None, "FB", p, -1).has_value());
+}
+
+// Saving a bank drops the fields its chip never reads, so the editor's output
+// matches the field set FITOM_X's own writer produces (D-057).
+static void testHwBankPruning() {
+    if (!fpe::ChipCapabilities::instance().loaded()) return;
+
+    fpe::HwBank bank;
+    bank.name = "prune";
+    bank.voicePatchType = fpe::VoicePatchType::SSG;
+    fpe::HwPatch p;
+    p.prog = 0;
+    p.name = "ssg";
+    p.hw.ALG = 2;
+    p.hw.NFQ = 9;
+    // FB/AMS/PMS/FB2 and the operator's MUL/KSR/WS are all meaningless on
+    // SSG and left at their defaults here, which is what makes them
+    // droppable - the "non-default values survive anyway" rule has its own
+    // case further down.
+    p.ops.resize(1);
+    p.ops[0].AR = 31;
+    p.ops[0].TL = 12;
+    p.ext.HWEP = 4096;
+    p.ext.target_voice_patch_type = fpe::VoicePatchType::SSG;
+    bank.patches.push_back(p);
+
+    const nlohmann::json j = bank;
+    const nlohmann::json& pj = j.at("patches").at(0);
+    CHECK(pj.contains("ALG") && pj.contains("NFQ"));
+    CHECK(!pj.contains("FB"));
+    CHECK(!pj.contains("AMS") && !pj.contains("PMS") && !pj.contains("FB2"));
+    const nlohmann::json& op = pj.at("ops").at(0);
+    CHECK(op.contains("AR") && op.contains("TL") && op.contains("EGT"));
+    CHECK(!op.contains("MUL") && !op.contains("KSR") && !op.contains("WS"));
+    CHECK(pj.at("ext").contains("HWEP"));
+    CHECK(pj.at("ext").contains("target_voice_patch_type"));
+    CHECK(!pj.at("ext").contains("rhythm_ch") && !pj.at("ext").contains("FIX"));
+    // prog/name/sw_bank/sw_prog are chip-independent and always written.
+    CHECK(pj.contains("prog") && pj.contains("name") && pj.contains("sw_bank"));
+
+    // SCC reads no channel-level field and has no hardware envelope, so its
+    // "ext" collapses to just the shared-PSG-bank target and the channel
+    // keys vanish entirely.
+    // The patch's own target has to move too: inside the shared PSG bank
+    // namespace it, not the bank tag, decides the chip (see below). The
+    // channel fields are cleared first because a non-default value is kept
+    // regardless of the chip - see the OPN2 case further down.
+    bank.voicePatchType = fpe::VoicePatchType::SCC;
+    bank.patches[0].ext.target_voice_patch_type = fpe::VoicePatchType::SCC;
+    bank.patches[0].hw = fpe::FmHwVoice{};
+    bank.patches[0].ext.HWEP = 0;
+    const nlohmann::json sccJson = bank;
+    const nlohmann::json& sp = sccJson.at("patches").at(0);
+    CHECK(!sp.contains("ALG") && !sp.contains("NFQ") && !sp.contains("FB"));
+    CHECK(sp.at("ops").at(0).contains("WS"));
+    CHECK(!sp.at("ops").at(0).contains("EGT")); // no HW envelope generator
+
+    // PSG shared bank: pruning must follow the patch's own target chip, not
+    // the bank tag, or an EPSG patch parked in an SSG-tagged bank (which is
+    // how ../FITOM_staging really ships them) loses the two fields only EPSG
+    // uses - FB as the extended noise frequency's high bits, WS as the duty
+    // ratio.
+    bank.voicePatchType = fpe::VoicePatchType::SSG;
+    bank.patches[0].ext.target_voice_patch_type = fpe::VoicePatchType::EPSG;
+    bank.patches[0].ext.HWEP = 0;
+    bank.patches[0].hw.FB = 3;
+    bank.patches[0].ops[0].WS = 4;
+    const nlohmann::json epsgJson = bank;
+    const nlohmann::json& ep = epsgJson.at("patches").at(0);
+    CHECK(ep.contains("FB"));
+    CHECK(ep.at("FB").get<int>() == 3);
+    CHECK(ep.at("ops").at(0).contains("WS"));
+    CHECK(ep.at("ops").at(0).at("WS").get<int>() == 4);
+    // EPSG's HW envelope comes from SL/RR/DR/SR, not HWEP - and this patch
+    // left HWEP at 0, so nothing is lost by dropping it.
+    CHECK(!ep.at("ext").contains("HWEP"));
+    CHECK(fpe::effectiveVoicePatchType(fpe::VoicePatchType::SSG, bank.patches[0]) ==
+          fpe::VoicePatchType::EPSG);
+    // Outside the PSG family the bank tag always wins, even if a stray
+    // target_voice_patch_type is set.
+    CHECK(fpe::effectiveVoicePatchType(fpe::VoicePatchType::OPM, bank.patches[0]) ==
+          fpe::VoicePatchType::OPM);
+
+    // Pruning never destroys information: a field the chip does not read is
+    // dropped only while it still holds its default. This guards against the
+    // spec being incomplete for a chip - real staging data has OPN2 patches
+    // carrying a non-zero PMS that chip-capabilities.json does not list.
+    fpe::HwBank keep;
+    keep.voicePatchType = fpe::VoicePatchType::OPN2;
+    fpe::HwPatch kp;
+    kp.prog = 0;
+    kp.ops.resize(4);
+    kp.hw.PMS = 6;   // not in OPN2's params[], but set
+    kp.hw.AMS = 0;   // not in params[] and at its default
+    kp.ops[0].WS = 3; // OPN reads no waveform select, but this one is set
+    keep.patches.push_back(kp);
+    const nlohmann::json keepJson = keep;
+    const nlohmann::json& kj = keepJson.at("patches").at(0);
+    CHECK(kj.contains("PMS") && kj.at("PMS").get<int>() == 6);
+    CHECK(!kj.contains("AMS"));
+    CHECK(kj.at("ops").at(0).contains("WS"));
+    CHECK(!kj.at("ops").at(1).contains("WS")); // still default on the others
+
+    // A builtin-reference entry has no hw/ops/ext half to prune at all.
+    fpe::HwBank meta;
+    meta.voicePatchType = fpe::VoicePatchType::OPLL;
+    fpe::HwPatch ref;
+    ref.prog = 1;
+    ref.builtin = fpe::BuiltinRef{"OPLL", 3};
+    meta.patches.push_back(ref);
+    const nlohmann::json metaJson = meta;
+    CHECK(metaJson.at("patches").at(0).contains("builtin"));
+    CHECK(!metaJson.at("patches").at(0).contains("ops"));
+}
+
 static void testDefaults() {
     // Fields not present in the JSON must fall back to the documented
     // defaults rather than erroring.
@@ -632,6 +867,8 @@ static void testDefaults() {
 
 int main() {
     testVoicePatchType();
+    testChipCapabilities();
+    testHwBankPruning();
     testBuiltinVoices();
     testDefaults();
 

@@ -37,6 +37,7 @@ find_package(nlohmann_json CONFIG REQUIRED)
 # --- fpe_data: the JSON data-model / I/O library -------------------------
 add_library(fpe_data STATIC
   src/VoicePatchType.cpp
+  src/ChipCapabilities.cpp
   src/BuiltinVoices.cpp
   src/HwPatch.cpp
   src/SwPatch.cpp
@@ -120,4 +121,13 @@ if(FPE_BUILD_GUI)
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets"
             "$<TARGET_FILE_DIR:fitom_patch_editor_gui>/assets")
+
+  # spec/chip-capabilities.json (FITOM_X's machine-readable per-chip
+  # parameter capabilities, D-057) is located by the same kind of upward
+  # search, so it ships next to the executable for the same reason assets/
+  # does - a launch whose CWD is the exe's own directory has to find it.
+  add_custom_command(TARGET fitom_patch_editor_gui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/spec"
+            "$<TARGET_FILE_DIR:fitom_patch_editor_gui>/spec")
 endif()
