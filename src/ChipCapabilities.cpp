@@ -67,15 +67,19 @@ void applyParamBody(const json& j, ParamCaps& p) {
     if (present) {
         p.minV = lo;
         p.maxV = hi;
-        // A new range resets any inherited effective_range, which was
-        // expressed against the old one.
-        p.effMin = lo;
-        p.effMax = hi;
+        // Only an inferred effective_range follows the new range; one that
+        // was stated explicitly (here or by a parent) survives, per the
+        // spec's "keys the branch omits come from the parent" rule.
+        if (!p.effExplicit) {
+            p.effMin = lo;
+            p.effMax = hi;
+        }
     }
     readRange(j, "effective_range", lo, hi, present);
     if (present) {
         p.effMin = lo;
         p.effMax = hi;
+        p.effExplicit = true;
     }
     if (j.contains("quantum")) p.quantum = std::max(1, j.at("quantum").get<int>());
     if (j.contains("mapping")) p.mapping = j.at("mapping").get<std::string>();

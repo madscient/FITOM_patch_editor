@@ -79,6 +79,13 @@ struct ParamCaps {
     // Equal to minV/maxV when the spec declares none.
     int effMin = 0;
     int effMax = 0;
+    // Whether some level of the definition stated effective_range outright.
+    // A per_op/per_condition branch that narrows `range` alone must keep an
+    // effective_range its parent declared, since the spec resolves branches
+    // by layering them onto the parent and inheriting every key the branch
+    // omits - so "range was respecified" is not on its own a reason to drop
+    // an inherited effective_range.
+    bool effExplicit = false;
     // quantum: patch-value step corresponding to one hardware register step.
     int quantum = 1;
     std::string mapping; // direct / attenuation_db / bitfield / enum / index / raw

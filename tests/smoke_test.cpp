@@ -732,6 +732,54 @@ static void testChipCapabilities() {
     CHECK(!caps.resolve(fpe::VoicePatchType::None, "FB", p, -1).has_value());
 }
 
+// per_op / per_condition resolve by layering the branch onto the parent, so
+// a key the branch omits keeps the parent's value (FITOM_X spec/README.md,
+// "分岐する定義"). Exercised on a synthetic file because the real one happens
+// to state effective_range on every branch that restates range - the rule
+// still has to hold, or a future sync silently widens a slider.
+static void testCapabilityBranchInheritance() {
+    const fs::path file = fs::temp_directory_path() / "fpe_caps_branch" / "spec" /
+                          "chip-capabilities.json";
+    fs::create_directories(file.parent_path());
+    {
+        std::ofstream out(file);
+        out << R"({
+          "format": "fitom-chip-capabilities",
+          "format_version": 1,
+          "parameters": { "TL": {"scope":"operator","path":"ops[i].TL","schema_range":[0,127]},
+                          "DR": {"scope":"operator","path":"ops[i].DR","schema_range":[0,31]} },
+          "chips": [{
+            "id":"TESTCHIP","voice_patch_type":16,"patch_kind":"fm","operator_count":2,
+            "params": {
+              "TL": {"range":[0,127],"effective_range":[0,63],"quantum":2,
+                     "per_op":{"0":{},"1":{"range":[0,100]}}},
+              "DR": {"range":[0,31],"effective_range":[0,15],
+                     "per_condition":[{"condition":{"param":"TL","mask":1,"equals":0},
+                                       "quantum":4}]}
+            }
+          }]
+        })";
+    }
+    fpe::ChipCapabilities caps;
+    CHECK(caps.loadFromFile(file));
+
+    fpe::HwPatch p;
+    p.ops.resize(2);
+    const auto op0 = caps.resolve(fpe::VoicePatchType::OPN, "TL", p, 0);
+    CHECK(op0 && op0->maxV == 127 && op0->effMax == 63 && op0->quantum == 2);
+    // The branch restates only `range`; effective_range and quantum come from
+    // the parent rather than being reset to the branch's range.
+    const auto op1 = caps.resolve(fpe::VoicePatchType::OPN, "TL", p, 1);
+    CHECK(op1 && op1->maxV == 100);
+    CHECK(op1 && op1->effMax == 63);
+    CHECK(op1 && op1->quantum == 2);
+    // Same layering for per_condition.
+    const auto dr = caps.resolve(fpe::VoicePatchType::OPN, "DR", p, 0);
+    CHECK(dr && dr->maxV == 31 && dr->effMax == 15 && dr->quantum == 4);
+
+    fs::remove_all(file.parent_path().parent_path());
+}
+
 // Saving a bank drops the fields its chip never reads, so the editor's output
 // matches the field set FITOM_X's own writer produces (D-057).
 static void testHwBankPruning() {
@@ -868,6 +916,7 @@ static void testDefaults() {
 int main() {
     testVoicePatchType();
     testChipCapabilities();
+    testCapabilityBranchInheritance();
     testHwBankPruning();
     testBuiltinVoices();
     testDefaults();
