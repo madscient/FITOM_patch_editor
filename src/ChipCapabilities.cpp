@@ -83,6 +83,7 @@ void applyParamBody(const json& j, ParamCaps& p) {
     }
     if (j.contains("quantum")) p.quantum = std::max(1, j.at("quantum").get<int>());
     if (j.contains("mapping")) p.mapping = j.at("mapping").get<std::string>();
+    if (j.contains("driver_support")) p.driverSupport = j.at("driver_support").get<std::string>();
     if (j.contains("note")) p.note = j.at("note").get<std::string>();
     if (j.contains("values") && j.at("values").is_array()) {
         p.values.clear();
@@ -386,6 +387,7 @@ std::optional<ResolvedParam> ChipCapabilities::resolve(VoicePatchType t, const s
     r.effMax = eff->effMax;
     r.quantum = eff->quantum;
     r.mapping = eff->mapping;
+    r.driverSupport = eff->driverSupport;
     r.note = eff->note;
     r.values = eff->values.empty() ? nullptr : &eff->values;
     r.bits = eff->bits.empty() ? nullptr : &eff->bits;

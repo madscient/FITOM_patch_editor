@@ -674,6 +674,21 @@ static void testChipCapabilities() {
     const auto epsgWs = range(fpe::VoicePatchType::EPSG, "WS", 0);
     CHECK(epsgWs && epsgWs->maxV == 15 && epsgWs->effMax == 8 && epsgWs->values != nullptr);
 
+    // driver_support == "pending": the chip has the parameter and a patch may
+    // legitimately carry a value, but the driver does not act on it yet. It
+    // must stay editable and must never be pruned - ../FITOM_staging has 109
+    // OPN2-tagged patches with a non-zero PMS.
+    const auto opn2Pms = range(fpe::VoicePatchType::OPN2, "PMS", -1);
+    CHECK(opn2Pms && opn2Pms->maxV == 7);
+    CHECK(opn2Pms && opn2Pms->driverPending());
+    CHECK(opn2Pms && opn2Pms->active); // pending is not a condition
+    const auto opn2Ams = range(fpe::VoicePatchType::OPN2, "AMS", -1);
+    CHECK(opn2Ams && opn2Ams->maxV == 3 && opn2Ams->driverPending());
+    // OPN (YM2203) has no hardware LFO at all, so it stays absent there.
+    CHECK(!range(fpe::VoicePatchType::OPN, "PMS", -1).has_value());
+    // A normally-supported parameter must not be flagged.
+    CHECK(!range(fpe::VoicePatchType::OPM, "PMS", -1)->driverPending());
+
     // condition: SSG's software envelope and its HW envelope period are
     // mutually exclusive, switched by EGT bit3 on the same operator.
     p.ops[0].EGT = 0;
@@ -861,25 +876,38 @@ static void testHwBankPruning() {
     CHECK(fpe::effectiveVoicePatchType(fpe::VoicePatchType::OPM, bank.patches[0]) ==
           fpe::VoicePatchType::OPM);
 
-    // Pruning never destroys information: a field the chip does not read is
-    // dropped only while it still holds its default. This guards against the
-    // spec being incomplete for a chip - real staging data has OPN2 patches
-    // carrying a non-zero PMS that chip-capabilities.json does not list.
+    // A driver-pending field is a real parameter of the chip, so it is kept
+    // whatever its value - including at its default, unlike a field the chip
+    // has no notion of.
+    fpe::HwBank pend;
+    pend.voicePatchType = fpe::VoicePatchType::OPN2;
+    fpe::HwPatch pp;
+    pp.prog = 0;
+    pp.ops.resize(4);
+    pp.hw.PMS = 6;
+    pend.patches.push_back(pp);
+    const nlohmann::json pendJson = pend;
+    CHECK(pendJson.at("patches").at(0).at("PMS").get<int>() == 6);
+    CHECK(pendJson.at("patches").at(0).contains("AMS")); // kept at its default too
+
+    // Pruning never destroys information: a field the chip has no notion of
+    // is dropped only while it still holds its default. A non-default value
+    // survives regardless, so an incomplete spec entry can never turn into
+    // silent data loss on save.
     fpe::HwBank keep;
     keep.voicePatchType = fpe::VoicePatchType::OPN2;
     fpe::HwPatch kp;
     kp.prog = 0;
     kp.ops.resize(4);
-    kp.hw.PMS = 6;   // not in OPN2's params[], but set
-    kp.hw.AMS = 0;   // not in params[] and at its default
-    kp.ops[0].WS = 3; // OPN reads no waveform select, but this one is set
+    kp.hw.FB2 = 5;    // not in OPN2's params[], but set
+    kp.ops[0].WS = 3; // OPN2 reads no waveform select, but this one is set
     keep.patches.push_back(kp);
     const nlohmann::json keepJson = keep;
     const nlohmann::json& kj = keepJson.at("patches").at(0);
-    CHECK(kj.contains("PMS") && kj.at("PMS").get<int>() == 6);
-    CHECK(!kj.contains("AMS"));
+    CHECK(kj.contains("FB2") && kj.at("FB2").get<int>() == 5);
     CHECK(kj.at("ops").at(0).contains("WS"));
     CHECK(!kj.at("ops").at(1).contains("WS")); // still default on the others
+    CHECK(!kj.at("ops").at(1).contains("KSL")); // OPN2 has no key-scale level
 
     // A builtin-reference entry has no hw/ops/ext half to prune at all.
     fpe::HwBank meta;

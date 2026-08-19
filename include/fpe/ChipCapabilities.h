@@ -89,6 +89,12 @@ struct ParamCaps {
     // quantum: patch-value step corresponding to one hardware register step.
     int quantum = 1;
     std::string mapping; // direct / attenuation_db / bitfield / enum / index / raw
+    // driver_support: empty (the normal case) means the driver writes this to
+    // a register. "pending" means the chip really has the parameter and a
+    // patch may legitimately carry a value for it, but the current driver
+    // does not act on it yet. The spec is explicit that such a value must be
+    // preserved and stay editable - it is not an error and not dead data.
+    std::string driverSupport;
     std::string note;
     std::vector<ParamEnumValue> values;
     std::vector<ParamBit> bits;
@@ -130,6 +136,7 @@ struct ResolvedParam {
     int effMax = 0;
     int quantum = 1;
     std::string mapping;
+    std::string driverSupport;
     std::string note;
     const std::vector<ParamEnumValue>* values = nullptr;
     const std::vector<ParamBit>* bits = nullptr;
@@ -140,6 +147,12 @@ struct ResolvedParam {
     // missing from `params` entirely, this one becomes live again if the
     // controlling field changes.
     bool active = true;
+
+    // True while the driver ignores this parameter (driver_support ==
+    // "pending"). Distinct from !active: the value is not conditional on
+    // anything, it simply has no audible effect yet, so the control stays
+    // enabled and only the label/tooltip says so.
+    bool driverPending() const { return driverSupport == "pending"; }
 };
 
 class ChipCapabilities {

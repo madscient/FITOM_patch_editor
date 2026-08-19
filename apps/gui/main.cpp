@@ -2846,6 +2846,11 @@ struct FieldRange {
     const std::vector<fpe::ParamBit>* bits = nullptr;
     const std::vector<int>* channels = nullptr;
     std::string note;
+    // The chip has this parameter but FITOM_X's driver does not act on it
+    // yet (spec driver_support == "pending"). The spec requires such a value
+    // to stay editable and be preserved, so this only marks the label - it
+    // never disables the control or hides it.
+    bool driverPending = false;
 };
 struct HwVoiceFieldRanges {
     FieldRange FB, ALG, AMS, PMS, NFQ, FB2, HWEP, FIX, ALG_EXT, TARGET;
@@ -2900,7 +2905,16 @@ FieldRange capsField(fpe::VoicePatchType t, const char* name, const fpe::HwPatch
     r.bits = resolved->bits;
     r.channels = resolved->channels;
     r.note = resolved->note;
+    r.driverPending = resolved->driverPending();
     return r;
+}
+
+// Marks a driver-pending field in the visible label while keeping the ImGui
+// ID stable (the "##id" suffix), so widget state does not reset when the
+// marker appears or goes away.
+std::string decoratedLabel(const char* label, const FieldRange& r) {
+    if (!r.driverPending) return label;
+    return std::string(label) + " *##" + label;
 }
 
 HwVoiceFieldRanges buildVoiceRanges(fpe::VoicePatchType t, const fpe::HwPatch& patch) {
@@ -3519,6 +3533,10 @@ std::string fieldTooltip(const FieldRange& r) {
         if (!s.empty()) s += "\n";
         s += t;
     };
+    if (r.driverPending) {
+        line("* このチップにはあるパラメータですが、FITOM_X のドライバがまだ対応していません。\n"
+             "  値は音色データとして保持されるので設定して構いませんが、現時点では音に反映されません。");
+    }
     if (!r.active) line("現在の設定では参照されません(他のフィールドの条件を満たしていません)。");
     line(r.note);
     if (r.effMin != r.minV || r.effMax != r.maxV) {
@@ -3567,7 +3585,7 @@ void sliderU8Ranged(const char* label, uint8_t& field, const FieldRange& range) 
     const int lo = fieldDisplayMin(range, field);
     const int hi = fieldDisplayMax(range, field);
     int v = field;
-    if (ImGui::SliderInt(label, &v, lo, hi)) {
+    if (ImGui::SliderInt(decoratedLabel(label, range).c_str(), &v, lo, hi)) {
         field = static_cast<uint8_t>(std::clamp(snapToQuantum(v, range), range.minV, range.maxV));
     }
     if (disabled) ImGui::EndDisabled();
@@ -3576,7 +3594,7 @@ void sliderU8Ranged(const char* label, uint8_t& field, const FieldRange& range) 
 void inputU8Ranged(const char* label, uint8_t& field, const FieldRange& range) {
     const bool disabled = !range.used || !range.active;
     if (disabled) ImGui::BeginDisabled();
-    inputU8(label, field, range.minV, range.maxV);
+    inputU8(decoratedLabel(label, range).c_str(), field, range.minV, range.maxV);
     if (disabled) ImGui::EndDisabled();
     applyFieldTooltip(range);
 }
@@ -3614,7 +3632,7 @@ void enumU8Ranged(const char* label, uint8_t& field, const FieldRange& range) {
             break;
         }
     }
-    if (ImGui::BeginCombo(label, preview.c_str())) {
+    if (ImGui::BeginCombo(decoratedLabel(label, range).c_str(), preview.c_str())) {
         for (const auto& v : *range.values) {
             const bool selected = (v.value == static_cast<int>(field));
             if (ImGui::Selectable(v.label.c_str(), selected)) field = static_cast<uint8_t>(v.value);
