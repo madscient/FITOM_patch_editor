@@ -48,10 +48,12 @@ GUIはFITOM_X本体と同じくDear ImGui(GLFW + OpenGL3バックエンド)。
 ## セッション開始時に読むもの(この順番で)
 
 1. `git pull`(またはそれに相当する最新化)をまず行う。
-2. このファイル(`CLAUDE.md`)全体。
-3. `docs/STATUS.md` の「進捗ログ」— 直近のセッションで何が行われ、
+2. `git var GIT_AUTHOR_IDENT` で、このクローンのコミットidentityが
+   設定済みか確認する(下記「複数マシン開発のためのルール」6)。
+3. このファイル(`CLAUDE.md`)全体。
+4. `docs/STATUS.md` の「進捗ログ」— 直近のセッションで何が行われ、
    次に何をする予定だったかを確認する。
-4. 着手するタスクに関係する範囲で `docs/DESIGN.md` / `README.md`。
+5. 着手するタスクに関係する範囲で `docs/DESIGN.md` / `README.md`。
 
 チャット履歴・メモリに頼らず、常にこの3点セットを一次情報源として
 扱ってください。別マシンの別セッションでの作業内容は、コミットされて
@@ -132,6 +134,21 @@ Claude Codeにはマシンをまたいだ記憶がないため、**gitリポジ�
 `wc -l`/`tail`/`git diff`等で内容が壊れていないか必ず確認する習慣を
 つけてください。同様の問題に遭遇したら、その都度ここか
 `docs/DESIGN.md`に追記してください。
+
+### 6. コミットのidentityはクローンごとに設定する
+
+このリポジトリのコミットは、どのマシンからでも同じ author/committer
+(GitHubアカウント `madscient` のもの)で行う。identityはgitの設定で
+あってリポジトリの内容ではないため、クローンしても引き継がれない。
+マシンのグローバル設定(`~/.gitconfig`)は別のidentityになっていることが
+あるので、各クローンで一度、リポジトリローカルに設定する。
+
+```bash
+git log -1 --format='%an <%ae>' origin/main   # 設定すべき値(直近のコミットと同じもの)
+git config --local user.name  "<上の名前>"
+git config --local user.email "<上のメールアドレス>"
+git var GIT_AUTHOR_IDENT                      # 設定後の確認。上と同じ名前・アドレスになること
+```
 
 ### 進捗ログのフォーマット(`docs/STATUS.md`に追記する際)
 

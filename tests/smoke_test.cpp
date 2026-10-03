@@ -154,7 +154,7 @@ static void testBuiltinVoices() {
     CHECK(rom.valid);
     CHECK(rom.variant == VoicePatchType::OPLLP);
     CHECK(rom.instIndex == 3);
-    CHECK(rom.name == "Electric Guitar"); // f6dfd8d renamed OPLLP index 3 away from "Piano"
+    CHECK(rom.name == "Electric Guitar"); // 74e21ae renamed OPLLP index 3 away from "Piano"
     CHECK(!fpe::opllRomVoiceByProg(0x20).valid);   // instIndex 0 = silence
     CHECK(!fpe::opllRomVoiceByProg(0x40).valid);   // variantSel 4 = undefined
     CHECK(fpe::opllRomVoiceByProg(0x01).name == "Violin");
