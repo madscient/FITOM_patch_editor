@@ -260,10 +260,13 @@
       "voice_patch_type": 33,
       "voice_patch_type_hex": "0x21",
       "display_name": "OPL2 (YM3812)",
-      "devices": ["YM3812"],
+      "devices": ["YM3812", "Y8960(OPL2EX FMコア)"],
       "voice_group": "OPL2",
       "patch_kind": "fm",
       "operator_count": 2,
+      "notes": [
+        "Y8960(MSXカートリッジ)の拡張OPL2部(DEVICE_OPL2EX)はFMコアがYM3812(OPL2)にチャンネルごとの定位(MIDIのCC#10で制御され、HwPatchには現れない)を足したものであり音色データ形式は同一のため、専用のVoicePatchTypeを持たずこのOPL2定義をそのまま共有する。拡張分(内蔵ADPCM-B)はY8950と同一レジスタ配置のためADPCMB定義(voice_patch_type 0x51)側を参照。"
+      ],
       "params": {
         "FB": {"range": [0, 7], "register_bits": 3},
         "ALG": {"range": [0, 1], "register_bits": 1, "mapping": "enum",
@@ -315,7 +318,7 @@
       "voice_patch_type": 35,
       "voice_patch_type_hex": "0x23",
       "display_name": "OPL系内蔵リズムチャンネル",
-      "devices": ["YM3526", "YM3812", "YMF262"],
+      "devices": ["YM3526", "YM3812", "YMF262", "Y8960(OPL2EX)"],
       "voice_group": "RHYTHM",
       "patch_kind": "fm",
       "operator_count": {"variable": true, "range": [1, 2], "by_rhythm_ch": [1, 1, 1, 1, 2]},
@@ -439,6 +442,56 @@
       "notes": ["パラメータ定義はOPLLと同一。内蔵ROM音色の内容のみ異なる。内蔵リズムを持たない。"]
     },
     {
+      "id": "OPLLEX",
+      "voice_patch_type": 44,
+      "voice_patch_type_hex": "0x2c",
+      "display_name": "OPLLEX (Y8960拡張OPLL部)",
+      "devices": ["Y8960"],
+      "voice_group": "OPLL",
+      "patch_kind": "fm",
+      "operator_count": 2,
+      "params": {
+        "ALG_EXT": {"range": [0, 7], "mapping": "bitfield",
+          "bits": [
+            {"mask": 1, "label": "プリセット音色選択(1=チップ内蔵ROM音色、0=ユーザー音色)。意味はOPLLと同一。"},
+            {"mask": 6, "label": "BANK: チャンネル別ROMプリセットバンク選択(0=OPLL/1=OPLL-X/2=OPLL-P/3=VRC7、値0-3を2bit左シフトして格納)。実機レジスタ0x40+ch(ch0-8)へそのまま書かれる。OPLLEX固有の拡張で、標準OPLL系(OPLL/OPLLP/OPLLX/VRC7)には存在しない。"}
+          ],
+          "note": "プリセット音色(bit0=1)ではALGとALG_EXT以外のフィールドは一切参照されない点はOPLLと同じ。ユーザー音色(bit0=0)でもBANK値(bit2-1)はレジスタへ書かれるが、ユーザー音色レジスタ(0x00-0x07)はバンクに依存しないため再生結果には影響しない。"},
+        "ALG": {"range": [0, 7], "mapping": "index", "condition": {"param": "ALG_EXT", "mask": 1, "equals": 1},
+          "note": "選択中のBANK内でのプリセット音色番号。実機は0-15(1-15がROM音色、0はユーザー音色)だが、ALGフィールドのスキーマ上限が7のため、hwbank.jsonから直接指定できるのは0-7まで(OPLLと同じ制約)。ユーザー音色(ALG_EXT bit0=0)ではALGは参照されない。"},
+        "FB": {"range": [0, 7], "register_bits": 3, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "AR": {"range": [0, 31], "quantum": 2, "register_bits": 4, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "DR": {"range": [0, 31], "quantum": 2, "register_bits": 4, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "SL": {"range": [0, 15], "register_bits": 4, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "SR": {"range": [0, 31], "quantum": 2, "register_bits": 4, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0},
+          "note": "OPLLと同じ静的パーカッシブ/サステイン切替(0より大きいとパーカッシブモード)。"},
+        "RR": {"range": [0, 15], "register_bits": 4, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "TL": {"condition": {"param": "ALG_EXT", "mask": 1, "equals": 0},
+          "per_op": {
+            "0": {"range": [0, 127], "effective_range": [0, 63], "register_bits": 6, "mapping": "attenuation_db", "step_db": 0.75,
+              "note": "モジュレータレベル(変調指数)。無視されない。"},
+            "1": {"range": [0, 127], "effective_range": [0, 63], "quantum": 4, "register_bits": 4, "mapping": "attenuation_db", "step_db": 3.0,
+              "note": "キャリア音量。実機が4bit・3dBステップの音量レジスタしか持たないため、4刻みでしか区別できない。"}
+          }},
+        "KSR": {"range": [0, 1], "register_bits": 1, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "KSL": {"range": [0, 3], "register_bits": 2, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "MUL": {"range": [0, 15], "register_bits": 4, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "AM": {"range": [0, 1], "register_bits": 1, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "VIB": {"range": [0, 1], "register_bits": 1, "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0}},
+        "WS": {"range": [0, 1], "register_bits": 1, "mapping": "index", "condition": {"param": "ALG_EXT", "mask": 1, "equals": 0},
+          "note": "0=正弦波/1=半波整流。オペレータごとに指定できる。"}
+      },
+      "notes": [
+        "EGTは参照されない(実機EG typeビットはSRの値から決まる)。",
+        "サステインペダル(CC#64)はSR/RRとは独立に実機のSUSビットで制御される。",
+        "内蔵リズムはOPLLのビルトインリズム(BUILTIN_RHYTHM 0x70でOPLLを選択、findDeviceIndexByDeviceType経由)として鳴る。レジスタ体系は標準OPLLと同一だが、使う物理chの定位を書くためdeviceTypeはDEVICE_OPLLEX_RHY。標準OPLLのリズムが無い構成ではこちらで鳴る。専用のRHYTHM VoicePatchTypeは無い。",
+        "*.hwbank.jsonのALGフィールド(スキーマ上限7)から直接指定できるプリセットは0-7まで。8-15を含む音色をhwbank.jsonのbuiltinエントリ(patch_type=\"OPLLEX\")経由で名指し参照する機能はまだ配線されていない(BANK別のROMプリセット生成が必要なため)。",
+        "OPLL/OPLLX/OPLLP/VRC7側の暗黙のROMプリセットバンク(bank0固定)は、要求されたチップが未接続の場合にOPLLEXへフォールバックする(2026年8月〜)。OPLLEXはOPLL/OPLL-X/OPLL-P/VRC7の4バンクを全て内蔵しているため、生成される暗黙のHwPatch自体に対応するBANK値(ext.ALG_EXTのbit2-1)が最初から焼き込まれている。標準OPLL系どうしの相互フォールバック(実機ROMデータが異なる)は引き続き行わない。",
+        "OPLLEX自身のCC#0(voice_patch_type=0x2c)・バンク0(CC#32=0)を直接選んだ場合も、標準4チップと同じ暗黙のROMプリセットバンクをそのまま使える(2026年8月〜)。hwProgの上位3bit(0-3)がOPLLEX自身のBANK選択、下位4bit(1-15)が音色番号となり、prog直接指定だけで各BANK15音色・計60音色すべてにアクセスできる(ALGフィールドの0-7上限の制約を受けない)。演奏特性(SwPatch)も標準4チップと同じビルトイン音色用メタバンクから(variantSel, instIndex)で解決される。",
+        "chごとの定位(0x50-0x58)はMIDIのCC#10で制御され、HwPatchには現れない。"
+      ]
+    },
+    {
       "id": "OPL3",
       "voice_patch_type": 48,
       "voice_patch_type_hex": "0x30",
@@ -527,7 +580,7 @@
       "voice_patch_type": 64,
       "voice_patch_type_hex": "0x40",
       "display_name": "SSG (YM2149 / AY-3-8910)",
-      "devices": ["YM2149", "AY-3-8910", "YMZ705", "YMZ732", "YMZ771"],
+      "devices": ["YM2149", "AY-3-8910", "YMZ705", "YMZ732", "YMZ771", "Y8960(SSGEX)"],
       "voice_group": "PSG",
       "bank_voice_patch_type": 64,
       "patch_kind": "fm",
@@ -569,7 +622,7 @@
           "note": "PSG系は全チップが共通のバンク名前空間(直接デバイス選択値0x40固定)を共有する。このフィールドで、パッチが実際に対象とするチップを選ぶ。"}
       },
       "notes": [
-        "YMZ705(SSGS)/YMZ732(SSGS2)/YMZ771(SSGS3)のSSG互換部も同じパラメータで扱う(パンポットの分解能とトータルボリュームの有無のみ実機差があるが、HwPatchには現れない)。"
+        "YMZ705(SSGS)/YMZ732(SSGS2)/YMZ771(SSGS3)のSSG互換部とY8960のSSG部(SSGEX)も同じパラメータで扱う(パンポットの分解能・位置とトータル/チャンネル音量の有無のみ実機差があるが、HwPatchには現れない)。"
       ]
     },
     {
@@ -729,7 +782,7 @@
       "voice_patch_type": 72,
       "voice_patch_type_hex": "0x48",
       "display_name": "SCC / SCC+ (K051649 / K052539)",
-      "devices": ["K051649", "K052539"],
+      "devices": ["K051649", "K052539", "Y8960(SCCEX)"],
       "voice_group": "PSG",
       "bank_voice_patch_type": 64,
       "patch_kind": "fm",
@@ -744,18 +797,21 @@
         "RR": {"range": [0, 15]},
         "target_voice_patch_type": {"range": [0, 255], "note": "SSGの定義と同じ。"}
       },
-      "notes": ["無印SCCはチャンネル3・4が波形メモリを物理的に共有するが、パッチデータ側での対応は不要(自動的に扱われる)。"]
+      "notes": ["無印SCCと、同じ配置を持つY8960のSCC部(SCCEX)はチャンネル3・4が波形メモリを物理的に共有するが、パッチデータ側での対応は不要(自動的に扱われる)。SCCEXのchごとの定位はMIDIのCC#10で制御され、HwPatchには現れない。"]
     },
     {
       "id": "ADPCMB",
       "voice_patch_type": 81,
       "voice_patch_type_hex": "0x51",
       "display_name": "ADPCM-B (YM2608 / Y8950 内蔵)",
-      "devices": ["YM2608", "Y8950"],
+      "devices": ["YM2608", "Y8950", "Y8960(OPL2EX内蔵ADPCM-B)"],
       "voice_group": "PCM",
       "patch_kind": "sample_zone",
       "params": {},
-      "sample_zone": {"schema": "config_schema/samplezonebank.schema.json", "pitch_variable": true, "pcm_bank_group": "ADPCMB"}
+      "sample_zone": {"schema": "config_schema/samplezonebank.schema.json", "pitch_variable": true, "pcm_bank_group": "ADPCMB"},
+      "notes": [
+        "Y8960の拡張OPL2部(DEVICE_OPL2EX)が内蔵するADPCM-Bは、レジスタアドレス配置がY8950と同一(定位レジスタ0xFFのみ追加、MIDIのCC#10で制御)なため、専用のVoicePatchTypeを持たずこのADPCMB定義を共有する(deviceType自体はDEVICE_ADPCMB_OPL2EXとして分離)。"
+      ]
     },
     {
       "id": "ADPCMA",

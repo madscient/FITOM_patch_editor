@@ -71,7 +71,7 @@ cmake --preset vcpkg-windows         # Windows, Visual Studio 2022
 cmake --preset vcpkg-windows-vs2026  # Windows, Visual Studio 2026 (CMake 4.2以上が必要)
 
 cmake --build build/vcpkg            # プリセットの binaryDir に合わせて変える
-ctest --test-dir build/vcpkg --output-on-failure   # fpe_data のスモークテスト(85項目)
+ctest --test-dir build/vcpkg --output-on-failure   # fpe_data のスモークテスト
 ```
 
 GUIを含めずデータモデル層だけビルドしたい場合は `-DFPE_BUILD_GUI=OFF`。

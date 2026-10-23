@@ -314,7 +314,7 @@ struct PathPickerState {
 };
 
 // Chip families selectable when creating a new Device (HwBank) bank.
-// Deliberately excludes AWM/ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/PCM-D8 (those
+// Deliberately excludes AWM/ADPCM-B/ADPCM-A/PCM-D8/SSGS-ADPCM (those
 // need a SampleZoneBank/PcmBank instead - see fpe::isSampleBasedVoicePatchType
 // / fpe::isPcmWaveformVoicePatchType, D-013) and SD1/MA3/MA5/MA7 (recognized
 // by FITOM_X but no implemented chip driver, per VoicePatchType.h) - none of
@@ -330,8 +330,9 @@ constexpr DeviceGroupOption kCreatableDeviceGroups[] = {
     {fpe::VoicePatchType::OPL2, "OPL2"},       {fpe::VoicePatchType::OPL3_2, "OPL3_2"},
     {fpe::VoicePatchType::OPL_RHY, "OPL_RHY"}, {fpe::VoicePatchType::OPLL, "OPLL"},
     {fpe::VoicePatchType::OPLLP, "OPLLP"},     {fpe::VoicePatchType::OPLLX, "OPLLX"},
-    {fpe::VoicePatchType::VRC7, "VRC7"},       {fpe::VoicePatchType::OPL3, "OPL3"},
-    {fpe::VoicePatchType::SSG, "SSG"},         {fpe::VoicePatchType::EPSG, "EPSG"},
+    {fpe::VoicePatchType::VRC7, "VRC7"},       {fpe::VoicePatchType::OPLLEX, "OPLLEX"},
+    {fpe::VoicePatchType::OPL3, "OPL3"},       {fpe::VoicePatchType::SSG, "SSG"},
+    {fpe::VoicePatchType::EPSG, "EPSG"},
     {fpe::VoicePatchType::DCSG, "DCSG"},       {fpe::VoicePatchType::SAA, "SAA"},
     {fpe::VoicePatchType::SCC, "SCC"},
 };
@@ -1105,6 +1106,7 @@ std::optional<size_t> findLayeredPatchBankVectorIndex(fpe::PatchWorkspace& ws, i
 // the list can't drift apart).
 std::string deviceCategoryLabel(fpe::VoicePatchType type) {
     if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) return "内蔵リズム";
+    if (type == fpe::VoicePatchType::Silence) return "無音";
     return fpe::voicePatchTypeToString(type);
 }
 
@@ -1125,6 +1127,12 @@ struct HwRefNames {
 };
 HwRefNames resolveHwRefNames(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, int bank, int prog) {
     HwRefNames r;
+    if (type == fpe::VoicePatchType::Silence) {
+        r.builtin = true;
+        r.bankName = "無音";
+        r.patchName = "無音";
+        return r;
+    }
     if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) {
         r.builtin = true;
         r.bankName = fpe::builtinRhythmChipLabel(bank);
@@ -1151,7 +1159,9 @@ HwRefNames resolveHwRefNames(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, 
         // gm_layered_opll.patchbank.json has voice_patch_type=OPLL layers
         // pointing at hw_prog=35 = OPLLP's "Piano"). When the two disagree,
         // prefix the variant that will actually sound so the mismatch is
-        // visible instead of silently misleading.
+        // visible instead of silently misleading. OPLLEX always gets the
+        // prefix: there the variant picks one of OPLLEX's own four BANKs
+        // rather than a different chip, and the prefix is what tells them apart.
         const fpe::OpllRomVoiceRef rom = fpe::opllRomVoiceByProg(prog);
         if (rom.valid) {
             r.patchName = (rom.variant == type)
@@ -1188,7 +1198,7 @@ std::string orNA(const std::string& s) { return s.empty() ? std::string("(N/A)")
 void addBuiltinVoiceCategories(std::vector<fpe::VoicePatchType>& categories) {
     for (fpe::VoicePatchType c : {fpe::VoicePatchType::OPLL, fpe::VoicePatchType::OPLLP,
                                   fpe::VoicePatchType::OPLLX, fpe::VoicePatchType::VRC7,
-                                  fpe::VoicePatchType::DSG}) {
+                                  fpe::VoicePatchType::OPLLEX, fpe::VoicePatchType::DSG}) {
         if (std::find(categories.begin(), categories.end(), c) == categories.end()) categories.push_back(c);
     }
 }
@@ -1232,6 +1242,7 @@ std::vector<fpe::VoicePatchType> collectDeviceCategories(const std::vector<fpe::
 // renderBankDetail()'s existing Pcm/SampleZone cases handle them separately
 // from Device.
 std::string describeDrumSourcePatch(fpe::PatchWorkspace& ws, fpe::VoicePatchType type, int patchBank, int patchProg) {
+    if (type == fpe::VoicePatchType::Silence) return "無音";
     if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) {
         // 内蔵リズム音源(D-050): patch_bank は「バンク番号」ではなく対象
         // チップのVoicePatchType、patch_prog はそのチップ内の楽器(=デバイス
@@ -1285,6 +1296,7 @@ std::string describeDrumSourcePatch(fpe::PatchWorkspace& ws, fpe::VoicePatchType
 // excluded here too, which is why this needs `bank` and not just `type`.
 bool drumSourcePatchHasEditor(fpe::VoicePatchType type, int bank) {
     if (type == fpe::VoicePatchType::BuiltinRhythmBankSelector) return false;
+    if (type == fpe::VoicePatchType::Silence) return false;
     if (fpe::isOpllRomVoiceRef(type, bank)) return false;
     if (fpe::isDsgBuiltinVoiceRef(type)) return false;
     return !fpe::isPcmWaveformVoicePatchType(type) && !fpe::isSampleBasedVoicePatchType(type);
@@ -1853,7 +1865,9 @@ void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatc
         fpe::Patch* patch = layeredBanks[layeredBankIndex].findByProg(layeredPatchProg);
         if (patch && layerIndex >= 0 && static_cast<size_t>(layerIndex) < patch->layers.size()) {
             const fpe::ToneLayer& layer = patch->layers[static_cast<size_t>(layerIndex)];
-            if (layer.voice_patch_type != fpe::VoicePatchType::None) {
+            // Silence has no bank to land on, so it starts at the top like None.
+            if (layer.voice_patch_type != fpe::VoicePatchType::None &&
+                layer.voice_patch_type != fpe::VoicePatchType::Silence) {
                 p.category = layer.voice_patch_type;
                 p.bank = layer.hw_bank;
                 p.level = PatchPickerLevel::Program;
@@ -1970,7 +1984,7 @@ void renderHwPatchPicker(AppContext& ctx) {
             const bool isDsg = fpe::isDsgBuiltinVoiceRef(p.category);
             // Synthesized OPLL-family ROM bank 0 first, mirroring FITOM_X's
             // own FITOMBridge::getHwBankList() (D-050).
-            const bool hasOpllRom = fpe::opllRomVariantSel(p.category) >= 0;
+            const bool hasOpllRom = fpe::hasOpllRomBank(p.category);
             if (isDsg) {
                 any = true;
                 const std::string label = "[bank 0] " + std::string(fpe::dsgBuiltinBankName());
@@ -2086,7 +2100,7 @@ void openDrumSourcePatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
     fpe::DrumNote* drumNote = kitIndex < kits.size() ? kits[kitIndex].findNote(note) : nullptr;
     p.category = drumNote ? drumNote->voice_patch_type : fpe::VoicePatchType::None;
     p.bank = drumNote ? drumNote->patch_bank : 0;
-    p.level = PatchPickerLevel::Program;
+    p.level = (p.category == fpe::VoicePatchType::Silence) ? PatchPickerLevel::Category : PatchPickerLevel::Program;
     // Pending selection starts at the note's current triple (D-054) so "OK"
     // without clicking anything writes back the same value.
     p.hasPending = drumNote != nullptr;
@@ -2115,7 +2129,7 @@ void openDrumSourcePatchPickerDirect(AppContext& ctx, size_t kitIndex) {
         p.pendingProg = 0;
         p.hasPending = false;
     }
-    p.level = PatchPickerLevel::Program;
+    p.level = (p.category == fpe::VoicePatchType::Silence) ? PatchPickerLevel::Category : PatchPickerLevel::Program;
     p.pendingType = p.category;
     p.pendingBank = p.bank;
     p.open = true;
@@ -2307,7 +2321,7 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 // renderHwPatchPicker() does the identical thing). DSG's
                 // single implicit bank replaces the list outright (D-053).
                 const bool isDsg = fpe::isDsgBuiltinVoiceRef(p.category);
-                const bool hasOpllRom = fpe::opllRomVariantSel(p.category) >= 0;
+                const bool hasOpllRom = fpe::hasOpllRomBank(p.category);
                 if (isDsg) {
                     any = true;
                     const std::string label = "[bank 0] " + std::string(fpe::dsgBuiltinBankName());
@@ -2963,7 +2977,8 @@ HwOpFieldRanges buildOpRanges(fpe::VoicePatchType t, const fpe::HwPatch& patch, 
 // about.
 bool isOpllFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPLL || t == fpe::VoicePatchType::OPLLP ||
-           t == fpe::VoicePatchType::OPLLX || t == fpe::VoicePatchType::VRC7;
+           t == fpe::VoicePatchType::OPLLX || t == fpe::VoicePatchType::VRC7 ||
+           t == fpe::VoicePatchType::OPLLEX;
 }
 bool isOpzFamily(fpe::VoicePatchType t) {
     return t == fpe::VoicePatchType::OPZ || t == fpe::VoicePatchType::OPZ2;

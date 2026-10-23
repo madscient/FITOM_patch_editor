@@ -15,6 +15,11 @@
 
 #include <nlohmann/json.hpp>
 
+#ifdef _MSC_VER
+#include <crtdbg.h>
+#include <stdlib.h>
+#endif
+
 #include "fpe/BuiltinVoices.h"
 #include "fpe/ChipCapabilities.h"
 #include "fpe/PatchWorkspace.h"
@@ -71,14 +76,14 @@ static void testVoicePatchType() {
     // ordinary HwPatch field ops[0].WS, and are loaded as a plain HwBank
     // by FITOM_X (see docs/DESIGN.md D-011) - only AWM uses the dedicated
     // SampleZonePatch shape.
-    CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB_Y8950));
+    CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::SSGS_ADPCM));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMA));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::PCMD8));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::OPM));
-    // ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/PCM-D8 instead get their "patches"
+    // ADPCM-B/ADPCM-A/PCM-D8/SSGS-ADPCM instead get their "patches"
     // from a *.pcmbank.json's entries[] - fpe::PcmBank (D-013).
-    CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::ADPCMB_Y8950));
+    CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::SSGS_ADPCM));
     CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::ADPCMB));
     CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::ADPCMA));
     CHECK(fpe::isPcmWaveformVoicePatchType(VoicePatchType::PCMD8));
@@ -89,6 +94,24 @@ static void testVoicePatchType() {
     // DSG is a recognized chip type, but never a bank tag - it owns no
     // *.hwbank.json at all (D-053).
     CHECK(!fpe::isValidHwBankTag(VoicePatchType::DSG));
+
+    // Values FITOM_X's FITOMdefine.h added after the original table:
+    // OPLLEX (0x2c) and SSGS_ADPCM (0x55) are legal hw_banks[].group /
+    // pcm_banks[].group strings; SILENCE (0x7f) is a CC#0 selector only.
+    CHECK(fpe::stringToVoicePatchType("OPLLEX") == VoicePatchType::OPLLEX);
+    CHECK(static_cast<int>(VoicePatchType::OPLLEX) == 0x2c);
+    CHECK(fpe::voicePatchTypeToString(VoicePatchType::OPLLEX) == "OPLLEX");
+    CHECK(fpe::isValidHwBankTag(VoicePatchType::OPLLEX));
+    CHECK(fpe::stringToVoicePatchType("SSGS_ADPCM") == VoicePatchType::SSGS_ADPCM);
+    CHECK(static_cast<int>(VoicePatchType::SSGS_ADPCM) == 0x55);
+    CHECK(fpe::voicePatchTypeToString(VoicePatchType::SSGS_ADPCM) == "SSGS_ADPCM");
+    CHECK(fpe::isValidHwBankTag(VoicePatchType::SSGS_ADPCM));
+    CHECK(static_cast<int>(VoicePatchType::Silence) == 0x7f);
+    CHECK(!fpe::isValidHwBankTag(VoicePatchType::Silence));
+    CHECK(!fpe::stringToVoicePatchType("SILENCE").has_value());
+    // 0x50 is reserved in FITOM_X; its old group string is no longer accepted there.
+    CHECK(!fpe::stringToVoicePatchType("ADPCMB_Y8950").has_value());
+    CHECK(!fpe::isValidHwBankTag(static_cast<VoicePatchType>(0x50)));
 
     // Alias group strings FITOM_X's own stringToVoicePatchType() accepts.
     // Before D-053 an "OPNA"/"OPNB"/"SCCP"/"PSG"/"PCM" tagged bank - all
@@ -146,6 +169,21 @@ static void testBuiltinVoices() {
     CHECK(opllx.front().name == "Strings");
     CHECK(opllx.back().prog == 0x1F);
     CHECK(fpe::opllRomVoices(VoicePatchType::OPL2).empty());
+
+    // OPLLEX holds all four ROMs, so its bank 0 lists 60 voices and the
+    // upper bits of prog pick one of its own BANKs instead of another chip.
+    CHECK(fpe::opllRomVariantSel(VoicePatchType::OPLLEX) == -1);
+    CHECK(fpe::hasOpllRomBank(VoicePatchType::OPLLEX));
+    CHECK(!fpe::hasOpllRomBank(VoicePatchType::OPL2));
+    CHECK(fpe::isOpllRomVoiceRef(VoicePatchType::OPLLEX, 0));
+    CHECK(!fpe::isOpllRomVoiceRef(VoicePatchType::OPLLEX, 1));
+    const auto opllex = fpe::opllRomVoices(VoicePatchType::OPLLEX);
+    CHECK(opllex.size() == 60);
+    if (opllex.size() == 60) {
+        CHECK(opllex[0].prog == 0x01 && opllex[0].name == "[OPLL] Violin");
+        CHECK(opllex[15].prog == 0x11 && opllex[15].name == "[OPLLX] Strings");
+        CHECK(opllex[59].prog == 0x3F && opllex[59].name == "[VRC7] Sweep");
+    }
 
     // Decoding is driven purely by hw_prog and ignores the referencing
     // category - staging's gm_layered_opll.patchbank.json really does point
@@ -650,6 +688,17 @@ static void testChipCapabilities() {
     CHECK(opz2 && opz2->params.count("EGS") == 1);
     const fpe::ChipCaps* vrc7 = caps.chip(fpe::VoicePatchType::VRC7);
     CHECK(vrc7 && vrc7->params.count("ALG_EXT") == 1);
+    // OPLLEX has its own definition (not same_params_as OPLL): ALG_EXT gains
+    // the BANK bits 2-1 on top of OPLL's preset flag.
+    const fpe::ChipCaps* opllex = caps.chip(fpe::VoicePatchType::OPLLEX);
+    CHECK(opllex && opllex->kind == fpe::ChipPatchKind::Fm);
+    CHECK(opllex && opllex->params.count("ALG_EXT") == 1 &&
+          opllex->params.at("ALG_EXT").bits.size() == 2);
+    CHECK(vrc7 && vrc7->params.at("ALG_EXT").bits.size() == 1);
+    const fpe::ChipCaps* ssgsAdpcm = caps.chip(fpe::VoicePatchType::SSGS_ADPCM);
+    CHECK(ssgsAdpcm && ssgsAdpcm->kind == fpe::ChipPatchKind::SampleZone);
+    const fpe::ChipCaps* silence = caps.chip(fpe::VoicePatchType::Silence);
+    CHECK(silence && silence->kind == fpe::ChipPatchKind::ModeSelector);
 
     fpe::HwPatch p;
     p.ops.resize(4);
@@ -735,6 +784,14 @@ static void testChipCapabilities() {
     // bass drum is a 2-operator voice).
     CHECK(caps.operatorCount(fpe::VoicePatchType::OPM, p) == 4);
     CHECK(caps.operatorCount(fpe::VoicePatchType::OPLL, p) == 2);
+    CHECK(caps.operatorCount(fpe::VoicePatchType::OPLLEX, p) == 2);
+    // OPLLEX's preset flag gates the user-voice fields exactly like OPLL's.
+    p.ext.ALG_EXT = 1;
+    const auto opllexFbPreset = range(fpe::VoicePatchType::OPLLEX, "FB", -1);
+    CHECK(opllexFbPreset && opllexFbPreset->active == false);
+    p.ext.ALG_EXT = 0;
+    const auto opllexFbUser = range(fpe::VoicePatchType::OPLLEX, "FB", -1);
+    CHECK(opllexFbUser && opllexFbUser->active == true);
     p.ext.rhythm_ch = 0;
     CHECK(caps.operatorCount(fpe::VoicePatchType::OPL_RHY, p) == 1);
     p.ext.rhythm_ch = 4;
@@ -941,7 +998,30 @@ static void testDefaults() {
     CHECK(layer.transpose == 0);
 }
 
+#ifdef _MSC_VER
+// The MSVC debug CRT reports a failed assertion (an empty std::optional
+// dereferenced, say) with a modal dialog, which blocks an unattended run and
+// pops up on the desktop of whoever is using the machine. Report to stderr
+// and exit instead.
+static void reportInvalidParameterAndExit(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
+    std::fprintf(stderr, "FATAL: CRT invalid parameter (debug assertion)\n");
+    std::_Exit(3);
+}
+
+static void disableCrtDialogs() {
+    for (int type : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
+        _CrtSetReportMode(type, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(type, _CRTDBG_FILE_STDERR);
+    }
+    _set_invalid_parameter_handler(reportInvalidParameterAndExit);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+}
+#endif
+
 int main() {
+#ifdef _MSC_VER
+    disableCrtDialogs();
+#endif
     testVoicePatchType();
     testChipCapabilities();
     testCapabilityBranchInheritance();

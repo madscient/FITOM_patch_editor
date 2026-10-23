@@ -59,7 +59,7 @@ struct FmHwOp {
 // docs/hwpatch-reference.md for which.
 struct FmChipExt {
     uint8_t  FIX = 0;      // OPN FX-mode select: 0=off/1=pseudo-detune/2=non-integer ratio/3=fixed freq. JSON key "FIX" per FITOM_X's config_schema/hwbank.schema.json (D-028 - was serialized as "DM0" before, a stale internal name that never matched the schema)
-    uint8_t  ALG_EXT = 0;  // Meaning varies: OPM noise enable(bit0) / OPL3 4-op link / OPLL preset flag(bit0)
+    uint8_t  ALG_EXT = 0;  // Meaning varies: OPM noise enable(bit0) / OPL3 4-op link / OPLL preset flag(bit0) / OPLLEX ROM BANK(bit2-1)
     uint16_t HWEP = 0;     // Hardware envelope period (SSG/EPSG), or SAA1099 HW envelope bit-packed fields
     uint8_t  rhythm_ch = 255;                          // 255 = unset. Target channel for OPL_RHY (docs/terminology.md).
     VoicePatchType target_voice_patch_type = VoicePatchType::None; // Shared-PSG-bank device resolution override (docs/patch-structure-design.md "PSG系共有バンク")

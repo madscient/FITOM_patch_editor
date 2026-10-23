@@ -29,7 +29,7 @@
 //     |       + [sw_bank/sw_prog reference into performanceBanks()]
 //     + サンプルゾーンバンク (SampleZoneBank, AWMのみ) -> sampleZoneBanks()
 //     |   + サンプルゾーンパッチ (SampleZonePatch)
-//     + PCM波形バンク (PcmBank, ADPCM-B/A・PCM-D8)     -> pcmBanks()
+//     + PCM波形バンク (PcmBank, ADPCM-B/A・PCM-D8・SSGS-ADPCM) -> pcmBanks()
 //     |   + PCMエントリ (PcmBankEntry, indexがpatch_prog)
 //     + ドラムキットマップ (Profile::drum_banks)      -> drumKits()
 //         + ドラムキット (DrumKit)

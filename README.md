@@ -91,10 +91,12 @@ fixtures/            テスト用の手書きサンプルプロファイル+バ�
 示します。`PatchWorkspace::resolvePerformancePatch()` がUI向けにこの
 参照をたどります。
 
-サンプルベース音源(ADPCM-B/A、PCM-D8、AWM)はHwPatchの形状に一切
-当てはまらないため、別系統の `sampleZoneBanks()` を持ちます。
-hw_banks[]エントリの `group` がサンプルベース系の`VoicePatchType`に
-解決される場合、`deviceBanks()`ではなくこちらが自動的に選ばれます。
+サンプル音源はHwPatchの形状に一切当てはまらないため、別系統のリストを
+持ちます。ADPCM-B/A、PCM-D8、SSGS-ADPCMは `*.pcmbank.json` の波形
+エントリを `pcmBanks()` に、AWMはキーゾーン形式のバンクを
+`sampleZoneBanks()` に持ちます。hw_banks[]エントリの `group` がこれらの
+`VoicePatchType`に解決される場合、`deviceBanks()`ではなく該当するリストが
+自動的に選ばれます。
 
 ## ビルド方法
 
@@ -137,8 +139,8 @@ Studio自体の更新を待つ必要があります)。
 `glfw3`/`glew`/`imgui`は要求されません。
 
 `tests/smoke_test.cpp` は読み込み・フィールドデフォルト・全階層での
-CRUD・save-as+再読み込みのラウンドトリップをチェックする、85項目の
-アサーションから成ります。
+CRUD・save-as+再読み込みのラウンドトリップ、チップ別パラメータ定義の
+解決結果をチェックするアサーションから成ります。
 
 ### GUIの起動引数
 

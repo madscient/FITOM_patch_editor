@@ -4151,6 +4151,83 @@ EPSG 専用の `FB`(拡張ノイズ周波数上位3bit)と `WS`(デューティ�
 非デフォルト値の保護を含む)を検証する。同期コピーを差し替えたときに
 意図しない変更を検出する回帰ガードも兼ねる。
 
+### D-058: FITOM_X の VoicePatchType 追加・削除への追従(OPLLEX / SSGS_ADPCM / SILENCE、ADPCMB_Y8950 削除)
+
+**正とした資料**: FITOM_X `origin/main` の `core/include/fitom/FITOMdefine.h`
+(`VOICE_PATCH_*` / `DEVICE_*`)、`core/src/Config.cpp` の
+`stringToVoicePatchType()`、`config_schema/profile.schema.json`、
+`spec/chip-capabilities.json`。いずれも `git show origin/main:...` で読んだ
+(FITOM_X の作業ツリーは触っていない)。
+
+**`spec/chip-capabilities.json` の写し**: `origin/main` のものにそのまま
+差し替えた(確認済み — `cmp` でバイト一致)。差分は OPLLEX の定義追加と、
+OPL2/OPL/SSG/SCC/ADPCMB の `devices`/`notes` への Y8960 の追記のみ。
+
+**VoicePatchType の変更**(`include/fpe/VoicePatchType.h`):
+
+| 値 | 名前 | 扱い |
+|---|---|---|
+| 0x2c | `OPLLEX` | 追加。HwBank のタグ(`hw_banks[].group` = `"OPLLEX"`)。OPLL とは別の名前空間 |
+| 0x55 | `SSGS_ADPCM` | 追加。PCM 波形バンク(`isPcmWaveformVoicePatchType()` が真、`fpe::PcmBank`) |
+| 0x7f | `Silence` | 追加。CC#0 のバンク選択子で、HwBank のタグではない(`isValidHwBankTag()` は偽、group 文字列も無い) |
+| 0x50 | `ADPCMB_Y8950` | **削除**。FITOM_X では予約領域になり、group 文字列 `"ADPCMB_Y8950"` も受け付けない |
+
+- **SSGEX / SCCEX は VoicePatchType ではない。** FITOM_X で新設されたのは
+  `DEVICE_SSGEX`(67)/`DEVICE_SCCEX`(68)だけで、VoicePatchType は
+  `VOICE_PATCH_SSG` / `VOICE_PATCH_SCC` を共用する(FITOMdefine.h の
+  コメントと `chip-capabilities.json` の `devices` で確認済み)。
+  同様に `DEVICE_OPL2EX`/`DEVICE_ADPCMB_OPL2EX` も OPL2 / ADPCMB を共用する。
+- **`DEVICE_*` に当たる概念はこのエディタに無い。** パッチデータは
+  VoicePatchType だけで参照され、デバイス種別を持つのは FITOM_X のデバイス
+  構成側。したがって `DEVICE_*` の追加に対してコードの変更は無い。
+  前提: エディタがプロファイルの `devices[]` を編集対象にしない限り成立する。
+- **`ADPCMB_Y8950` 削除の前提**: FITOM_X がこの group 文字列を読まないこと
+  (確認済み — Config.cpp)、実データに使用例が無いこと(確認済み —
+  `../FITOM_staging` と `../FITOM_X` の `*.json` を grep して0件)。
+  この名前を持つ古いプロファイルを読むと、FITOM_X と同じく
+  「unrecognized group name」の警告を出してそのバンクを読まない。
+  やり直しの値段: enum 1行・表2行・テスト数行を戻すだけ。
+
+**OPLLEX の ROM 音色(バンク0)**: FITOM_X の `resolveOpllRomVoice()` は
+CC#0 = OPLLEX・バンク0 を ROM 音色として解決し、prog の上位3bitは
+「別チップ」ではなく「OPLLEX 内の BANK(0=OPLL/1=OPLLX/2=OPLLP/3=VRC7)」を
+選ぶ(PatchManager.cpp で確認済み)。そこで `fpe::hasOpllRomBank()` を
+新設し、OPLLEX のバンク0を ROM バンクとして扱う。`opllRomVoices(OPLLEX)`
+は4変種ぶん60件を返し、名前の重複を避けるため各名前に "[変種名] " を
+前置する。`opllRomVariantSel(OPLLEX)` は -1 のまま(OPLLEX は単一の変種を
+持たないため)。FITOM_X 本体のパッチピッカーには OPLLEX カテゴリが無い
+(`getOpllRomPatches()` も未対応と明記)が、解決経路は存在するので、この
+エディタではピッカーのカテゴリに加えた。
+
+**SILENCE の扱い**: 読み込んだデータの表示(「無音」)と、編集ボタンの無効化、
+ピッカーを開いたときにカテゴリ階層から始めることのみ対応した。
+
+- 見送った提案: パッチピッカーのカテゴリに「無音」を加え、ToneLayer /
+  DrumNote に 0x7f を設定できるようにすること。理由: FITOM_X 本体の
+  ピッカーにも無く、今回の依頼(定義への追従)の範囲を超える。必要に
+  なったら、カテゴリ一覧への追加と、バンク・プログラム階層を飛ばして
+  確定する分岐の2点で足りる見込み(未検証)。
+
+**既知の食い違い(今回は変更しない)**: `hw_banks[]` の group が ADPCM 系の
+場合、このエディタは `*.pcmbank.json` として読む(D-013)が、FITOM_X の
+Config.cpp は AWM 以外を `loadHwBankJson()` で読む(確認済み — Config.cpp の
+hw_banks ループ)。実データの ADPCM 系はすべて `pcm_banks[]` 経由で登録
+されている(D-038)ため現状は表面化しない。SSGS_ADPCM も同じ経路に乗る。
+
+**テストの実行環境**: MSVC の Debug ビルドでは、テスト中の assert
+(空の `std::optional` の参照外し等)がモーダルダイアログを出して実行を
+止め、マシンを使っている人の画面に現れる。スモークテストの `main()` 冒頭で
+CRT の報告先を標準エラー出力に切り替え、不正引数ハンドラを「メッセージを
+出して終了」にした。加えて ctest に `TIMEOUT 120` を設定した。ダイアログ
+抑止そのものは未検証(確かめるには assert を意図的に起こす必要があり、
+失敗すると再びダイアログが出るため実施していない)。
+
+**テスト**: 319 → 349 項目。新設値の文字列変換・タグ判定・PCM 判定、
+OPLLEX の ROM 一覧(60件、prog と名前)、仕様書の OPLLEX 定義
+(`ALG_EXT` の bits が2個、`operator_count`、プリセット時の FB 非活性)、
+SSGS_ADPCM / SILENCE の `patch_kind`。仕様書関連の5項目は、差し替え前の
+写しに戻すと落ちることを確認済み(5件 FAIL、344/349)。
+
 ## 環境固有の注意点(繰り返し観測した問題)
 
 このリポジトリがクラウド同期/ネットワークマウントされたドライブ上に

@@ -43,7 +43,7 @@ struct BuiltinVoiceEntry {
 
 // ─── OPLL系ROM音色(hw_bank == 0 固定) ────────────────────────────────
 //
-// OPLL/OPLLP/OPLLX/VRC7 のバンク0は「JSON定義不可の予約領域」で、
+// OPLL/OPLLP/OPLLX/VRC7/OPLLEX のバンク0は「JSON定義不可の予約領域」で、
 // FITOM_Xが opllRomPatches_[4][16] として内部合成する15音色×4変種を指す
 // (下位4bit=0はユーザー音色との衝突回避のため意図的に無音として予約)。
 
@@ -56,12 +56,21 @@ const char* opllRomBankName();
 // 同じ対応。
 int opllRomVariantSel(VoicePatchType type);
 
+// `type` のバンク0がROM音色バンクか。標準4チップに加えて OPLLEX も真。
+// OPLLEX は4変種のROMを全て内蔵するため、変種セレクタを1つに決められず
+// opllRomVariantSel() では -1 になる(だからこちらで判定する)。
+bool hasOpllRomBank(VoicePatchType type);
+
 // {voice_patch_type, bank} がOPLL系ROM音色バンクを指しているか。
 // FITOM_XのresolveTriple()が resolveOpllRomVoice() へ分岐する条件と同じ。
 bool isOpllRomVoiceRef(VoicePatchType type, int bank);
 
-// `type` のカテゴリ配下に列挙すべきROM音色15件(instIndex 1-15、
-// 添字0の無音は除く)。OPLLファミリー以外なら空。
+// `type` のカテゴリ配下に列挙すべきROM音色(instIndex 1-15、添字0の
+// 無音は除く)。標準4チップは自分の変種の15件、OPLLEX は4変種ぶんの60件
+// (OPLLEX では prog の上位ビットが「どのチップか」ではなく「OPLLEX 内の
+// どの BANK か」を選ぶ。PatchManager::resolveOpllRomVoice() 参照)。
+// 名前の重複を避けるため、OPLLEX の各エントリ名には "[変種名] " を前置する。
+// OPLLファミリー以外なら空。
 // 各エントリの `prog` は (variantSel << 4) | instIndex ―― 配列添字では
 // ないので注意(FITOM_X docs/patch-structure-design.md の「実装上の注意」:
 // 生添字を送るとOPLL以外のカテゴリで別チップの音色が鳴る)。

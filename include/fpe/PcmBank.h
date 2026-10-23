@@ -9,8 +9,8 @@
 #include "fpe/VoicePatchType.h"
 
 // PCM/ADPCM waveform bank (*.pcmbank.json), used by the ADPCM-B/ADPCM-A/
-// PCM-D8 device families (VoicePatchType::ADPCMB_Y8950/ADPCMB/ADPCMA/
-// PCMD8). Structurally unrelated to both HwPatch (no ops[]/FM parameters)
+// PCM-D8/SSGS-ADPCM device families (VoicePatchType::ADPCMB/ADPCMA/
+// PCMD8/SSGS_ADPCM). Structurally unrelated to both HwPatch (no ops[]/FM parameters)
 // and SampleZonePatch (no key/velocity zones) - it is just a flat, ordered
 // list of named raw-sample entries produced by the external adpcm_packer
 // tool, referenced purely by 0-based array index (no "prog" field of its
@@ -19,7 +19,7 @@
 // confirmed against real FITOM_staging data (see docs/DESIGN.md D-013).
 //
 // Referenced either directly from a profile's banks.hw_banks[] entry
-// (group == one of the four ADPCM/PCM-D8 names) or from the top-level
+// (group == one of the ADPCM/PCM-D8 names) or from the top-level
 // banks.pcm_banks[] array; both point at the same *.pcmbank.json shape.
 //
 // Per the project owner, end users never edit this bank's *content*

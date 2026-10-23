@@ -75,6 +75,8 @@ if(FPE_BUILD_TESTS)
   target_link_libraries(fpe_smoke_test PRIVATE fpe_data)
   add_test(NAME fpe_smoke_test COMMAND fpe_smoke_test
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  # Normally finishes in seconds; the cap keeps a hung run from stalling ctest.
+  set_tests_properties(fpe_smoke_test PROPERTIES TIMEOUT 120)
 endif()
 
 # --- fitom_patch_editor_gui: Dear ImGui (GLFW + OpenGL3) shell -------------

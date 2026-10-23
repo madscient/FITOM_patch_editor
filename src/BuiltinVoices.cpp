@@ -80,22 +80,35 @@ int opllRomVariantSel(VoicePatchType type) {
     return -1;
 }
 
+bool hasOpllRomBank(VoicePatchType type) {
+    return type == VoicePatchType::OPLLEX || opllRomVariantSel(type) >= 0;
+}
+
 bool isOpllRomVoiceRef(VoicePatchType type, int bank) {
-    return bank == 0 && opllRomVariantSel(type) >= 0;
+    return bank == 0 && hasOpllRomBank(type);
 }
 
 std::vector<BuiltinVoiceEntry> opllRomVoices(VoicePatchType type) {
     std::vector<BuiltinVoiceEntry> result;
-    const int variantSel = opllRomVariantSel(type);
-    if (variantSel < 0) return result;
-    result.reserve(15);
-    for (int instIndex = 1; instIndex < 16; ++instIndex) {
-        BuiltinVoiceEntry e;
-        // 配列添字ではなく (variantSel << 4) | instIndex を書き込む
-        // (BuiltinVoices.h の opllRomVoices() のコメント参照)。
-        e.prog = (variantSel << 4) | instIndex;
-        e.name = kOpllRomNames[variantSel][instIndex];
-        result.push_back(std::move(e));
+    const bool isOpllex = type == VoicePatchType::OPLLEX;
+    int firstSel = opllRomVariantSel(type);
+    int lastSel = firstSel;
+    if (isOpllex) {
+        firstSel = 0;
+        lastSel = 3;
+    }
+    if (firstSel < 0) return result;
+    result.reserve(static_cast<size_t>(lastSel - firstSel + 1) * 15);
+    for (int variantSel = firstSel; variantSel <= lastSel; ++variantSel) {
+        for (int instIndex = 1; instIndex < 16; ++instIndex) {
+            BuiltinVoiceEntry e;
+            // 配列添字ではなく (variantSel << 4) | instIndex を書き込む
+            // (BuiltinVoices.h の opllRomVoices() のコメント参照)。
+            e.prog = (variantSel << 4) | instIndex;
+            e.name = kOpllRomNames[variantSel][instIndex];
+            if (isOpllex) e.name = "[" + voicePatchTypeToString(kOpllRomVariants[variantSel]) + "] " + e.name;
+            result.push_back(std::move(e));
+        }
     }
     return result;
 }

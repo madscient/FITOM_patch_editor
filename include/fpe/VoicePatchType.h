@@ -31,6 +31,7 @@ enum class VoicePatchType : uint8_t {
     OPLLP        = 0x29,
     OPLLX        = 0x2a,
     VRC7         = 0x2b,
+    OPLLEX       = 0x2c, // Y8960 extended OPLL. Its own HwBank namespace, separate from OPLL's
     OPL3         = 0x30,
     SD1          = 0x38, // reserved, unimplemented in source docs
     MA3          = 0x39, // reserved, unimplemented in source docs
@@ -42,17 +43,20 @@ enum class VoicePatchType : uint8_t {
     SAA          = 0x43,
     DSG          = 0x44, // YM2163. Has no *.hwbank.json of its own at all - see BuiltinVoices.h
     SCC          = 0x48,
-    ADPCMB_Y8950 = 0x50,
+    // 0x50: reserved. Y8950's ADPCM-B shares ADPCMB (0x51) with OPNA.
     ADPCMB       = 0x51,
     ADPCMA       = 0x52,
     PCMD8        = 0x53,
     AWM          = 0x54,
+    SSGS_ADPCM   = 0x55, // YMZ705/YMZ732 ADPCM. patch_prog = the chip's own voice number
     // 0x70            : built-in rhythm bank access value (CC#0), not a HwBank tag.
     // 0x78 / 0x79     : GM2 channel-role switch (CC#0), not a HwBank tag.
-    // 0x71-0x77 / 0x7a-0x7f: reserved for future use.
+    // 0x7f            : silence selector (CC#0), not a HwBank tag. hw_bank/hw_prog are ignored.
+    // 0x71-0x77 / 0x7a-0x7e: reserved for future use.
     BuiltinRhythmBankSelector = 0x70,
     Gm2RhythmChannelSelect    = 0x78,
     Gm2MelodyChannelSelect    = 0x79,
+    Silence                   = 0x7f,
 };
 
 // True only for AWM - the *.samplezonebank.json / SampleZonePatch shape
@@ -69,7 +73,7 @@ bool isSampleBasedVoicePatchType(VoicePatchType t);
 // True for the PCM/ADPCM waveform-table families whose "patches" are the
 // entries[] of a *.pcmbank.json (+ referenced adpcm_json, an
 // adpcm_packer-output file) rather than either an HwPatch or a
-// SampleZonePatch - ADPCM-B(Y8950)/ADPCM-B/ADPCM-A/PCM-D8. See
+// SampleZonePatch - ADPCM-B/ADPCM-A/PCM-D8/SSGS-ADPCM. See
 // fpe::PcmBank (PcmBank.h) and docs/DESIGN.md D-013. Distinct from
 // isSampleBasedVoicePatchType() above, which is AWM-only.
 bool isPcmWaveformVoicePatchType(VoicePatchType t);

@@ -2639,3 +2639,41 @@
     (`CLAUDE.md` のルール 6 の手順で設定する)。
 - 次にやること: 各マシンのクローンを上記の手順で合わせる。本体の作業は
   2026-08-20 の「次にやること」(利用者の実機確認待ち)から変わらない。
+
+### 2026-10-23 (FITOM_X の VoicePatchType 追加・削除への追従、D-058)
+- やったこと: FITOM_X `origin/main` の `FITOMdefine.h` と
+  `spec/chip-capabilities.json` を正として、写しとコードを追従させた。
+  詳細は `docs/DESIGN.md` D-058。
+  - `spec/chip-capabilities.json` を `origin/main` のものに差し替えた
+    (確認済み — `cmp` でバイト一致)。
+  - VoicePatchType に `OPLLEX`(0x2c)・`SSGS_ADPCM`(0x55)・`Silence`
+    (0x7f、HwBank のタグではない)を追加し、FITOM_X で削除済みの
+    `ADPCMB_Y8950`(0x50)を削除した。
+  - **SSGEX / SCCEX は VoicePatchType ではなかった。** FITOM_X で新設された
+    のは `DEVICE_*` だけで、VoicePatchType は SSG / SCC を共用する。
+    エディタには `DEVICE_*` に当たる概念が無いので、追加は無い。
+  - OPLLEX のバンク0を ROM 音色バンク(4変種×15音色=60件)として扱う
+    (`fpe::hasOpllRomBank()`)。新規デバイスバンク作成の選択肢、パッチ
+    ピッカーのカテゴリ、OPLL 系の編集画面の扱い(`isOpllFamily()`)に
+    OPLLEX を加えた。
+  - SILENCE は表示(「無音」)・編集ボタンの無効化・ピッカーの開始階層のみ
+    対応。ピッカーから選べるようにする件は見送った(D-058)。
+  - スモークテストの `main()` で MSVC Debug CRT のダイアログを抑止し、
+    ctest に `TIMEOUT 120` を付けた。
+  - README のサンプル音源の段落が実装と食い違っていた(ADPCM 系の行き先を
+    `sampleZoneBanks()` と書いていた)ので直した。README / CLAUDE.md の
+    テスト項目数(85)は古かったので、数を書かない形にした。
+  - ビルド(コンパイラ警告なし)・`ctest`(319→349項目、全通過)を確認。
+    全体ビルドで MSBuild の MSB8028(GUI の中間ディレクトリ共有)が1件
+    出た。コンパイラ警告ではなく、今回の変更との関係は未確認。
+- 未完了・既知の問題:
+  - 表示の目視確認は未実施(`CLAUDE.md` の方針により、利用者の確認待ち)。
+    見てほしい点: 新規デバイスバンク作成に OPLLEX があること、パッチ
+    ピッカーの OPLLEX カテゴリでバンク0に60音色が "[OPLL] Violin" の形で
+    並ぶこと、OPLLEX バンクの編集画面で ALG_EXT の BANK ビット(bit2-1)が
+    表示されること。
+  - テスト実行時の CRT ダイアログ抑止は未検証(D-058)。
+  - `hw_banks[]` に ADPCM 系 group を書いた場合の読み方が FITOM_X と
+    食い違っている件は既存のまま(D-058「既知の食い違い」)。
+- 次にやること: 利用者の目視確認。SILENCE をピッカーから選べるように
+  するかは利用者の判断待ち。

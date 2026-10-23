@@ -22,6 +22,7 @@ constexpr std::pair<VoicePatchType, const char*> kTable[] = {
     {VoicePatchType::OPLLP,        "OPLLP"},
     {VoicePatchType::OPLLX,        "OPLLX"},
     {VoicePatchType::VRC7,         "VRC7"},
+    {VoicePatchType::OPLLEX,       "OPLLEX"},
     {VoicePatchType::OPL3,         "OPL3"},
     {VoicePatchType::SD1,          "SD1"},
     {VoicePatchType::MA3,          "MA3"},
@@ -33,11 +34,11 @@ constexpr std::pair<VoicePatchType, const char*> kTable[] = {
     {VoicePatchType::SAA,          "SAA"},
     {VoicePatchType::DSG,          "DSG"},
     {VoicePatchType::SCC,          "SCC"},
-    {VoicePatchType::ADPCMB_Y8950, "ADPCMB_Y8950"},
     {VoicePatchType::ADPCMB,       "ADPCMB"},
     {VoicePatchType::ADPCMA,       "ADPCMA"},
     {VoicePatchType::PCMD8,        "PCMD8"},
     {VoicePatchType::AWM,          "AWM"},
+    {VoicePatchType::SSGS_ADPCM,   "SSGS_ADPCM"},
 };
 
 // Additional spellings accepted on *input* only - never produced by
@@ -71,10 +72,10 @@ bool isSampleBasedVoicePatchType(VoicePatchType t) {
 
 bool isPcmWaveformVoicePatchType(VoicePatchType t) {
     switch (t) {
-        case VoicePatchType::ADPCMB_Y8950:
         case VoicePatchType::ADPCMB:
         case VoicePatchType::ADPCMA:
         case VoicePatchType::PCMD8:
+        case VoicePatchType::SSGS_ADPCM:
             return true;
         default:
             return false;
