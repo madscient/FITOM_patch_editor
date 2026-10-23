@@ -16,7 +16,7 @@
 // chip's driver actually reads and what their value ranges / effective
 // resolutions / activation conditions are. It is the machine-readable
 // counterpart of docs/manuals/hwpatch-reference.md and supersedes the
-// per-chip range tables this editor used to hand-maintain (docs/DESIGN.md
+// per-chip range tables this editor used to hand-maintain (docs/history/DESIGN.md
 // D-057). FITOM_X's own core never reads it - core/ is the authority and
 // this file is transcribed from it for external tools like this one.
 //
@@ -105,7 +105,7 @@ struct ParamCaps {
     // (The spec calls this an "override" table; treating an absent index as
     // "not applicable" is what matches both of its real uses - OPL3's PDT,
     // read only for ops 0/2, and OPLL's TL, which lists every operator it
-    // has. See docs/DESIGN.md D-057.)
+    // has. See docs/history/DESIGN.md D-057.)
     std::map<int, ParamCaps> perOp;
 
     // per_condition: variants whose meaning changes with another field, each

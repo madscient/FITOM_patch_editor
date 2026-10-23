@@ -16,7 +16,7 @@
 // tool, referenced purely by 0-based array index (no "prog" field of its
 // own). DrumKit/HwPatch references into this bank (patch_bank + patch_prog
 // for these voice_patch_types) use that index directly as patch_prog -
-// confirmed against real FITOM_staging data (see docs/DESIGN.md D-013).
+// confirmed against real FITOM_staging data (see docs/history/DESIGN.md D-013).
 //
 // Referenced either directly from a profile's banks.hw_banks[] entry
 // (group == one of the ADPCM/PCM-D8 names) or from the top-level

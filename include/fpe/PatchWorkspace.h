@@ -141,7 +141,7 @@ private:
     // rewritten byte-for-byte-different (this project's "write explicitly"
     // JSON philosophy re-emits the full canonical field set every time,
     // which would otherwise turn every save() into a mass rewrite of the
-    // entire reference tree - reported as a bug, see docs/DESIGN.md D-042).
+    // entire reference tree - reported as a bug, see docs/history/DESIGN.md D-042).
     // A path with no entry here (freshly created this session, or a stale
     // pre-rebase path after saveAs()) is always considered dirty.
     std::map<std::filesystem::path, nlohmann::json> originalContent_;

@@ -31,7 +31,7 @@
 // Pure transport only (raw byte send + connection state) - message
 // building lives in MidiMessages.h (shared with the RtMidiOutput
 // fallback), and picking which transport to use for a given call lives in
-// PreviewOutput (see docs/DESIGN.md D-018).
+// PreviewOutput (see docs/history/DESIGN.md D-018).
 class MidiPipeClient {
 public:
     MidiPipeClient() = default;
@@ -60,7 +60,7 @@ public:
     // hard cap) - it accepted the raw connection but sent no handshake
     // and hung up. Stays true until the next connection attempt (success
     // or plain "not running") starts, so the caller can check it once per
-    // frame and act (see docs/DESIGN.md D-030).
+    // frame and act (see docs/history/DESIGN.md D-030).
     bool wasRejectedForCapacity() const { return rejectedForCapacity_; }
 
 private:

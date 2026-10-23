@@ -88,7 +88,7 @@ void saveIfDirty(const std::map<std::filesystem::path, nlohmann::json>& baseline
 // parse - D-003 "read loosely"), but unlike other soft-fail cases in this
 // file it's surfaced as a warning via `warnings` rather than silently
 // leaving entries empty, since an unreachable adpcm_json means the bank's
-// entire patch list is missing (see docs/DESIGN.md D-013 - this is exactly
+// entire patch list is missing (see docs/history/DESIGN.md D-013 - this is exactly
 // the condition hit by real FITOM_staging data at the time of writing).
 PcmBank loadPcmBank(const std::filesystem::path& path, const std::string& contextLabel,
                      std::vector<std::string>& warnings) {

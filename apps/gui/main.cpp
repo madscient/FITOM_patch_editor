@@ -55,7 +55,7 @@
 // docs/plugin-midi-pipe.md in the FITOM_X repo) when an instance is
 // running, falling back to a real MIDI output port (RtMidi, configured via
 // the "プリファレンス" dialog) otherwise - see PreviewOutput and
-// docs/DESIGN.md D-018 (this superseded D-015's original "no fallback"
+// docs/history/DESIGN.md D-018 (this superseded D-015's original "no fallback"
 // decision). Field sliders take each chip's real register width, effective
 // range and step from FITOM_X's spec/chip-capabilities.json
 // (buildVoiceRanges()/buildOpRanges(), D-057), hide fields the chip never
@@ -258,7 +258,7 @@ struct FileBrowserState {
 // A small in-app directory/file browser, reusable anywhere the UI needs a
 // folder or *.profile.json path text field with a trailing "参照..."
 // (browse) button - this is meant to be the project-wide convention for
-// every such field (see docs/DESIGN.md D-019), rather than a native OS file
+// every such field (see docs/history/DESIGN.md D-019), rather than a native OS file
 // dialog (no such library is a dependency of this project - see D-006 on
 // vcpkg-only deps). One instance lives on AppContext and is repointed at
 // whichever text buffer is currently being browsed for (see
@@ -360,7 +360,7 @@ struct NewBankDialogState {
 // separate LayeredPatchEditorWindow/renderLayeredPatchEditor() (D-036) since
 // they're a reference-only structure (ToneLayers pointing at HwPatches),
 // not a synthesis-parameter form. Performance/Drum editors are still future
-// work (see docs/DESIGN.md D-015).
+// work (see docs/history/DESIGN.md D-015).
 struct PatchEditorWindow {
     int id = 0;
     bool open = true;
@@ -707,7 +707,7 @@ struct AppContext {
     int nextDrumNoteEditorId = 0;
     // One shared preview output (FITOM_X's internal MIDI pipe, falling
     // back to a regular MIDI port via RtMidi - see PreviewOutput,
-    // docs/DESIGN.md D-018), reused by every open patch editor's preview
+    // docs/history/DESIGN.md D-018), reused by every open patch editor's preview
     // keyboard. The pipe only allows a single client anyway
     // (docs/plugin-midi-pipe.md in the FITOM_X repo).
     PreviewOutput previewOutput;
@@ -1645,7 +1645,7 @@ void openLayeredSwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int laye
 // (D-038) instead of a HwPatch's/Patch's. Called from renderDrumNoteEditor()
 // when the user clicks that note's sw_bank/sw_prog label. Routed kits only -
 // a "direct" kit's own sw_bank/sw_prog isn't wired to this picker (see
-// docs/DESIGN.md D-038's scope note).
+// docs/history/DESIGN.md D-038's scope note).
 void openDrumNoteSwPatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
     SwPatchPickerState& p = ctx.swPatchPicker;
     p.target = SwPatchPickerTarget::DrumNote;
@@ -1694,7 +1694,7 @@ void renderSilenceCategoryEntry(PickerState& p, Commit&& commitPending) {
 // repo) - no Category level here, since FITOM_X本体 itself has no chip-family
 // grouping for performance banks (they're not chip-tagged, and FITOM_X's own
 // picker has no equivalent screen for this reference kind at all - see
-// docs/DESIGN.md).
+// docs/history/DESIGN.md).
 //
 // Re-resolves the target sw_bank/sw_prog int fields every frame from the
 // indices in SwPatchPickerState (per its `target`) rather than holding a

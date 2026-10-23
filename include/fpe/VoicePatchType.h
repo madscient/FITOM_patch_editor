@@ -63,7 +63,7 @@ enum class VoicePatchType : uint8_t {
 // (zones[] keyzone mapping, docs/hwpatch-reference.md section 15) is
 // specific to AWM. ADPCM-B/A and PCM-D8 (section 14) are a *different*
 // third shape - see isPcmWaveformVoicePatchType() below, not this
-// function (D-011/D-013, docs/DESIGN.md - D-011 originally lumped ADPCM-B/A
+// function (D-011/D-013, docs/history/DESIGN.md - D-011 originally lumped ADPCM-B/A
 // and PCM-D8 in with ordinary HwPatch/ops[] banks based on FITOM_X's
 // current hw_banks loader dispatch in core/src/Config.cpp; D-013 corrected
 // this once it became clear their actual "patches" come from a
@@ -74,7 +74,7 @@ bool isSampleBasedVoicePatchType(VoicePatchType t);
 // entries[] of a *.pcmbank.json (+ referenced adpcm_json, an
 // adpcm_packer-output file) rather than either an HwPatch or a
 // SampleZonePatch - ADPCM-B/ADPCM-A/PCM-D8/SSGS-ADPCM. See
-// fpe::PcmBank (PcmBank.h) and docs/DESIGN.md D-013. Distinct from
+// fpe::PcmBank (PcmBank.h) and docs/history/DESIGN.md D-013. Distinct from
 // isSampleBasedVoicePatchType() above, which is AWM-only.
 bool isPcmWaveformVoicePatchType(VoicePatchType t);
 

@@ -8,7 +8,7 @@ class RtMidiOut;
 
 // Thin wrapper around RtMidi's RtMidiOut - the "regular MIDI output"
 // fallback used when FITOM_X's internal pipe isn't available (see
-// MidiPipeClient, PreviewOutput, docs/DESIGN.md D-018). Real hardware/
+// MidiPipeClient, PreviewOutput, docs/history/DESIGN.md D-018). Real hardware/
 // software synths won't understand FITOM_X's own SysEx parameter-override
 // protocol, but note on/off, bank-select+program-change, and CC still
 // work normally against whatever's listening on the chosen port.

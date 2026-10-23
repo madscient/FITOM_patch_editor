@@ -7,7 +7,7 @@
 意味を持ち、値域・実効解像度・有効条件がどうなるかを定義しています。
 本エディタはこれを唯一の情報源として、パッチ編集画面のスライダ範囲・
 未使用フィールドの非表示・保存時のフィールド省略を決めています
-(`fpe::ChipCapabilities`、`docs/DESIGN.md` D-057)。
+(`fpe::ChipCapabilities`、`docs/history/DESIGN.md` D-057)。
 
 ## 実行時の探索
 

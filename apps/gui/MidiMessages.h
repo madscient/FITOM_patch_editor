@@ -5,7 +5,7 @@
 
 // Pure MIDI 1.0 byte-sequence builders, shared by both preview-output
 // transports (MidiPipeClient's internal FITOM_X pipe and RtMidiOutput's
-// regular MIDI port fallback - see docs/DESIGN.md D-018) so the wire
+// regular MIDI port fallback - see docs/history/DESIGN.md D-018) so the wire
 // format can't drift between two independently-maintained copies. No I/O
 // here - PreviewOutput sends whatever these return via whichever
 // transport is currently active.

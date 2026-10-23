@@ -16,10 +16,9 @@
 // (hw_banks/patch_banks/sw_banks/drum_banks/scc_wave_banks/pcm_banks) live
 // nested under a top-level `"banks": { ... }` object, not at the profile's
 // top level as originally assumed. `scc_wave_banks[]`/`pcm_banks[]` are new
-// (not previously modeled at all); their referenced file formats
-// (*.sccwave.json / *.pcmbank.json) are still out of scope for this
-// library (refs are preserved for round-tripping, but PatchWorkspace does
-// not load their content - see docs/STATUS.md).
+// (not previously modeled at all). *.pcmbank.json content is loaded as
+// fpe::PcmBank (D-013); *.sccwave.json content is not loaded yet (its refs
+// are preserved for round-tripping - see docs/STATUS.md).
 //
 // CONFIRMED (2026-08-01) against FITOM_staging (`unified.bankset.json` /
 // `emu_opl.profile.json`, added 2026-07-29) and the current
@@ -30,7 +29,7 @@
 // `"bank_overrides"` (same string-or-object shape), lets a profile patch
 // individual entries of that shared registry (matched by an array-specific
 // identity key - see BanksObject/mergeBanksObjects()) without duplicating
-// the whole thing. See docs/DESIGN.md D-041 for why this is modeled as
+// the whole thing. See docs/history/DESIGN.md D-041 for why this is modeled as
 // BanksSource here (deferring the string case's file I/O to
 // PatchWorkspace) rather than resolved inline during from_json.
 
@@ -155,7 +154,7 @@ void from_json(const nlohmann::json& j, BanksObject& v);
 // reading (PatchWorkspace::load(), via resolveBanksSource()) and - for
 // bank_overrides only, never for banks - writing it back
 // (PatchWorkspace::save(), via syncBanksSourceForSave()). See
-// docs/DESIGN.md D-041.
+// docs/history/DESIGN.md D-041.
 struct BanksSource {
     bool present = false;
     std::string externalFile; // non-empty <=> the on-disk value was a string
@@ -175,7 +174,7 @@ struct Profile {
     // (which populates these from banks/bank_overrides after resolving any
     // external file) and save() (which diffs them back against `banks` to
     // reconstruct `bank_overrides` without ever rewriting a shared external
-    // `banks` file) need to know about the split. See docs/DESIGN.md D-041.
+    // `banks` file) need to know about the split. See docs/history/DESIGN.md D-041.
     std::vector<HwBankRef> hw_banks;
     std::vector<PatchBankRef> patch_banks;
     std::vector<SwBankRef> sw_banks;

@@ -74,7 +74,7 @@ static void testVoicePatchType() {
     CHECK(fpe::isSampleBasedVoicePatchType(VoicePatchType::AWM));
     // ADPCM-B/A and PCM-D8 select a PCM waveform-bank entry via the
     // ordinary HwPatch field ops[0].WS, and are loaded as a plain HwBank
-    // by FITOM_X (see docs/DESIGN.md D-011) - only AWM uses the dedicated
+    // by FITOM_X (see docs/history/DESIGN.md D-011) - only AWM uses the dedicated
     // SampleZonePatch shape.
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::SSGS_ADPCM));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB));
@@ -498,7 +498,7 @@ static void testCrudAndRoundTrip(fpe::PatchWorkspace& ws, const fs::path& outDir
 }
 
 // Exercises the "banks" (external file reference) / "bank_overrides"
-// mechanism added by FITOM_X on 2026-07-29 (docs/DESIGN.md D-041):
+// mechanism added by FITOM_X on 2026-07-29 (docs/history/DESIGN.md D-041):
 // fixtures/profile_shared.json points "banks" at fixtures/shared.bankset.json
 // and inline-overrides its drum_banks[prog=0] entry. Loads into a scratch
 // copy (so save() below doesn't dirty the checked-in fixtures), edits, saves,

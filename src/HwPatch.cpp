@@ -94,7 +94,7 @@ void to_json(nlohmann::json& j, const HwPatch& v) {
         // before D-028) meant from_json below could never find them in a
         // real file, silently zeroing FB/ALG/AMS/PMS/NFQ/FB2 on every load
         // and then permanently destroying them the next time anything
-        // called PatchWorkspace::save() - see docs/DESIGN.md D-028.
+        // called PatchWorkspace::save() - see docs/history/DESIGN.md D-028.
         const nlohmann::json hwJson = v.hw;
         for (auto it = hwJson.begin(); it != hwJson.end(); ++it) j[it.key()] = it.value();
         j["ops"] = v.ops;

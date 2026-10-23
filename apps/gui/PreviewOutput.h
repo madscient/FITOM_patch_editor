@@ -13,7 +13,7 @@
 // an instance is running, otherwise a regular MIDI output port via RtMidi
 // (configured through Preferences) so there's still audible feedback with
 // FITOM_X closed, understanding that a generic MIDI receiver won't act on
-// the parameter-override SysEx (see docs/DESIGN.md D-018).
+// the parameter-override SysEx (see docs/history/DESIGN.md D-018).
 class PreviewOutput {
 public:
     enum class ActiveBackend { None, FitomXPipe, RtMidi };
