@@ -36,7 +36,7 @@
 //             + ドラムノート (DrumNote)
 //
 // This class is offline-only (pure JSON load/edit/save); it does not talk
-// to a running FITOM_X instance. See README.md for scope.
+// to a running FITOM_X instance. See docs/ARCHITECTURE.md for scope.
 
 namespace fpe {
 

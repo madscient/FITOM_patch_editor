@@ -4,7 +4,7 @@
 #include <string>
 
 // FITOM_X patch editor - data model layer.
-// See ../../README.md for scope, source references and known assumptions.
+// See ../../docs/ARCHITECTURE.md for scope, source references and known assumptions.
 
 namespace fpe {
 

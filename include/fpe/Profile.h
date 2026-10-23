@@ -49,7 +49,6 @@ void to_json(nlohmann::json& j, const HwBankRef& v);
 void from_json(const nlohmann::json& j, HwBankRef& v);
 
 // profile.json patch_banks[] entry (*.patchbank.json registration).
-// See NOTE ON CONFIDENCE above re: array name.
 struct PatchBankRef {
     int bank = 0;
     std::string file;
@@ -59,7 +58,6 @@ void to_json(nlohmann::json& j, const PatchBankRef& v);
 void from_json(const nlohmann::json& j, PatchBankRef& v);
 
 // profile.json sw_banks[] entry (*.swbank.json registration).
-// See NOTE ON CONFIDENCE above re: array name.
 struct SwBankRef {
     int bank = 0;
     std::string file;

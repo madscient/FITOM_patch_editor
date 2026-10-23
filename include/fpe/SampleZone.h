@@ -8,9 +8,10 @@
 
 #include "fpe/VoicePatchType.h"
 
-// Sample-based ("SampleZonePatch") voice format used by the PCM/ADPCM
-// device families (ADPCM-B/A, PCM-D8, AWM). Structurally unrelated to
-// HwPatch - no FM operators, just keyzone -> waveform mapping.
+// Sample-based ("SampleZonePatch") voice format used by AWM only - the
+// ADPCM-B/A, PCM-D8 and SSGS-ADPCM families use fpe::PcmBank instead
+// (D-013). Structurally unrelated to HwPatch - no FM operators, just
+// keyzone -> waveform mapping.
 // Source: docs/hwpatch-reference.md section 15, docs/voice-parameter-reference.md
 // "OPL4 AWM" section.
 

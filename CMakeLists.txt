@@ -79,10 +79,7 @@ if(FPE_BUILD_TESTS)
   set_tests_properties(fpe_smoke_test PROPERTIES TIMEOUT 120)
 endif()
 
-# --- fitom_patch_editor_gui: Dear ImGui (GLFW + OpenGL3) shell -------------
-# Currently just the windowing/render-loop shell (see apps/gui/main.cpp) -
-# the patch browser/editor UI itself is built on top of fpe::PatchWorkspace
-# in later work.
+# --- fitom_patch_editor_gui: Dear ImGui (GLFW + OpenGL3) editor ------------
 if(FPE_BUILD_GUI)
   find_package(glfw3 CONFIG REQUIRED)
   find_package(GLEW REQUIRED)

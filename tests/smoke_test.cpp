@@ -72,10 +72,7 @@ static void testVoicePatchType() {
     CHECK(!fpe::stringToVoicePatchType("NOT_A_CHIP").has_value());
     CHECK(fpe::voicePatchTypeToString(VoicePatchType::OPZ2) == "OPZ2");
     CHECK(fpe::isSampleBasedVoicePatchType(VoicePatchType::AWM));
-    // ADPCM-B/A and PCM-D8 select a PCM waveform-bank entry via the
-    // ordinary HwPatch field ops[0].WS, and are loaded as a plain HwBank
-    // by FITOM_X (see docs/history/DESIGN.md D-011) - only AWM uses the dedicated
-    // SampleZonePatch shape.
+    // Only AWM uses the dedicated SampleZonePatch shape.
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::SSGS_ADPCM));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMB));
     CHECK(!fpe::isSampleBasedVoicePatchType(VoicePatchType::ADPCMA));

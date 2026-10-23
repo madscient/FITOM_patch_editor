@@ -5,11 +5,11 @@
 // top of fpe::PatchWorkspace (see include/fpe/PatchWorkspace.h):
 //
 //   MainMenu -> (load profile) -> FileBrowser -> (pick *.profile.json)
-//     -> load succeeds -> Outline (read-only tree of the loaded profile)
+//     -> load succeeds -> Outline (bank list of the loaded profile)
 //     -> load fails    -> error popup, stays on FileBrowser
 //
-// If a profile path is given as argv[1] (and only that one argument),
-// that profile is loaded up front and the app starts directly on Outline
+// If a profile path is given as argv[1] (any argument count other than
+// kiosk mode's exactly-4), that profile is loaded up front and the app starts directly on Outline
 // (as if it had just been picked from FileBrowser), skipping
 // MainMenu/FileBrowser entirely. This is for launching from an
 // already-running FITOM_X instance, which knows which profile it
@@ -85,7 +85,8 @@
 // placeholders with only the numeric index burned in, a human will draw the
 // actual waveform shapes later), LFM/SLM (LFO mode) as a symbol dropdown,
 // everything else as a plain slider (exact ranges unconfirmed against any
-// FITOM_X doc, unlike HwPatch's FieldRange tables). No realtime preview -
+// FITOM_X doc, unlike HwPatch's, which come from spec/chip-capabilities.json).
+// No realtime preview -
 // a SwPatch has no synthesis parameters of its own to sound.
 //
 // Drum kits (BankCategory::Drum) get a two-level drill-down instead of one
@@ -5158,9 +5159,8 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
 }
 
 // The patch/note list for the single bank or drum kit selected in
-// renderOutline(). Deliberately shallow (name/prog/basic refs only, plus
-// ToneLayer for layered patches since that's the bank's own on-disk shape) -
-// per-parameter editing is future work (see docs/STATUS.md).
+// renderOutline(). Editing happens in the modeless editor each row opens;
+// PCM waveform and sample-zone banks have no editor and are list-only.
 void renderBankDetail(AppContext& ctx) {
     fpe::PatchWorkspace& ws = ctx.workspace;
 

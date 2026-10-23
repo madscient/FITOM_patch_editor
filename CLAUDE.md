@@ -178,7 +178,7 @@ git var GIT_AUTHOR_IDENT                      # 設定後の確認。上と同�
   にフォールバック)。書き込みは、`*.hwbank.json`のみ
   `spec/chip-capabilities.json`を見てそのチップが読まないフィールドを
   省き(デフォルト値でないキーは必ず残す)、それ以外は正規のフィールド
-  一式を出力する。詳細は `README.md` の「設計上のポイント」。
+  一式を出力する。詳細は `docs/ARCHITECTURE.md` の「読み書きの規約」。
 - チップごとのパラメータ範囲・未使用判定・有効条件を**コードに手書き
   しない**。`spec/chip-capabilities.json`(FITOM_X `spec/` からの同期
   コピー)が唯一の情報源で、`fpe::ChipCapabilities` 経由で読む。
