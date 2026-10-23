@@ -11,6 +11,7 @@ endif()
 
 option(FPE_BUILD_TESTS "Build fpe smoke tests" ON)
 option(FPE_BUILD_GUI "Build the Dear ImGui GUI shell (apps/gui)" ON)
+option(FPE_BUILD_TOOLS "Build developer tools (tools/)" ON)
 
 if(MSVC)
   # /utf-8: source files (including this project's Japanese comments and
@@ -77,6 +78,19 @@ if(FPE_BUILD_TESTS)
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   # Normally finishes in seconds; the cap keeps a hung run from stalling ctest.
   set_tests_properties(fpe_smoke_test PROPERTIES TIMEOUT 120)
+endif()
+
+# --- developer tools ---------------------------------------------------------
+# Not part of ctest: fpe_roundtrip_check needs real profile data passed on the
+# command line (see tools/roundtrip_check.cpp).
+if(FPE_BUILD_TOOLS)
+  add_executable(fpe_roundtrip_check tools/roundtrip_check.cpp)
+  target_link_libraries(fpe_roundtrip_check PRIVATE fpe_data)
+  if(MSVC)
+    target_compile_options(fpe_roundtrip_check PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(fpe_roundtrip_check PRIVATE -Wall -Wextra)
+  endif()
 endif()
 
 # --- fitom_patch_editor_gui: Dear ImGui (GLFW + OpenGL3) editor ------------

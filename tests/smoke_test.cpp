@@ -1011,6 +1011,48 @@ static void disableCrtDialogs() {
 }
 #endif
 
+// saveAs() of a profile whose "banks" is a shared external bankset must keep
+// pointing at that one bankset (other profiles use it too) rather than at a
+// path that doesn't exist next to the new profile.
+static void testSaveAsKeepsSharedBankset(const fs::path& scratchDir) {
+    if (fs::exists(scratchDir)) fs::remove_all(scratchDir);
+    const fs::path src = scratchDir / "src";
+    fs::create_directories(src);
+    for (const auto& entry : fs::directory_iterator(fixturesDir())) {
+        fs::copy(entry.path(), src / entry.path().filename(),
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+    }
+    const fs::path bankset = src / "shared.bankset.json";
+    const std::string banksetBefore = readFile(bankset);
+
+    fpe::PatchWorkspace ws;
+    ws.load(src / "profile_shared.json");
+    const size_t kitCount = ws.drumKits().size();
+    const fs::path outProfile = scratchDir / "out" / "deeper" / "profile_shared.json";
+    ws.saveAs(outProfile);
+
+    CHECK(readFile(bankset) == banksetBefore);
+    CHECK(!fs::exists(outProfile.parent_path() / "shared.bankset.json")); // not copied
+
+    nlohmann::json raw;
+    {
+        std::ifstream in(outProfile, std::ios::binary);
+        in >> raw;
+    }
+    CHECK(raw.contains("banks") && raw["banks"].is_string());
+    if (raw.contains("banks") && raw["banks"].is_string()) {
+        std::error_code ec;
+        const fs::path target = outProfile.parent_path() / raw["banks"].get<std::string>();
+        CHECK(fs::equivalent(target, bankset, ec) && !ec);
+    }
+
+    fpe::PatchWorkspace reloaded;
+    reloaded.load(outProfile);
+    for (const auto& w : reloaded.warnings()) std::fprintf(stderr, "saveAs-shared reload warning: %s\n", w.c_str());
+    CHECK(reloaded.warnings().empty());
+    CHECK(reloaded.drumKits().size() == kitCount);
+}
+
 template <typename T>
 static nlohmann::json roundTrip(const nlohmann::json& in) {
     return nlohmann::json(in.get<T>());
@@ -1087,6 +1129,7 @@ int main() {
 
     testSharedBankset(fs::temp_directory_path() / "fpe_smoke_test_shared_bankset");
     testSaveOnlyRewritesChangedFiles(fs::temp_directory_path() / "fpe_smoke_test_dirty_save");
+    testSaveAsKeepsSharedBankset(fs::temp_directory_path() / "fpe_smoke_test_saveas_shared");
 
     std::printf("%d/%d checks passed\n", g_checks - g_failures, g_checks);
     if (g_failures > 0) {

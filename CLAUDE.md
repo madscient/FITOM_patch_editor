@@ -183,6 +183,9 @@ git var GIT_AUTHOR_IDENT                      # 設定後の確認。上と同�
   しない**。`spec/chip-capabilities.json`(FITOM_X `spec/` からの同期
   コピー)が唯一の情報源で、`fpe::ChipCapabilities` 経由で読む。
   FITOM_X側が更新されたらコピーを差し替えて `ctest` を通す。
+  `config_schema/` が変わったときは、`fpe_roundtrip_check` を FITOM_staging の
+  全プロファイルで回し、保存で値が失われないことを確かめる
+  (`docs/ARCHITECTURE.md` の「テスト」)。
 - サードパーティ依存はすべて vcpkg マニフェストモード
   (`vcpkg.json`)経由。リポジトリにベンダリング・submodule化しない
   (理由は D-006)。

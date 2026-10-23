@@ -486,6 +486,16 @@ void PatchWorkspace::rebaseSourceFiles(const std::filesystem::path& newRoot) {
 
 void PatchWorkspace::saveAs(const std::filesystem::path& profileJsonPath) {
     const std::filesystem::path newRoot = profileJsonPath.parent_path();
+    // An external "banks" bankset is shared with other profiles, so the copy
+    // keeps referring to the original file instead of forking it (D-062). Its
+    // entries' `file` paths are profile-relative, which is why the bank files
+    // themselves are still copied by rebaseSourceFiles() below.
+    if (!profile_.banks.externalFile.empty()) {
+        std::error_code ec;
+        const std::filesystem::path original = std::filesystem::absolute(resolve(profile_.banks.externalFile), ec);
+        std::filesystem::path rel = std::filesystem::relative(original, std::filesystem::absolute(newRoot, ec), ec);
+        profile_.banks.externalFile = (ec || rel.empty() ? original : rel).generic_string();
+    }
     rebaseSourceFiles(newRoot);
     profilePath_ = profileJsonPath;
     rootDir_ = newRoot;
