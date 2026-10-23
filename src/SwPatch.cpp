@@ -82,10 +82,12 @@ const SwPatch* SwBank::findByProg(int prog) const {
 
 void to_json(nlohmann::json& j, const SwBank& v) {
     j = nlohmann::json{{"name", v.name}, {"patches", v.patches}};
+    json_util::mergeUnknownKeys(j, v.extra);
 }
 void from_json(const nlohmann::json& j, SwBank& v) {
     v.name = getOr<std::string>(j, "name", "");
     v.patches = getOr<std::vector<SwPatch>>(j, "patches", {});
+    v.extra = json_util::unknownKeys(j, {"name", "patches"});
 }
 
 } // namespace fpe

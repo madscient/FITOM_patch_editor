@@ -202,6 +202,10 @@ ChipCapabilities& ChipCapabilities::instance() {
     return inst;
 }
 
+// CWD first, unlike assets/ (exe first): fpe_smoke_test.exe sits in the same
+// build output directory the GUI's POST_BUILD copies spec/ into, so an
+// exe-first search would test against whatever copy the last GUI build left
+// there instead of the source tree's spec/ (ctest runs with CWD = source root).
 std::optional<std::filesystem::path> ChipCapabilities::findSpecFile() {
     std::error_code ec;
     if (auto p = searchUpward(std::filesystem::current_path(ec))) return p;

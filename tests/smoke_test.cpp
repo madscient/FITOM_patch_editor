@@ -49,13 +49,7 @@ static fs::path fixturesDir() {
         if (fs::exists(p / "fixtures" / "profile.json")) return p / "fixtures";
         if (p == p.root_path()) break;
     }
-    // Fall back to a path relative to this source file, resolved at
-    // configure time via a compile definition (see CMakeLists.txt).
-#ifdef FPE_FIXTURES_DIR
-    return fs::path(FPE_FIXTURES_DIR);
-#else
     return here / "fixtures";
-#endif
 }
 
 static std::string readFile(const fs::path& path) {
@@ -551,6 +545,8 @@ static void testSharedBankset(const fs::path& scratchDir) {
         raw["bank_overrides"].contains("drum_banks")) {
         CHECK(raw["bank_overrides"]["drum_banks"].size() == 2); // prog0 (changed) + prog2 (new)
     }
+    // save() rebuilds bank_overrides from a diff; keys it doesn't model must survive that.
+    CHECK(raw.contains("bank_overrides") && raw["bank_overrides"].value("_comment", "") == "kept through save");
 
     fpe::PatchWorkspace reloaded;
     reloaded.load(profilePath);
@@ -1015,10 +1011,65 @@ static void disableCrtDialogs() {
 }
 #endif
 
+template <typename T>
+static nlohmann::json roundTrip(const nlohmann::json& in) {
+    return nlohmann::json(in.get<T>());
+}
+
+// Every key of `expected` must come back with the same value.
+static bool keepsAll(const nlohmann::json& expected, const nlohmann::json& actual) {
+    for (auto it = expected.begin(); it != expected.end(); ++it) {
+        if (!actual.contains(it.key()) || actual.at(it.key()) != it.value()) {
+            std::fprintf(stderr, "  lost or changed key \"%s\"\n", it.key().c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+// Fields this editor never edits must still survive a load/save round trip:
+// a real *.samplezonebank.json carries per-zone AWM tuning on every zone,
+// real *.pcmbank.json files carry swpatches[], and real bank files carry
+// free-form top-level keys such as "note"/"source" that no schema declares.
+static void testUnmodeledFieldsRoundTrip() {
+    using nlohmann::json;
+    const json zone = {{"key_min", 36}, {"key_max", 38}, {"vel_min", 1}, {"vel_max", 126},
+                       {"wave_index", 203}, {"pitch_offset", -1234}, {"key_scaling", 0},
+                       {"tone_attenuate", 12}, {"volume_factor", 200}, {"root_note", 60},
+                       {"name", "Bass Drum 1"}, {"sw_bank", 3}, {"sw_prog", 4}};
+    const json zoneBank = {{"_comment", "kept"}, {"note", "free-form"}, {"name", "Z"},
+                           {"patches", json::array({{{"prog", 0}, {"name", "Kit"}, {"zones", json::array({zone})}}})}};
+    const json zoneOut = roundTrip<fpe::SampleZoneBank>(zoneBank);
+    CHECK(keepsAll({{"_comment", "kept"}, {"note", "free-form"}}, zoneOut));
+    CHECK(keepsAll(zone, zoneOut["patches"][0]["zones"][0]));
+    // samplezonebank.schema.json: root_note defaults to 69, not 60.
+    const json bareZone = roundTrip<fpe::SampleZone>({{"wave_index", 1}});
+    CHECK(bareZone.value("root_note", -1) == 69);
+
+    const json pcm = {{"name", "P"}, {"codec", "adpcm-b"}, {"bin_file", "x.bin"}, {"adpcm_json", "x.json"},
+                      {"note", "free-form"},
+                      {"swpatches", json::array({{{"entry_no", 2}, {"sw_bank", 1}, {"sw_prog", 5}}})}};
+    CHECK(keepsAll({{"note", "free-form"}, {"swpatches", pcm["swpatches"]}}, roundTrip<fpe::PcmBank>(pcm)));
+
+    const json extra = {{"note", "free-form"}, {"source", "somewhere"}, {"_comment", json::array({"a", "b"})}};
+    auto withExtra = [&](json j) {
+        j.update(extra);
+        return j;
+    };
+    CHECK(keepsAll(extra, roundTrip<fpe::HwBank>(withExtra({{"name", "H"}, {"patches", json::array()}}))));
+    CHECK(keepsAll(extra, roundTrip<fpe::PatchBank>(withExtra({{"name", "L"}, {"patches", json::array()}}))));
+    CHECK(keepsAll(extra, roundTrip<fpe::SwBank>(withExtra({{"name", "S"}, {"patches", json::array()}}))));
+    CHECK(keepsAll(extra, roundTrip<fpe::DrumKit>(withExtra({{"type", "routed"}, {"name", "R"}, {"notes", json::array()}}))));
+    CHECK(keepsAll(extra, roundTrip<fpe::DrumKit>(withExtra({{"type", "direct"}, {"name", "D"}, {"patch_bank", 0}}))));
+    CHECK(keepsAll({{"_comment", "kept"}},
+                   roundTrip<fpe::BanksObject>({{"_comment", "kept"}, {"drum_banks", json::array()}})));
+}
+
 int main() {
 #ifdef _MSC_VER
     disableCrtDialogs();
 #endif
+    testUnmodeledFieldsRoundTrip();
     testVoicePatchType();
     testChipCapabilities();
     testCapabilityBranchInheritance();

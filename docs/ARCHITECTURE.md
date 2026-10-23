@@ -56,7 +56,7 @@ MSVC では `/utf-8` を全ターゲットに付ける。ソースのコメン�
 | 対象 | 探し方 |
 |---|---|
 | `assets/`(ALG 接続図・波形画像) | 実行ファイルのディレクトリから上方向に、`assets/alg_diagrams/opn_al0.png` を探す。実行ファイルの場所が取れなければカレントディレクトリから |
-| `spec/chip-capabilities.json` | カレントディレクトリから上方向、見つからなければ実行ファイルのディレクトリから上方向 |
+| `spec/chip-capabilities.json` | カレントディレクトリから上方向、見つからなければ実行ファイルのディレクトリから上方向(`assets/` と順が逆なのは、テストの実行ファイルが GUI のビルドが置いた写しと同じディレクトリにあるため。ソースの `spec/` を読ませる) |
 | `fixtures/`(テスト) | カレントディレクトリから上方向に `fixtures/profile.json` を探す |
 | プリファレンス | 実行ファイルと同じディレクトリの `FITOM_patch_editor.preference.json`。実行ファイルの場所が取れなければカレントディレクトリ |
 
@@ -74,7 +74,7 @@ MSVC では `/utf-8` を全ターゲットに付ける。ソースのコメン�
 | `*.swbank.json` | `SwBank` → `SwPatch` | `performanceBanks()` |
 | `*.hwbank.json` | `HwBank` → `HwPatch` | `deviceBanks()` |
 | `*.samplezonebank.json`(AWM) | `SampleZoneBank` → `SampleZonePatch` → `SampleZone` | `sampleZoneBanks()` |
-| `*.pcmbank.json` と、それが指す `adpcm_json` | `PcmBank` → `PcmBankEntry` | `pcmBanks()` |
+| `*.pcmbank.json` と、それが指す `adpcm_json` | `PcmBank` → `PcmBankEntry`、`PcmSwPatchRef`(`swpatches[]`) | `pcmBanks()` |
 | `*.drumkit.json` | `DrumKit` → `DrumNote` | `drumKits()` |
 | `*.sccwave.json` | 参照(`SccWaveBankRef`)だけを保持し、中身は読まない | — |
 | `sf2_banks[]` | 生の JSON のまま保持し、マージも差分もしない | — |
@@ -211,7 +211,14 @@ SSG のタグで登録される。参照からバンクを探すときは
   `pcm_banks` は bank+chip、その他は bank)。`bank_overrides` は削除を
   表せないので、ベース由来のエントリを消すと警告を出す。
 - `"banks"` が外部参照でなければ、実効の登録表をそのまま `"banks"` に書く。
-- 編集したファイルでは、モデル化していないキー(`_comment` など)が失われる。
+- 各バンクファイルと `bank_overrides` / `banks` のオブジェクトでは、最上位の
+  モデル化していないキー(`_comment`、実データの `note` / `source` など)を
+  `extra` に持ち、そのまま書き戻す(`json_util::unknownKeys()` /
+  `mergeUnknownKeys()`。プロファイル自体は `Profile::extra`)。パッチより下の
+  階層のモデル化していないキーは保持しないので、編集したファイルでは失われる。
+- サンプルゾーン(`*.samplezonebank.json`)と PCM 波形バンクは、エディタで
+  編集しないフィールドもスキーマどおりすべてモデル化する。AWM のゾーンの
+  ピッチ校正値などは、書き戻すと失われては困る。
   編集していないファイルは書かないので、そのまま残る。
 - `saveAs()` は、読み込んだ全ファイルの相対配置を保ったまま新しい場所へ
   移して書く。`PcmBank` の `adpcm_json` / `bin_file` もコピーする。外部参照の
@@ -407,7 +414,8 @@ SSG のタグで登録される。参照からバンクを探すときは
 - 範囲は `fpe_data` だけ。VoicePatchType の変換と判定、BuiltinVoices、
   読み込み、CRUD と保存・再読み込み、共有バンクセット、変更したファイルだけを
   書くこと、ChipCapabilities の解決(分岐の継承を含む)、hwbank の省略、
-  既定値。GUI はテストしない。
+  既定値、モデル化していないキーとサンプルゾーン・PCM のフィールドの往復。
+  GUI はテストしない。
 - `spec/chip-capabilities.json` の値域や条件もテストで確かめているので、
   写しを差し替えて意図しない変更があれば落ちる。
 - MSVC の Debug ビルドでは、`main()` の冒頭で CRT の assert ダイアログを
@@ -432,3 +440,9 @@ SSG のタグで登録される。参照からバンクを探すときは
   場所の取得、フォントの候補パスは未検証。
 - Windows の `MessageBoxA` は UTF-8 を化かす。UTF-16 に変換して
   `MessageBoxW` を使う。
+- リポジトリに2つのパスで到達できる環境(ジャンクションなど)で、同じビルド
+  ツリーを両方のパスから configure / build すると、MSBuild がプロジェクトを
+  2つと見なし、MSB8028(中間ディレクトリの共有)の警告を出す。中間ディレクトリに
+  tlog のフォルダが2つできるのが目印。これまで出ていた MSB8028 はこれが原因と
+  見ている(未検証。古い tlog を消して警告が消えるかは試していない)。
+  ビルドは1つのパスからだけ行う。

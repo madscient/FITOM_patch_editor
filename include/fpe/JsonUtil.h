@@ -1,4 +1,6 @@
 #pragma once
+#include <initializer_list>
+
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -44,6 +46,32 @@ T getRequired(const nlohmann::json& j, const char* key, const char* context) {
 template <typename T>
 void setField(nlohmann::json& j, const char* key, const T& value) {
     j[key] = value;
+}
+
+// Keys of `j` this library doesn't model (e.g. "_comment", or the free-form
+// "note"/"source" real bank files carry), kept so a save doesn't drop them.
+inline nlohmann::json unknownKeys(const nlohmann::json& j, std::initializer_list<const char*> known) {
+    nlohmann::json out = nlohmann::json::object();
+    if (!j.is_object()) return out;
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        bool isKnown = false;
+        for (const char* k : known) {
+            if (it.key() == k) {
+                isKnown = true;
+                break;
+            }
+        }
+        if (!isKnown) out[it.key()] = it.value();
+    }
+    return out;
+}
+
+// Puts `extra` back into an already-serialized object. Modeled keys win.
+inline void mergeUnknownKeys(nlohmann::json& j, const nlohmann::json& extra) {
+    if (!extra.is_object()) return;
+    for (auto it = extra.begin(); it != extra.end(); ++it) {
+        if (!j.contains(it.key())) j[it.key()] = it.value();
+    }
 }
 
 } // namespace json_util

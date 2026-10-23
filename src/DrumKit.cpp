@@ -78,6 +78,7 @@ void to_json(nlohmann::json& j, const DrumKit& v) {
         j["pan"] = v.pan;
         j["gate_time"] = v.gate_time;
     }
+    json_util::mergeUnknownKeys(j, v.extra);
 }
 void from_json(const nlohmann::json& j, DrumKit& v) {
     const std::string typeStr = getOr<std::string>(j, "type", "routed");
@@ -101,6 +102,9 @@ void from_json(const nlohmann::json& j, DrumKit& v) {
         v.notes = getOr<std::vector<DrumNote>>(j, "notes", {});
         v.choke_groups = getOr<std::vector<std::vector<uint8_t>>>(j, "choke_groups", {});
     }
+    v.extra = json_util::unknownKeys(j, {"type", "name", "notes", "choke_groups", "patch_bank", "patch_prog",
+                                         "note_min", "note_max", "voice_patch_type", "sw_bank", "sw_prog",
+                                         "fine_tune", "pan", "gate_time"});
 }
 
 } // namespace fpe

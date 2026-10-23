@@ -293,6 +293,7 @@ void PatchWorkspace::syncBanksSourceForSave() {
     ov.scc_wave_banks =
         diffAgainstBase(profile_.banks.data.scc_wave_banks, profile_.scc_wave_banks, "scc_wave_banks", warnings_);
     ov.pcm_banks = diffAgainstBase(profile_.banks.data.pcm_banks, profile_.pcm_banks, "pcm_banks", warnings_);
+    ov.extra = profile_.bank_overrides.data.extra;
 
     profile_.bank_overrides.data = std::move(ov);
     // Keep a "bank_overrides": "<file>" reference even if the diff came out

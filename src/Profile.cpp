@@ -81,6 +81,7 @@ void to_json(nlohmann::json& j, const BanksObject& v) {
     if (!v.scc_wave_banks.empty()) j["scc_wave_banks"] = v.scc_wave_banks;
     if (!v.pcm_banks.empty()) j["pcm_banks"] = v.pcm_banks;
     if (v.sf2_banks.is_array() && !v.sf2_banks.empty()) j["sf2_banks"] = v.sf2_banks;
+    json_util::mergeUnknownKeys(j, v.extra);
 }
 void from_json(const nlohmann::json& j, BanksObject& v) {
     v.hw_banks = getOr<std::vector<HwBankRef>>(j, "hw_banks", {});
@@ -90,6 +91,8 @@ void from_json(const nlohmann::json& j, BanksObject& v) {
     v.scc_wave_banks = getOr<std::vector<SccWaveBankRef>>(j, "scc_wave_banks", {});
     v.pcm_banks = getOr<std::vector<PcmBankRef>>(j, "pcm_banks", {});
     v.sf2_banks = getOr<nlohmann::json>(j, "sf2_banks", nlohmann::json::array());
+    v.extra = json_util::unknownKeys(
+        j, {"hw_banks", "patch_banks", "sw_banks", "drum_banks", "scc_wave_banks", "pcm_banks", "sf2_banks"});
 }
 
 // See BanksSource's comment in Profile.h re: why the string case leaves

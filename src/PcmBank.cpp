@@ -24,6 +24,15 @@ void from_json(const nlohmann::json& j, PcmBankEntry& v) {
     v.root_note = getOr<uint8_t>(j, "root_note", 69);
 }
 
+void to_json(nlohmann::json& j, const PcmSwPatchRef& v) {
+    j = nlohmann::json{{"entry_no", v.entry_no}, {"sw_bank", v.sw_bank}, {"sw_prog", v.sw_prog}};
+}
+void from_json(const nlohmann::json& j, PcmSwPatchRef& v) {
+    v.entry_no = json_util::getRequired<int>(j, "entry_no", "pcmbank swpatches[]");
+    v.sw_bank = getOr<int>(j, "sw_bank", -1);
+    v.sw_prog = getOr<int>(j, "sw_prog", -1);
+}
+
 const PcmBankEntry* PcmBank::findByIndex(size_t index) const {
     if (index >= entries.size()) return nullptr;
     return &entries[index];
@@ -42,6 +51,8 @@ void to_json(nlohmann::json& j, const PcmBank& v) {
     } else {
         j["adpcm_json"] = v.adpcm_json;
     }
+    j["swpatches"] = v.swpatches;
+    json_util::mergeUnknownKeys(j, v.extra);
 }
 
 void from_json(const nlohmann::json& j, PcmBank& v) {
@@ -56,6 +67,9 @@ void from_json(const nlohmann::json& j, PcmBank& v) {
     // adpcm_json is set) is PatchWorkspace::loadBanks()'s job, since it
     // requires opening a second file.
     v.entries = getOr<std::vector<PcmBankEntry>>(j, "entries", {});
+    v.swpatches = getOr<std::vector<PcmSwPatchRef>>(j, "swpatches", {});
+    v.extra = json_util::unknownKeys(
+        j, {"name", "codec", "sample_rate", "boundary", "bin_file", "adpcm_json", "entries", "swpatches"});
 }
 
 } // namespace fpe

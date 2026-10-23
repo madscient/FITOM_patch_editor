@@ -55,10 +55,12 @@ const Patch* PatchBank::findByProg(int prog) const {
 
 void to_json(nlohmann::json& j, const PatchBank& v) {
     j = nlohmann::json{{"name", v.name}, {"patches", v.patches}};
+    json_util::mergeUnknownKeys(j, v.extra);
 }
 void from_json(const nlohmann::json& j, PatchBank& v) {
     v.name = getOr<std::string>(j, "name", "");
     v.patches = getOr<std::vector<Patch>>(j, "patches", {});
+    v.extra = json_util::unknownKeys(j, {"name", "patches"});
 }
 
 } // namespace fpe

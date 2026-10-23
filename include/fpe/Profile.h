@@ -134,10 +134,12 @@ struct BanksObject {
     std::vector<SccWaveBankRef> scc_wave_banks;
     std::vector<PcmBankRef> pcm_banks;
     nlohmann::json sf2_banks = nlohmann::json::array();
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled keys ("_comment", ...), written back as-is
 
     bool empty() const {
         return hw_banks.empty() && patch_banks.empty() && sw_banks.empty() && drum_banks.empty() &&
-               scc_wave_banks.empty() && pcm_banks.empty() && (!sf2_banks.is_array() || sf2_banks.empty());
+               scc_wave_banks.empty() && pcm_banks.empty() && (!sf2_banks.is_array() || sf2_banks.empty()) &&
+               (!extra.is_object() || extra.empty());
     }
 };
 void to_json(nlohmann::json& j, const BanksObject& v);

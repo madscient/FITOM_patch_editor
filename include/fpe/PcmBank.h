@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "fpe/VoicePatchType.h"
 
@@ -49,6 +49,16 @@ struct PcmBankEntry {
 void to_json(nlohmann::json& j, const PcmBankEntry& v);
 void from_json(const nlohmann::json& j, PcmBankEntry& v);
 
+// pcmbank.schema.json swpatches[]: ties one entry to a performance patch.
+struct PcmSwPatchRef {
+    int entry_no = 0;
+    int sw_bank = -1; // -1 = no reference
+    int sw_prog = -1;
+};
+
+void to_json(nlohmann::json& j, const PcmSwPatchRef& v);
+void from_json(const nlohmann::json& j, PcmSwPatchRef& v);
+
 // Reflects only what a single *.pcmbank.json file's own JSON directly
 // contains. `entries` here may be empty even for a bank that does have
 // entries - see the file-level comment above; PatchWorkspace::loadBanks()
@@ -61,6 +71,8 @@ struct PcmBank {
     std::string bin_file;   // relative path to the raw sample data; informational only for this editor
     std::string adpcm_json; // relative path to a separate adpcm_packer-output JSON holding entries[]
     std::vector<PcmBankEntry> entries;
+    std::vector<PcmSwPatchRef> swpatches;
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled top-level keys, written back as-is
 
     // runtime metadata (not part of the on-disk JSON shape)
     VoicePatchType voicePatchType = VoicePatchType::None;

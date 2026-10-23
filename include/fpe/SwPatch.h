@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 // SwPatch ("performance patch"): software-side expression parameters
 // (vibrato, tremolo, velocity sensitivity, fine transpose) that apply
@@ -70,6 +70,7 @@ void from_json(const nlohmann::json& j, SwPatch& v);
 struct SwBank {
     std::string name;
     std::vector<SwPatch> patches;
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled top-level keys, written back as-is
 
     // runtime metadata (not part of the on-disk JSON shape)
     int bankIndex = 0;

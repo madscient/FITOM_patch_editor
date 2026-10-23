@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "fpe/VoicePatchType.h"
 
@@ -112,6 +112,7 @@ void from_json(const nlohmann::json& j, HwPatch& v);
 struct HwBank {
     std::string name;
     std::vector<HwPatch> patches;
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled top-level keys ("note", "_comment", ...), written back as-is
 
     // --- runtime metadata, populated by PatchWorkspace, NOT part of the
     // *.hwbank.json file's own JSON shape ---

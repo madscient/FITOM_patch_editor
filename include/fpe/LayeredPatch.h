@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "fpe/VoicePatchType.h"
 
@@ -54,6 +54,7 @@ void from_json(const nlohmann::json& j, Patch& v);
 struct PatchBank {
     std::string name;
     std::vector<Patch> patches;
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled top-level keys, written back as-is
 
     // runtime metadata (not part of the on-disk JSON shape)
     int bankIndex = 0;

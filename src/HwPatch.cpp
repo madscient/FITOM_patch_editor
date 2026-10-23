@@ -159,10 +159,12 @@ void to_json(nlohmann::json& j, const HwBank& v) {
         patches.push_back(std::move(pj));
     }
     j = nlohmann::json{{"name", v.name}, {"patches", std::move(patches)}};
+    json_util::mergeUnknownKeys(j, v.extra);
 }
 void from_json(const nlohmann::json& j, HwBank& v) {
     v.name = getOr<std::string>(j, "name", "");
     v.patches = getOr<std::vector<HwPatch>>(j, "patches", {});
+    v.extra = json_util::unknownKeys(j, {"name", "patches"});
 }
 
 } // namespace fpe

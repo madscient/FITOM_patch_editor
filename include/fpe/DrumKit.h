@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "fpe/VoicePatchType.h"
 
@@ -76,6 +76,8 @@ struct DrumKit {
     int fine_tune = 0;
     int pan = 0;
     int gate_time = 0;
+
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled top-level keys, written back as-is
 
     // --- runtime metadata (not part of the on-disk JSON shape) ---
     int prog = 0;              // profile.json drum_banks[].prog (Program Change value that selects this kit)

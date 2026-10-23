@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 
 #include "fpe/VoicePatchType.h"
 
@@ -17,13 +17,24 @@
 
 namespace fpe {
 
+// Field set and defaults per FITOM_X config_schema/samplezonebank.schema.json
+// (zones[] has additionalProperties:false, so this is exhaustive).
 struct SampleZone {
     uint8_t key_min = 0;
     uint8_t key_max = 127;
     uint8_t vel_min = 0;
     uint8_t vel_max = 127;
     int wave_index = 0;   // raw chip-side ROM/PCM-bank waveform index
-    uint8_t root_note = 60; // reserved for future ADPCM use; unused by OPL4 AWM
+    // Per-waveform AWM calibration (ALSA yrw801.c's opl4_sound conventions).
+    // Without these the ROM waveforms play at the wrong pitch/level.
+    int16_t pitch_offset = 0;   // 100/128-cent units
+    uint16_t key_scaling = 100; // % note tracking; 0 = fixed pitch
+    uint8_t tone_attenuate = 0;
+    uint8_t volume_factor = 254; // 254 = no scaling
+    uint8_t root_note = 69;      // unused by AWM. The schema's default is 69, explicitly not 60
+    std::string name;            // zone label; for a drum kit, each zone is one drum sound
+    int sw_bank = -1;            // -1 = no performance-patch reference
+    int sw_prog = -1;
 };
 
 void to_json(nlohmann::json& j, const SampleZone& v);
@@ -44,6 +55,7 @@ void from_json(const nlohmann::json& j, SampleZonePatch& v);
 struct SampleZoneBank {
     std::string name;
     std::vector<SampleZonePatch> patches;
+    nlohmann::json extra = nlohmann::json::object(); // unmodeled top-level keys ("_comment", ...), written back as-is
 
     // runtime metadata (not part of the on-disk JSON shape)
     VoicePatchType voicePatchType = VoicePatchType::None;
