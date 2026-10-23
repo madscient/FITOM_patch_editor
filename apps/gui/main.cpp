@@ -1668,6 +1668,23 @@ constexpr uint8_t kPatchPickerPreviewNote = 60;
 // split (D-045).
 constexpr const char* kPatchPickerClickHint = "クリックで試聴、ダブルクリックまたはOKで確定";
 
+// Silence (0x7f) has no bank or program beneath it, so its category-level
+// entry is itself the pick: single click = pending, double click = commit.
+// Nothing is auditioned since there is nothing to hear. hw_bank/hw_prog are
+// ignored by FITOM_X for this value; 0 is written for a stable value.
+template <class PickerState, class Commit>
+void renderSilenceCategoryEntry(PickerState& p, Commit&& commitPending) {
+    const std::string label = deviceCategoryLabel(fpe::VoicePatchType::Silence) + "  (ダブルクリックまたはOKで確定)";
+    const bool pending = p.hasPending && p.pendingType == fpe::VoicePatchType::Silence;
+    if (ImGui::Selectable(label.c_str(), pending, ImGuiSelectableFlags_AllowDoubleClick)) {
+        p.hasPending = true;
+        p.pendingType = fpe::VoicePatchType::Silence;
+        p.pendingBank = 0;
+        p.pendingProg = 0;
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) commitPending();
+    }
+}
+
 // Modal picking a performance (SW) bank/patch - a single click auditions a
 // patch, a double click (or "OK") writes its {bank,prog} into the target's
 // sw_bank/sw_prog fields (D-054).
@@ -1865,9 +1882,13 @@ void openHwPatchPicker(AppContext& ctx, size_t layeredBankIndex, int layeredPatc
         fpe::Patch* patch = layeredBanks[layeredBankIndex].findByProg(layeredPatchProg);
         if (patch && layerIndex >= 0 && static_cast<size_t>(layerIndex) < patch->layers.size()) {
             const fpe::ToneLayer& layer = patch->layers[static_cast<size_t>(layerIndex)];
-            // Silence has no bank to land on, so it starts at the top like None.
-            if (layer.voice_patch_type != fpe::VoicePatchType::None &&
-                layer.voice_patch_type != fpe::VoicePatchType::Silence) {
+            if (layer.voice_patch_type == fpe::VoicePatchType::Silence) {
+                // Silence has no bank to land on; it is picked from the category list itself.
+                p.hasPending = true;
+                p.pendingType = layer.voice_patch_type;
+                p.pendingBank = layer.hw_bank;
+                p.pendingProg = layer.hw_prog;
+            } else if (layer.voice_patch_type != fpe::VoicePatchType::None) {
                 p.category = layer.voice_patch_type;
                 p.bank = layer.hw_bank;
                 p.level = PatchPickerLevel::Program;
@@ -1974,6 +1995,7 @@ void renderHwPatchPicker(AppContext& ctx) {
                 }
             }
             if (categories.empty()) ImGui::TextDisabled("(デバイスパッチバンクがありません)");
+            renderSilenceCategoryEntry(p, commitPending);
         } else if (p.level == PatchPickerLevel::Bank) {
             ImGui::Text("バンクを選択してください: [%s]", fpe::voicePatchTypeToString(p.category).c_str());
             bool any = false;
@@ -2090,7 +2112,8 @@ void renderHwPatchPicker(AppContext& ctx) {
 // for this reference (a fresh DrumNote defaults to {None,0,0}, itself a
 // legitimate "レイヤードパッチバンク0番prog0" selection, not a marker
 // meaning "nothing chosen yet"), so this always starts at Program level -
-// same as FITOM_X本体's own PatchPickerDialog::open().
+// same as FITOM_X本体's own PatchPickerDialog::open() - except for Silence,
+// whose only entry is in the category list.
 void openDrumSourcePatchPicker(AppContext& ctx, size_t kitIndex, uint8_t note) {
     DrumSourcePatchPickerState& p = ctx.drumSourcePatchPicker;
     p.kitIndex = kitIndex;
@@ -2293,6 +2316,7 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                     p.level = PatchPickerLevel::Bank;
                 }
             }
+            renderSilenceCategoryEntry(p, commitPending);
         } else if (p.level == PatchPickerLevel::Bank) {
             const std::string categoryLabel = (p.category == fpe::VoicePatchType::None)
                 ? "レイヤード"
