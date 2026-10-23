@@ -3997,14 +3997,10 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
                                                            static_cast<uint8_t>(patch->prog),
                                                            buildHwPatchOverrideJson(*patch).dump());
                 editor.registered = *patch;
-                // D-048: close on a successful save, per the project
-                // owner's request, extending D-047's drum-note-editor
-                // change to the other three modeless patch editors. Not in
-                // kiosk mode - closing there exits the whole process
-                // (D-026), which "close the window after 登録" was never
-                // asked to do; kiosk mode keeps its existing "stays open,
-                // title-bar X exits" behavior.
-                if (!ctx.kioskMode) editor.open = false;
+                // D-048/D-060: close on a successful save. In kiosk mode this
+                // is the top-level slot, so closing it exits the whole
+                // process (D-026) - which is what the project owner asked for.
+                editor.open = false;
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
@@ -4397,7 +4393,7 @@ void renderLayeredPatchEditor(AppContext& ctx, LayeredPatchEditorWindow& editor)
                 ctx.previewOutput.sendLayeredPatchBankOverride(
                     static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog),
                     nlohmann::json(*patch).dump());
-                if (!ctx.kioskMode) editor.open = false; // D-048, see renderPatchEditor()'s comment
+                editor.open = false; // D-048/D-060, see renderPatchEditor()'s comment
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
@@ -4528,7 +4524,7 @@ void renderSwVoiceEditor(fpe::FmSwVoice& sw) {
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::SetNextItemWidth(150);
-    sliderU8("リセット", sw.LFS, 0, 1);
+    sliderU8("位相リセット", sw.LFS, 0, 1);
     ImGui::SetNextItemWidth(150);
     renderLfoModeCombo("モード", sw.LFM);
     ImGui::SetNextItemWidth(150);
@@ -4571,7 +4567,7 @@ void renderSwOpEditor(int index, fpe::FmSwOp& op) {
     ImGui::TextUnformatted("オペレータTL LFO");
     renderImageSpinner("slw", "波形", op.SLW, FieldRange{0, 6, true}, 100.0f,
                         [](int v, int& w, int& h) { return getLfoWaveTexture(v, w, h); });
-    sliderU8("リセット", op.SLS, 0, 1);
+    sliderU8("位相リセット", op.SLS, 0, 1);
     renderLfoModeCombo("モード", op.SLM);
     sliderU8("デプス", op.SLD, 0, 127);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("0-63=正、64-127=負(-64..-1)");
@@ -4620,7 +4616,7 @@ void renderPerformancePatchEditor(AppContext& ctx, PerformancePatchEditorWindow&
                 ctx.previewOutput.sendSwPatchBankOverride(
                     static_cast<uint8_t>(bank.bankIndex), static_cast<uint8_t>(patch->prog),
                     nlohmann::json(*patch).dump());
-                if (!ctx.kioskMode) editor.open = false; // D-048, see renderPatchEditor()'s comment
+                editor.open = false; // D-048/D-060, see renderPatchEditor()'s comment
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
             }
@@ -5130,6 +5126,11 @@ void renderDrumKitDetail(AppContext& ctx, size_t kitIndex) {
                     // kits uniformly via kit.effectiveNotes()).
                     ctx.previewOutput.sendDrumKitBankOverride(0, static_cast<uint8_t>(kit.prog),
                                                                buildDrumKitOverrideJson(kit).dump());
+                    // D-060: in kiosk mode this form is the top-level screen,
+                    // so 登録 exits like the other kinds. A routed kit's
+                    // top level has no 登録 of its own (only its note
+                    // editors do), so it still exits via the title-bar X.
+                    if (ctx.kioskMode) ctx.kioskDrumEditor.open = false;
                 } catch (const std::exception& e) {
                     ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
                 }
