@@ -355,7 +355,7 @@ D-番号を付けた。経緯を見たいときは `docs/history/` を D-番号�
     直した。
   - `src/VoicePatchType.cpp` の表が「VoicePatchType 対応表」と同じ順であることは
     両方の並びを比べて確かめた。
-  - `docs/history/` は記録なので触っていない。`spec/chip-capabilities.json` は
+  - `docs/history/` の中の参照は記録なので直していない。`spec/chip-capabilities.json` は
     FITOM_X の `spec/` と同一だった。
   - ビルド(`build/vs2026`、Debug)と `ctest`(390/390 チェック、全通過)を
     確認した。新しい警告は無い。
