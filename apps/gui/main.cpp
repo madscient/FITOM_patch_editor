@@ -3999,7 +3999,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
                 editor.registered = *patch;
                 // D-048/D-060: close on a successful save. In kiosk mode this
                 // is the top-level slot, so closing it exits the whole
-                // process (D-026) - which is what the project owner asked for.
+                // process (D-026) - intended, see D-060.
                 editor.open = false;
             } catch (const std::exception& e) {
                 ctx.errorMessage = std::string("保存に失敗しました:\n") + e.what();
