@@ -10,7 +10,7 @@
 // SwPatch ("performance patch"): software-side expression parameters
 // (vibrato, tremolo, velocity sensitivity, fine transpose) that apply
 // regardless of which chip is sounding the note.
-// Source: docs/swpatch-reference.md.
+// Source: docs/manuals/swpatch-reference.md.
 
 namespace fpe {
 
@@ -53,7 +53,7 @@ struct SwPatch {
     int prog = 0;
     std::string name;
     FmSwVoice sw;
-    std::array<FmSwOp, 4> ops{}; // always 4 elements per docs/swpatch-reference.md
+    std::array<FmSwOp, 4> ops{}; // always 4 elements per docs/manuals/swpatch-reference.md
     int16_t fine_transpose = 0;  // -1200..+1200 cents, adds to ToneLayer::transpose
 };
 
@@ -66,7 +66,7 @@ void from_json(const nlohmann::json& j, SwPatch& v);
 
 // A performance-patch bank (*.swbank.json). Unlike HwBank, SwBank has no
 // VoicePatchType tag - it's a single flat number space shared by all chip
-// families (docs/midi-implementation-status.md).
+// families (docs/design/midi-processing.md "プライベート (F0 00 48 01 ...)").
 struct SwBank {
     std::string name;
     std::vector<SwPatch> patches;

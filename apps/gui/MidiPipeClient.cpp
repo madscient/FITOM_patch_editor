@@ -11,7 +11,7 @@
 
 namespace {
 
-// FITOM_X's channel-assignment handshake (docs/plugin-midi-pipe.md 4.1):
+// FITOM_X's channel-assignment handshake (docs/interfaces/plugin-midi-pipe.md 4.1):
 // F0 00 48 01 03 <ch> F7, written once immediately after it accepts a
 // connection and before anything else.
 constexpr size_t kHandshakeSize = 7;

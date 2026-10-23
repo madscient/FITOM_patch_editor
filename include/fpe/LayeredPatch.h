@@ -9,7 +9,7 @@
 #include "fpe/VoicePatchType.h"
 
 // Layered patch: the "normal mode" (CC#0=0) multi-layer patch format.
-// Source: docs/layered-patch-reference.md, docs/patch-structure-design.md.
+// Source: docs/manuals/layered-patch-reference.md, docs/design/patch-resolution.md.
 
 namespace fpe {
 

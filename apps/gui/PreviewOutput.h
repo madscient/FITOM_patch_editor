@@ -9,7 +9,7 @@
 // Unifies the two preview-audio transports behind one semantic API, so
 // callers (renderPatchEditor()'s preview keyboard) don't need to branch:
 // FITOM_X's internal MIDI pipe (primary - lets the user hear live
-// parameter edits via its private SysEx, see docs/plugin-midi-pipe.md) if
+// parameter edits via its private SysEx, see docs/interfaces/plugin-midi-pipe.md) if
 // an instance is running, otherwise a regular MIDI output port via RtMidi
 // (configured through Preferences) so there's still audible feedback with
 // FITOM_X closed, understanding that a generic MIDI receiver won't act on
@@ -33,7 +33,7 @@ public:
 
     // The channel callers should pass to every method below. When
     // connected to FITOM_X's pipe, that's the channel FITOM_X assigned
-    // during the connect handshake (docs/plugin-midi-pipe.md 4.1) - NOT a
+    // during the connect handshake (docs/interfaces/plugin-midi-pipe.md 4.1) - NOT a
     // caller-chosen value, so multiple simultaneously-running patch editor
     // instances don't collide. Only falls back to fallbackChannel (the
     // Preferences-configured "出力MIDI CH") for the RtMidi output, which
@@ -49,7 +49,7 @@ public:
     bool sendHwPatchOverride(uint8_t channel, const std::string& json);
     bool sendSwPatchOverride(uint8_t channel, const std::string& json);
 
-    // Bank-direct-edit persistence (D-049, docs/plugin-midi-pipe.md 5.6) -
+    // Bank-direct-edit persistence (D-049, docs/interfaces/plugin-midi-pipe.md 5.6) -
     // channel-independent (the message itself carries a bank+prog, not a
     // channel), meant to be sent right after this editor's own save() so a
     // running FITOM_X's in-memory copy of that bank+prog stays in sync.

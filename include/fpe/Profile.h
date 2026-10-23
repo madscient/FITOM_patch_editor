@@ -5,9 +5,8 @@
 
 #include <nlohmann/json.hpp>
 
-// Top-level *.profile.json. Source: docs/config-design.md
-// ("*.profile.json — プロファイル"), docs/patch-structure-design.md
-// (hw_banks[]/drum_banks[] examples).
+// Top-level *.profile.json. Source: docs/manuals/profile-reference.md,
+// docs/manuals/bank-reference.md (hw_banks[]/drum_banks[] examples).
 //
 // CONFIRMED (2026-07-17) against the real FITOM_X
 // config_schema/profile.schema.json and a production
@@ -65,7 +64,7 @@ struct SwBankRef {
 void to_json(nlohmann::json& j, const SwBankRef& v);
 void from_json(const nlohmann::json& j, SwBankRef& v);
 
-// profile.json drum_banks[] entry (confirmed: docs/patch-structure-design.md).
+// profile.json drum_banks[] entry (confirmed: docs/manuals/bank-reference.md).
 struct DrumBankRef {
     int prog = 0;
     std::string name;

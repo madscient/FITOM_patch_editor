@@ -11,13 +11,13 @@
 
 // HwPatch: the raw FM/PSG synthesis parameters written directly to chip
 // registers (feedback, algorithm, per-operator envelope, etc).
-// Source: docs/hwpatch-reference.md, docs/voice-parameter-reference.md,
-// docs/patch-structure-design.md.
+// Source: docs/manuals/hwpatch-reference.md, docs/design/chip-notes.md,
+// docs/design/patch-resolution.md.
 
 namespace fpe {
 
 // Channel-level (once per HwPatch) synthesis parameters.
-// Field meaning varies per chip - see docs/hwpatch-reference.md sections
+// Field meaning varies per chip - see docs/manuals/hwpatch-reference.md sections
 // 2-13 for which fields a given chip actually reads.
 struct FmHwVoice {
     uint8_t FB  = 0; // Feedback (0-7 typical)
@@ -56,21 +56,21 @@ struct FmHwOp {
 
 // Chip-specific extension fields that don't fit the common FmHwVoice/FmHwOp
 // shape. Most fields apply to exactly one chip family; see
-// docs/hwpatch-reference.md for which.
+// docs/manuals/hwpatch-reference.md for which.
 struct FmChipExt {
     uint8_t  FIX = 0;      // OPN FX-mode select: 0=off/1=pseudo-detune/2=non-integer ratio/3=fixed freq. JSON key "FIX" per FITOM_X's config_schema/hwbank.schema.json (D-028 - was serialized as "DM0" before, a stale internal name that never matched the schema)
     uint8_t  ALG_EXT = 0;  // Meaning varies: OPM noise enable(bit0) / OPL3 4-op link / OPLL preset flag(bit0) / OPLLEX ROM BANK(bit2-1)
     uint16_t HWEP = 0;     // Hardware envelope period (SSG/EPSG), or SAA1099 HW envelope bit-packed fields
-    uint8_t  rhythm_ch = 255;                          // 255 = unset. Target channel for OPL_RHY (docs/terminology.md).
-    VoicePatchType target_voice_patch_type = VoicePatchType::None; // Shared-PSG-bank device resolution override (docs/patch-structure-design.md "PSG系共有バンク")
+    uint8_t  rhythm_ch = 255;                          // 255 = unset. Target channel for OPL_RHY (docs/design/patch-resolution.md "OPL系の内蔵リズム").
+    VoicePatchType target_voice_patch_type = VoicePatchType::None; // Shared-PSG-bank device resolution override (docs/design/patch-resolution.md "PSG系共有バンク")
 };
 
 // Reference into the OPLL-family "builtin ROM voice" performance-patch
 // metadata bank (profile.json hw_banks[] entry with role=="builtin_swpatch_meta").
-// See docs/patch-structure-design.md "OPLL ROM音色へのパフォーマンスパッチ紐づけ".
+// See docs/design/patch-resolution.md "ROM/ビルトイン音色へのパフォーマンスパッチ紐づけ".
 struct BuiltinRef {
     std::string patch_type; // e.g. "OPLL" / "OPLLX" / "OPLLP" / "VRC7"
-    int patch_no = 0;       // ROM preset index (1-15), 0 = silence per docs/hwpatch-reference.md
+    int patch_no = 0;       // ROM preset index (1-15), 0 = silence per docs/manuals/hwpatch-reference.md
 };
 
 // One programmable device voice ("device voice patch" / hardware patch).
@@ -83,12 +83,12 @@ struct HwPatch {
 
     FmChipExt ext;
 
-    // -1 = no performance-patch reference (docs/hwpatch-reference.md "16").
+    // -1 = no performance-patch reference (docs/manuals/hwpatch-reference.md "15").
     int sw_bank = -1;
     int sw_prog = -1;
 
     // Set only for entries in a role=="builtin_swpatch_meta" bank; mutually
-    // exclusive with `ops` per docs/patch-structure-design.md.
+    // exclusive with `ops` per docs/design/patch-resolution.md.
     std::optional<BuiltinRef> builtin;
 
     bool isBuiltinRef() const { return builtin.has_value(); }
@@ -108,7 +108,7 @@ void from_json(const nlohmann::json& j, HwPatch& v);
 // A device patch bank (*.hwbank.json). All patches in a bank share one
 // VoicePatchType tag, which is NOT stored in the bank file itself - it is
 // assigned by the profile's hw_banks[].group entry at load time
-// (docs/patch-structure-design.md "HwBank 側のタグ付けルール").
+// (docs/design/patch-resolution.md "HwBankの検索キー").
 struct HwBank {
     std::string name;
     std::vector<HwPatch> patches;

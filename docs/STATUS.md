@@ -220,46 +220,6 @@ D-番号を付けた。経緯を見たいときは `docs/history/` を D-番号�
 - 次にやること: ...
 ```
 
-### 2026-10-23 (同マシン、文書構成の再編 第2段、D-059)
-- やったこと: 旧 DESIGN.md から中身を起こし、D-059 の第2段を終えた。
-  - 旧 DESIGN.md を4分割してサブエージェント4本で読ませ、D-番号ごとの
-    判断・撤回・構成への影響・利用者向けの事実を行番号つきで返させた。
-    統合と照合は自分で行った。
-  - `docs/ARCHITECTURE.md` の8節を書いた。載せた事実はコードを読んで
-    確かめた(動かしてはいない)。FITOM_X 側の振る舞いは旧 DESIGN.md の
-    調査記録に基づく。
-  - `docs/DECISIONS.md` に、今も効いている判断を要約した(D-001〜D-058 の
-    うち45件)。作業記録と、後で覆された判断は載せず、覆した側に「撤回」と
-    して番号を挙げた。「撤回された」の行も対にして入れた。書式に「撤回」
-    「撤回された」の欄を足し、新規の採番を D-060 からと書き直した。
-    原文との照合: 載せたエントリはすべて原文の該当節を読んで照合した。
-    載せなかった D-021〜D-025・D-031・D-032 は、サブエージェントの要約と
-    D-057 の原文での扱いだけを見て判断した。
-  - `README.md` をエディタを使う人向けに書き直した(ビルド、起動3通り、
-    画面ごとの使い方、保存されるファイル、今できないこと)。開発者向けだった
-    「参照元と未確認の推測箇所」「設計上のポイント」は ARCHITECTURE の
-    「情報源」「読み書きの規約」へ移し、今の事実に直した。FITOM_X 接続時の
-    挙動は、確かめていないので「何を送るか」の書き方にした。
-  - `CLAUDE.md` の「設計上のポイント」への参照を ARCHITECTURE に直した。
-  - 新しい文書と食い違う古いコードコメントを直した(`CMakeLists.txt`、
-    `main.cpp` の冒頭と `renderBankDetail()`、`SampleZone.h`、`Profile.h` の
-    消えた NOTE ON CONFIDENCE への参照、`VoicePatchType.h` /
-    `PatchWorkspace.h` の README への参照、`smoke_test.cpp`)。
-  - 進捗ログが6件になったので、2026-10-03 のログを
-    `docs/history/STATUS-archive.md` の末尾へ原文のまま移した(確認済み —
-    `diff` で追記分だけが増えたことを見た)。同ログを参照していた未検証の
-    項目には、手順を直接書いた。
-  - ビルド(`build/vs2026`、Debug、全ターゲット)と `ctest`(349/349、
-    全通過)を確認した。変更はコメントだけで、警告は既存の MSB8028 のみ。
-- 未完了・既知の問題:
-  - README の画面の説明は、画面を見ずに書いた(利用者の確認待ち R-01)。
-  - ARCHITECTURE と DECISIONS の通読は利用者の確認待ち(R-02)。
-  - 調べる途中で、`spec/` と `assets/` の探索順が違うことに気づいた。
-    課題一覧に足した(意図かどうか不明)。
-- 確認結果(同日): 利用者が R-01・R-02 をレビューし、指摘は無かった。
-  両項目を確認待ちの一覧から消した(番号は欠番)。
-- 次にやること: 利用者の確認(既存の V/X/Q 項目)。
-
 ### 2026-10-23 (同マシン、Q-01〜Q-05 の回答への対応、D-060)
 - やったこと: 利用者から Q-01・Q-02・Q-04・Q-05 の回答を受けた。
   - Q-01: 試聴はおそらく named pipe 経由だった(利用者の記憶。確証は無いので、
@@ -376,3 +336,30 @@ D-番号を付けた。経緯を見たいときは `docs/history/` を D-番号�
 - 未完了・既知の問題: sccwave と PCM エントリの GUI での表示・編集は無い
   (sccwave は一覧にも出ない)。
 - 次にやること: 利用者の確認。
+
+### 2026-10-23 (同マシン、FITOM_X の文書再編に合わせた参照の付け替え)
+- やったこと: FITOM_X 側で `docs/` が読者別のディレクトリ(`manuals/`・`design/`・
+  `interfaces/`・`proposals/`)に再編され、文書の分割・統合で見出しも変わった
+  ので、コードコメントと `docs/ARCHITECTURE.md`・`docs/DECISIONS.md` にある
+  FITOM_X の文書への参照を新しいパスと見出しに直した(20ファイル、コメントと
+  文書だけ)。この作業は FITOM_X 側のセッションが行った。
+  - `plugin-midi-pipe.md` は `docs/interfaces/` へ移っただけで節番号は同じ。
+  - `patch-structure-design.md`・`terminology.md` の一部は
+    `docs/design/patch-resolution.md` へ、`config-design.md` の利用者向け部分は
+    `docs/manuals/profile-reference.md` へ、`voice-parameter-reference.md` は
+    `docs/manuals/hwpatch-reference.md` と `docs/design/chip-notes.md` へ移った。
+    引用している見出し・文言が移動先に実在することを grep で確かめた。
+  - `docs/manuals/` が付いていなかった `hwpatch-reference.md` 等の参照と、
+    `hwpatch-reference.md` の節番号(サンプル系は14節、`sw_bank` は15節)も
+    今の文書に合わせた。`PcmBank.h` の引用は、14節の今の記述(`wave_index`)に
+    直した。
+  - `src/VoicePatchType.cpp` の表が「VoicePatchType 対応表」と同じ順であることは
+    両方の並びを比べて確かめた。
+  - `docs/history/` は記録なので触っていない。`spec/chip-capabilities.json` は
+    FITOM_X の `spec/` と同一だった。
+  - ビルド(`build/vs2026`、Debug)と `ctest`(390/390 チェック、全通過)を
+    確認した。新しい警告は無い。
+  - 進捗ログが6件になったので、「文書構成の再編 第2段」のログを
+    `docs/history/STATUS-archive.md` の末尾へ原文のまま移した。
+- 未完了・既知の問題: 無し。
+- 次にやること: 利用者の確認(前のログと同じ)。

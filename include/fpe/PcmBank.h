@@ -34,8 +34,8 @@
 // sidecar files alongside the (re-serialized) pcmbank.json itself - see
 // PatchWorkspace::rebaseSourceFiles().
 //
-// Source: config_schema/pcmbank.schema.json, docs/hwpatch-reference.md
-// section 14 (ops[0].WS "PCM波形バンク内のエントリ番号"), real
+// Source: config_schema/pcmbank.schema.json, docs/manuals/hwpatch-reference.md
+// section 14 (wave_index "PCM波形バンクのエントリ番号"), real
 // *.pcmbank.json + adpcm_packer-output examples in FITOM_staging.
 
 namespace fpe {

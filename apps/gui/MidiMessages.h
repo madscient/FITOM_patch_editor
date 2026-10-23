@@ -23,7 +23,7 @@ inline std::vector<uint8_t> controlChange(uint8_t channel, uint8_t ccNumber, uin
 inline std::vector<uint8_t> allSoundOff(uint8_t channel) { return controlChange(channel, 0x78, 0x00); }
 inline std::vector<uint8_t> resetAllControllers(uint8_t channel) { return controlChange(channel, 0x79, 0x00); }
 
-// docs/plugin-midi-pipe.md section 5.1: direct device select + program
+// docs/interfaces/plugin-midi-pipe.md section 5.1: direct device select + program
 // change, combined into one message sequence (CC#0 bank MSB / CC#32 bank
 // LSB / program change).
 inline std::vector<uint8_t> selectDevice(uint8_t channel, uint8_t voicePatchTypeCc0, uint8_t hwBank,
@@ -36,7 +36,7 @@ inline std::vector<uint8_t> selectDevice(uint8_t channel, uint8_t voicePatchType
     };
 }
 
-// FITOM_X's private SysEx (docs/plugin-midi-pipe.md section 5.2:
+// FITOM_X's private SysEx (docs/interfaces/plugin-midi-pipe.md section 5.2:
 // F0 00 48 01 <sub-cmd> 00 <ch> 00 <JSON> F7). Harmless to send to a
 // generic MIDI receiver too - unrecognized manufacturer-ID SysEx is
 // simply dropped per the MIDI spec - so this is reused as-is for the
@@ -56,7 +56,7 @@ inline std::vector<uint8_t> paramOverrideSysEx(uint8_t subCmd, uint8_t channel, 
     return msg;
 }
 
-// docs/plugin-midi-pipe.md section 5.6 / docs/manuals/midi-message-
+// docs/interfaces/plugin-midi-pipe.md section 5.6 / docs/manuals/midi-message-
 // reference.md section 8.1's target-type=0x01 ("プリセットバンク") variant
 // of the same private SysEx (D-049) - unlike paramOverrideSysEx()'s
 // target-type=0x00 (channel-scoped, expires on the next Program Change),

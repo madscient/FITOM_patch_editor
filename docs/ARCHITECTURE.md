@@ -149,7 +149,7 @@ SSG のタグで登録される。参照からバンクを探すときは
 | 参照の解決(ROM 音色、内蔵リズム、DSG、PSG 共有) | `core/src/PatchManager.cpp` |
 | 内蔵リズムの対象チップ一覧、キオスク起動の呼び出し側 | `gui/bridge/FITOMBridge.cpp` |
 | パッチピッカーの構造 | `apps/fitom_gui/PatchPickerDialog.*` |
-| MIDI パイプとプライベート SysEx | `docs/plugin-midi-pipe.md`、`docs/manuals/midi-message-reference.md` |
+| MIDI パイプとプライベート SysEx | `docs/interfaces/plugin-midi-pipe.md`、`docs/manuals/midi-message-reference.md` |
 | 各フィールドの意味 | `docs/manuals/hwpatch-reference.md` ほか `docs/` の各文書 |
 
 守ること:

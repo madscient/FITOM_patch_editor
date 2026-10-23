@@ -149,7 +149,7 @@ const HwPatch* HwBank::findByBuiltinRef(const std::string& patchType, int patchN
 void to_json(nlohmann::json& j, const HwBank& v) {
     // Pruning happens here rather than in to_json(HwPatch) because a HwPatch
     // does not know its own chip - the VoicePatchType tag lives on the bank
-    // (docs/patch-structure-design.md "HwBank 側のタグ付けルール"). Callers
+    // (docs/design/patch-resolution.md "HwBankの検索キー"). Callers
     // that serialize a bare HwPatch (e.g. the preview SysEx override) still
     // get the full field set, which is what that wire format wants.
     nlohmann::json patches = nlohmann::json::array();

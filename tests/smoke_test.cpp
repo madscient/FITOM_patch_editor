@@ -153,7 +153,7 @@ static void testBuiltinVoices() {
     // the raw index would make every non-OPLL category sound the wrong
     // chip's voices, since FITOM_X's resolveOpllRomVoice() re-decodes the
     // variant out of the program number itself
-    // (FITOM_X docs/patch-structure-design.md「実装上の注意」).
+    // (FITOM_X docs/design/patch-resolution.md「OPLL系のROM音色」).
     const auto opllx = fpe::opllRomVoices(VoicePatchType::OPLLX);
     CHECK(opllx.size() == 15);
     CHECK(opllx.front().prog == 0x11);

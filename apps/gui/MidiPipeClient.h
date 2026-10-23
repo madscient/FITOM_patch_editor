@@ -3,7 +3,7 @@
 #include <vector>
 
 // Thin transport for FITOM_X's internal MIDI pipe (FITOM_X repo's
-// docs/plugin-midi-pipe.md): a named pipe on Windows
+// docs/interfaces/plugin-midi-pipe.md): a named pipe on Windows
 // (\\.\pipe\FITOM_X_MIDI) or a Unix domain socket on Linux/macOS
 // (/tmp/fitom_x_midi.sock). Single client, silently unavailable when
 // FITOM_X isn't running (or wasn't built with the fitom_midi_pipe
@@ -11,7 +11,7 @@
 // offline-first design (see README.md), not a failure to report to the
 // user as an error popup.
 //
-// Since 2026-07 (FITOM_X docs/plugin-midi-pipe.md 4.1), the MIDI channel
+// Since 2026-07 (FITOM_X docs/interfaces/plugin-midi-pipe.md 4.1), the MIDI channel
 // this connection uses is NOT chosen by the caller - immediately after
 // connecting, FITOM_X writes a 7-byte private SysEx
 // (F0 00 48 01 03 <ch> F7) assigning the channel for this connection (so

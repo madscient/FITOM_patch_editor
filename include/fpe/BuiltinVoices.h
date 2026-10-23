@@ -27,9 +27,9 @@
 //    (initOpllRomPatches() / resolveOpllRomVoice() / resolveBuiltinRhythm())
 //  - FITOM_X gui/bridge/FITOMBridge.cpp
 //    (getHwBankList() / getHwBankPatches() / getChannelMonitors())
-//  - FITOM_X docs/patch-structure-design.md
-//    「OPLL系ROM音色専用バンク」「内蔵リズム音源専用バンク」各節の
-//    "GUIパッチピッカーでの列挙(2026年8月新設)" 追記
+//  - FITOM_X docs/design/patch-resolution.md
+//    「OPLL系のROM音色」「内蔵リズム音源専用バンク（CC#0=0x70）」各節の
+//    「GUIのパッチピッカーでの列挙」
 //  - FITOM_X config_schema/drumkit.schema.json (voice_patch_type=0x70の記述)
 
 namespace fpe {
@@ -72,7 +72,7 @@ bool isOpllRomVoiceRef(VoicePatchType type, int bank);
 // 名前の重複を避けるため、OPLLEX の各エントリ名には "[変種名] " を前置する。
 // OPLLファミリー以外なら空。
 // 各エントリの `prog` は (variantSel << 4) | instIndex ―― 配列添字では
-// ないので注意(FITOM_X docs/patch-structure-design.md の「実装上の注意」:
+// ないので注意(FITOM_X docs/design/patch-resolution.md の「OPLL系のROM音色」:
 // 生添字を送るとOPLL以外のカテゴリで別チップの音色が鳴る)。
 std::vector<BuiltinVoiceEntry> opllRomVoices(VoicePatchType type);
 
@@ -133,7 +133,7 @@ std::string builtinMetaVoiceName(const std::string& patchType, int patchNo);
 // なく「対象チップのVoicePatchType」(OPN2=OPNA、OPLL=OPLL、DSG=DSG)、
 // `patch_prog` はそのチップ内の楽器番号(=デバイスチャンネル番号)。
 // OPL系内蔵リズム(COPLRhythm)はこの経路を使わず、VoicePatchType::OPL_RHY
-// という通常のHwBankを使う点に注意(FITOM_X docs/terminology.md)。
+// という通常のHwBankを使う点に注意(FITOM_X docs/design/patch-resolution.md「OPL系の内蔵リズム」)。
 
 struct BuiltinRhythmChip {
     VoicePatchType chipSel = VoicePatchType::None; // patch_bank に入る値

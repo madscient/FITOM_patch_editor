@@ -7,7 +7,7 @@ namespace fpe {
 
 namespace {
 // Canonical (VoicePatchType, group-string) table. Order matches
-// docs/patch-structure-design.md.
+// docs/design/chip-drivers.md ("VoicePatchType 対応表").
 constexpr std::pair<VoicePatchType, const char*> kTable[] = {
     {VoicePatchType::OPN,          "OPN"},
     {VoicePatchType::OPN2,         "OPN2"},

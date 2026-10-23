@@ -197,7 +197,7 @@ private:
 
 // The chip a patch is really for, given the tag on the bank holding it.
 // Identity except for the PSG family, whose five chips share one bank
-// namespace registered under SSG (docs/patch-structure-design.md
+// namespace registered under SSG (docs/design/patch-resolution.md
 // "PSG系共有バンク"); there, each patch names its own target in
 // ext.target_voice_patch_type. Every per-chip decision - which fields to
 // show, which ranges to apply, which keys to keep when saving - has to go

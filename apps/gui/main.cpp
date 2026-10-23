@@ -52,7 +52,7 @@
 // change, and a clickable preview keyboard (5 octaves, with CC#1
 // modulation / CC#7 volume levers to its left) that plays notes through
 // FITOM_X's internal MIDI pipe (MidiPipeClient, see
-// docs/plugin-midi-pipe.md in the FITOM_X repo) when an instance is
+// docs/interfaces/plugin-midi-pipe.md in the FITOM_X repo) when an instance is
 // running, falling back to a real MIDI output port (RtMidi, configured via
 // the "プリファレンス" dialog) otherwise - see PreviewOutput and
 // docs/history/DESIGN.md D-018 (this superseded D-015's original "no fallback"
@@ -710,7 +710,7 @@ struct AppContext {
     // back to a regular MIDI port via RtMidi - see PreviewOutput,
     // docs/history/DESIGN.md D-018), reused by every open patch editor's preview
     // keyboard. The pipe only allows a single client anyway
-    // (docs/plugin-midi-pipe.md in the FITOM_X repo).
+    // (docs/interfaces/plugin-midi-pipe.md in the FITOM_X repo).
     PreviewOutput previewOutput;
     Preferences preferences;
     PreferencesDialogState preferencesDialog;
@@ -3209,7 +3209,7 @@ GLuint getLfoWaveTexture(int wf, int& outWidth, int& outHeight) {
     return it->second.id;
 }
 
-// Builds the JSON payload for docs/plugin-midi-pipe.md section 5.2's
+// Builds the JSON payload for docs/interfaces/plugin-midi-pipe.md section 5.2's
 // HwPatch override SysEx. Deliberately NOT the same shape as
 // fpe::to_json(HwPatch) (which nests hw.FB/ALG/etc under an "hw" key, to
 // match this project's own *.hwbank.json on-disk format) - the wire
@@ -3773,14 +3773,14 @@ void renderImageSpinner(const char* idSuffix, const char* label, uint8_t& value,
 // as a symbolic "Inst." dropdown (HH/CYM/TOM/SD/BD) rather than a bare
 // number, per the explicit "設定値は数値ではなくシンボルをドロップダウン
 // 等で選択する" request. The 0-4 numbering and symbol order are FITOM_X's
-// own (`docs/terminology.md`'s "OPL系内蔵リズムチャンネル" section:
+// own (`docs/design/patch-resolution.md`'s "OPL系の内蔵リズム" section:
 // `ext.rhythm_ch`, 0=HH/1=CYM/2=TOM/3=SD/4=BD - `resolveTriple()` reads
 // this to force-route the patch to one of COPLRhythm's 5 fixed channels;
 // it's a routing-time field, independent of `hw.ALG`, which
 // COPLRhythm::queryCh() reads separately for the device's own channel
 // bookkeeping). 255 ("unset") shows as no selection instead of silently
 // defaulting to HH, since an unset rhythm_ch fails patch resolution
-// entirely on the FITOM_X side (docs/terminology.md: "未設定(255)または
+// entirely on the FITOM_X side (docs/design/patch-resolution.md: "未設定(255)または
 // 範囲外は解決失敗") - defaulting here would hide that this patch doesn't
 // work yet.
 //
@@ -4097,7 +4097,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
         // ALG is shown as its own input here - the connection-diagram image
         // (OPN/OPN2/OPM/OPZ/OPZ2: assets/alg_diagrams/opn_al<0-7>.png,
         // D-016/D-017, extended to OPM/OPZ/OPZ2 in D-031 since they share the
-        // same 3bit 0-7 ALG semantics per docs/voice-parameter-reference.md;
+        // same 3bit 0-7 ALG semantics per docs/manuals/hwpatch-reference.md;
         // OPL/OPL2/OPL3_2/OPL_RHY: opl_alg<0-1>.png, D-021 (OPL_RHY added in
         // D-033 - COPLRhythm's FB/ALG channel register write is identical to
         // plain OPL/OPL2/OPL3_2's) - OPLL is excluded, see isOplAlgFamily());
@@ -4236,7 +4236,7 @@ void renderPatchEditor(AppContext& ctx, PatchEditorWindow& editor) {
     const bool connected = backend != PreviewOutput::ActiveBackend::None;
     const uint8_t previewChannel = ctx.previewOutput.activeChannel(ctx.preferences.midiChannel);
     // For the pipe backend, the channel shown here is the one FITOM_X
-    // assigned this connection (docs/plugin-midi-pipe.md 4.1), not a
+    // assigned this connection (docs/interfaces/plugin-midi-pipe.md 4.1), not a
     // user-chosen value - showing it helps confirm multiple simultaneously
     // running patch editor instances really did get distinct channels.
     const std::string statusText =
@@ -5658,7 +5658,7 @@ int main(int argc, char** argv) {
 
         // D-030: FITOM_X's MIDI pipe accepted our connection but explicitly
         // refused to assign a channel because 16 other patch editor
-        // instances are already connected (docs/plugin-midi-pipe.md 4.1).
+        // instances are already connected (docs/interfaces/plugin-midi-pipe.md 4.1).
         // Unlike "FITOM_X isn't running" (silently fall back to offline/
         // RtMidi), this is a real error the user needs to act on - show it
         // and exit, same pattern as showFatalErrorBox()'s other callers

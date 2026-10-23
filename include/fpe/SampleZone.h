@@ -12,7 +12,7 @@
 // ADPCM-B/A, PCM-D8 and SSGS-ADPCM families use fpe::PcmBank instead
 // (D-013). Structurally unrelated to HwPatch - no FM operators, just
 // keyzone -> waveform mapping.
-// Source: docs/hwpatch-reference.md section 15, docs/voice-parameter-reference.md
+// Source: docs/manuals/hwpatch-reference.md section 14, docs/design/chip-notes.md
 // "OPL4 AWM" section.
 
 namespace fpe {

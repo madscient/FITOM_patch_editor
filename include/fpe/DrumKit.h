@@ -10,8 +10,8 @@
 
 // Drum kit ("DrumPatch" in FITOM_X source): one rhythm-channel program,
 // mapping MIDI notes to instrument voices.
-// Source: docs/patch-structure-design.md ("リズムチャンネル: ドラムマップ
-// による解決", "チョークグループ"), docs/terminology.md ("ドラムキット").
+// Source: docs/manuals/bank-reference.md ("3. ドラムキット", "チョークグループ"),
+// docs/design/patch-resolution.md ("リズムチャンネル"), docs/design/terminology.md ("ドラムキット").
 //
 // CONFIRMED (2026-07-17) against the real
 // config_schema/drumkit.schema.json: the original guessed field names below
@@ -38,7 +38,7 @@ struct DrumNote {
 
     uint8_t play_note = 60;     // actual pitch sounded (absolute MIDI note)
 
-    // kfs units, 1 semitone = 64 steps (see docs/terminology.md "kfs") - not cents.
+    // kfs units, 1 semitone = 64 steps (see docs/design/terminology.md "単位: kfs (KF Step)") - not cents.
     int fine_tune = 0;
     int pan = 0;                // pan offset, added to the resolved ToneLayer's pan_offset
     int gate_time = 0;          // timer ticks; 0 = stop on NoteOff

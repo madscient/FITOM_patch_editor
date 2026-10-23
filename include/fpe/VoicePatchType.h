@@ -12,8 +12,8 @@ namespace fpe {
 // It doubles as the CC#0 "direct device select" value (MIDI side) and as
 // the per-bank tag stored on every HwBank (profile.json hw_banks[].group).
 //
-// Source: docs/patch-structure-design.md ("VoicePatchType 一覧") and
-// docs/midi-message-reference.md ("直接デバイス選択値(CC#0)一覧").
+// Source: docs/design/chip-drivers.md ("VoicePatchType 対応表") and
+// docs/manuals/midi-message-reference.md ("直接デバイス選択値(CC#0)一覧").
 // 0x38-0x3b (MA3 family) are reserved values with no implemented chip
 // driver as of the source docs; included here only as named placeholders.
 enum class VoicePatchType : uint8_t {
@@ -26,7 +26,7 @@ enum class VoicePatchType : uint8_t {
     OPL          = 0x20,
     OPL2         = 0x21,
     OPL3_2       = 0x22,
-    OPL_RHY      = 0x23, // OPL built-in rhythm channel voices (docs/terminology.md)
+    OPL_RHY      = 0x23, // OPL built-in rhythm channel voices (docs/design/patch-resolution.md "OPL系の内蔵リズム")
     OPLL         = 0x28,
     OPLLP        = 0x29,
     OPLLX        = 0x2a,
@@ -60,8 +60,8 @@ enum class VoicePatchType : uint8_t {
 };
 
 // True only for AWM - the *.samplezonebank.json / SampleZonePatch shape
-// (zones[] keyzone mapping, docs/hwpatch-reference.md section 15) is
-// specific to AWM. ADPCM-B/A and PCM-D8 (section 14) are a *different*
+// (zones[] keyzone mapping, docs/manuals/hwpatch-reference.md section 14) is
+// specific to AWM. ADPCM-B/A and PCM-D8 (also section 14) are a *different*
 // third shape - see isPcmWaveformVoicePatchType() below, not this
 // function (D-011/D-013, docs/history/DESIGN.md - D-011 originally lumped ADPCM-B/A
 // and PCM-D8 in with ordinary HwPatch/ops[] banks based on FITOM_X's
@@ -86,7 +86,7 @@ bool isValidHwBankTag(VoicePatchType t);
 // single HwBank number namespace instead of getting one per chip type:
 // FITOM_X registers every one of these banks under SSG's key and lets each
 // individual patch name its real target chip via FmChipExt::
-// target_voice_patch_type (docs/patch-structure-design.md "PSG系共有バンク",
+// target_voice_patch_type (docs/design/patch-resolution.md "PSG系共有バンク",
 // FITOM_X PatchManager::hwBankLookupVoicePatchType()). DSG (YM2163) is
 // deliberately NOT part of this - it has no user banks at all, so folding it
 // in here would make every SSG bank show up under the DSG category.
