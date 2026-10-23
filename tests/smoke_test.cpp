@@ -335,16 +335,16 @@ static void testLoad(fpe::PatchWorkspace& ws) {
     if (pcmBank) {
         CHECK(pcmBank->name == "Test PCM Bank");
         CHECK(pcmBank->entries.size() == 2);
-        auto* entry0 = pcmBank->findByIndex(0);
+        auto* entry0 = pcmBank->findByEntryNo(0);
         CHECK(entry0 != nullptr);
         if (entry0) {
             CHECK(entry0->name == "kick");
             CHECK(entry0->root_note == 60);
         }
-        auto* entry1 = pcmBank->findByIndex(1);
+        auto* entry1 = pcmBank->findByEntryNo(1);
         CHECK(entry1 != nullptr);
         if (entry1) CHECK(entry1->name == "snare");
-        CHECK(pcmBank->findByIndex(2) == nullptr);
+        CHECK(pcmBank->findByEntryNo(2) == nullptr);
     }
 
     // Same PcmBank shape, but registered via banks.pcm_banks[] (D-038
@@ -1107,10 +1107,114 @@ static void testUnmodeledFieldsRoundTrip() {
                    roundTrip<fpe::BanksObject>({{"_comment", "kept"}, {"drum_banks", json::array()}})));
 }
 
+// *.pcmbank.json's own entries[] use the schema's shape (entry_no /
+// start_offset / end_offset - FITOM_X's own writer produces exactly this),
+// and coexist with adpcm_json: FITOM_X applies them on top, by entry_no.
+// *.sccwave.json is a real bank file too, so saveAs() must carry it along.
+static void testPcmInlineEntriesAndSccWaveFiles(const fs::path& scratchDir) {
+    using nlohmann::json;
+    const json inlineEntry = {{"entry_no", 9}, {"name", "Tom"}, {"start_offset", 1024},
+                              {"end_offset", 1311}, {"size", 270}, {"padded_size", 288}};
+    const json inlineOnly = {{"name", "P"}, {"codec", "adpcm-b"}, {"bin_file", "x.bin"},
+                             {"entries", json::array({inlineEntry})}};
+    const json inlineOut = roundTrip<fpe::PcmBank>(inlineOnly);
+    CHECK(inlineOut.contains("entries") && inlineOut["entries"].size() == 1 &&
+          keepsAll(inlineEntry, inlineOut["entries"][0]));
+    json both = inlineOnly;
+    both["adpcm_json"] = "x.json";
+    const json bothOut = roundTrip<fpe::PcmBank>(both);
+    CHECK(bothOut.value("adpcm_json", "") == "x.json");
+    CHECK(bothOut.contains("entries") && bothOut["entries"].size() == 1);
+
+    if (fs::exists(scratchDir)) fs::remove_all(scratchDir);
+    fpe::PatchWorkspace ws;
+    ws.load(fixturesDir() / "profile.json");
+    for (const auto& w : ws.warnings()) std::fprintf(stderr, "scc fixture load warning: %s\n", w.c_str());
+    CHECK(ws.warnings().empty());
+    const fs::path outProfile = scratchDir / "profile.json";
+    ws.saveAs(outProfile);
+    const json copied = [&] {
+        std::ifstream in(scratchDir / "banks" / "scc" / "default.sccwave.json", std::ios::binary);
+        json j;
+        if (in) in >> j;
+        return j;
+    }();
+    const json original = [&] {
+        std::ifstream in(fixturesDir() / "banks" / "scc" / "default.sccwave.json", std::ios::binary);
+        json j;
+        in >> j;
+        return j;
+    }();
+    // Every original key comes back unchanged (the writer may add defaults, D-003).
+    CHECK(copied.is_object() && copied.value("name", "") == original.value("name", "?"));
+    CHECK(copied.contains("waves") && copied["waves"].size() == original["waves"].size());
+    if (copied.contains("waves") && copied["waves"].size() == original["waves"].size()) {
+        for (size_t i = 0; i < original["waves"].size(); ++i) CHECK(keepsAll(original["waves"][i], copied["waves"][i]));
+    }
+
+    CHECK(ws.sccWaveBanks().size() == 1);
+    const fpe::SccWaveBank* scc = ws.findSccWaveBank(0);
+    CHECK(scc != nullptr);
+    if (scc) {
+        CHECK(scc->name == "Test SCC Waves" && scc->waves.size() == 3);
+        const fpe::SccWave* square = scc->findByWaveNo(0);
+        CHECK(square && square->data.size() == 32 && square->data[0] == 100 && square->data[16] == -100);
+        const fpe::SccWave* hex = scc->findByWaveNo(1);
+        CHECK(hex && hex->data.size() == 32 && hex->data[0] == -128 && hex->data[31] == -1);
+        if (hex) {
+            // Unchanged: the original (lower-case) string comes back verbatim.
+            CHECK(json(*hex)["data"] == hex->hexData);
+            fpe::SccWave edited = *hex;
+            edited.data[0] = 0;
+            const std::string reencoded = json(edited)["data"].get<std::string>();
+            CHECK(reencoded.size() == 64 && reencoded.rfind("0088", 0) == 0 && reencoded.substr(62) == "FF");
+        }
+        const fpe::SccWave* unnamed = scc->findByWaveNo(7);
+        CHECK(unnamed && unnamed->name.empty() && unnamed->data[31] == 31);
+    }
+
+    // adpcm_json entries first, the file's own entries[] on top by entry_no.
+    const fs::path pcmDir = scratchDir / "pcm_merge";
+    fs::create_directories(pcmDir);
+    auto writeJson = [](const fs::path& p, const json& j) {
+        std::ofstream out(p, std::ios::binary);
+        out << j.dump(2);
+    };
+    writeJson(pcmDir / "m_adpcm.json",
+              {{"entries", json::array({{{"name", "A"}, {"offset", 0}, {"size", 10}, {"padded_size", 16}},
+                                        {{"name", "B"}, {"offset", 16}, {"size", 12}, {"padded_size", 16}}})}});
+    writeJson(pcmDir / "m.pcmbank.json",
+              {{"name", "Merged"}, {"codec", "adpcm-b"}, {"bin_file", "m.bin"}, {"adpcm_json", "m_adpcm.json"},
+               {"entries", json::array({{{"entry_no", 1}, {"name", "B2"}, {"start_offset", 100},
+                                         {"end_offset", 131}, {"size", 20}, {"padded_size", 32}},
+                                        inlineEntry})}});
+    writeJson(pcmDir / "p.profile.json",
+              {{"profile_name", "PCM merge"},
+               {"banks", {{"pcm_banks", json::array({{{"bank", 0}, {"group", "ADPCMB"}, {"file", "m.pcmbank.json"}}})}}}});
+    const std::string pcmBefore = readFile(pcmDir / "m.pcmbank.json");
+    fpe::PatchWorkspace mws;
+    mws.load(pcmDir / "p.profile.json");
+    for (const auto& w : mws.warnings()) std::fprintf(stderr, "pcm merge warning: %s\n", w.c_str());
+    CHECK(mws.warnings().empty());
+    const fpe::PcmBank* merged = mws.findPcmBank(fpe::VoicePatchType::ADPCMB, 0);
+    CHECK(merged && merged->entries.size() == 3);
+    if (merged) {
+        const fpe::PcmBankEntry* a = merged->findByEntryNo(0);
+        CHECK(a && a->name == "A" && a->start_offset == 0 && a->end_offset == 15);
+        const fpe::PcmBankEntry* b = merged->findByEntryNo(1);
+        CHECK(b && b->name == "B2" && b->start_offset == 100);
+        CHECK(merged->findByEntryNo(9) != nullptr);
+        CHECK(merged->findByEntryNo(2) == nullptr);
+    }
+    mws.save();
+    CHECK(readFile(pcmDir / "m.pcmbank.json") == pcmBefore);
+}
+
 int main() {
 #ifdef _MSC_VER
     disableCrtDialogs();
 #endif
+    testPcmInlineEntriesAndSccWaveFiles(fs::temp_directory_path() / "fpe_smoke_test_pcm_scc");
     testUnmodeledFieldsRoundTrip();
     testVoicePatchType();
     testChipCapabilities();

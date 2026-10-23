@@ -46,6 +46,7 @@ add_library(fpe_data STATIC
   src/DrumKit.cpp
   src/SampleZone.cpp
   src/PcmBank.cpp
+  src/SccWave.cpp
   src/Profile.cpp
   src/PatchWorkspace.cpp
 )

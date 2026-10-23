@@ -17,8 +17,7 @@
 // nested under a top-level `"banks": { ... }` object, not at the profile's
 // top level as originally assumed. `scc_wave_banks[]`/`pcm_banks[]` are new
 // (not previously modeled at all). *.pcmbank.json content is loaded as
-// fpe::PcmBank (D-013); *.sccwave.json content is not loaded yet (its refs
-// are preserved for round-tripping - see docs/STATUS.md).
+// fpe::PcmBank (D-013), *.sccwave.json content as fpe::SccWaveBank (D-063).
 //
 // CONFIRMED (2026-08-01) against FITOM_staging (`unified.bankset.json` /
 // `emu_opl.profile.json`, added 2026-07-29) and the current
@@ -76,9 +75,8 @@ void to_json(nlohmann::json& j, const DrumBankRef& v);
 void from_json(const nlohmann::json& j, DrumBankRef& v);
 
 // profile.json banks.scc_wave_banks[] entry (*.sccwave.json registration).
-// Confirmed against config_schema/profile.schema.json; the referenced
-// *.sccwave.json content itself is not modeled by this library yet (ref is
-// preserved for round-tripping only).
+// Confirmed against config_schema/profile.schema.json. The file itself is
+// loaded as fpe::SccWaveBank (SccWave.h).
 struct SccWaveBankRef {
     int bank = 0;
     std::string file;

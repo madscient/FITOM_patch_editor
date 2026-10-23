@@ -158,6 +158,7 @@ int main(int argc, char** argv) {
             files.emplace_back(b.sourceFile.parent_path() / side, dest.empty() ? fs::path() : dest.parent_path() / side);
         }
     }
+    for (auto& b : ws.sccWaveBanks()) add(b.sourceFile);
     for (auto& k : ws.drumKits()) add(k.sourceFile);
     if (!ws.profile().bank_overrides.externalFile.empty())
         add(oldRoot / ws.profile().bank_overrides.externalFile);

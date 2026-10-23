@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -79,21 +80,20 @@ void saveIfDirty(const std::map<std::filesystem::path, nlohmann::json>& baseline
     original[path] = std::move(cur);
 }
 
-// Loads a *.pcmbank.json. If it has no entries[] of its own but does name
-// an adpcm_json (the usual case - see PcmBank.h), follows that reference,
-// resolved relative to `path`'s own parent directory (matches FITOM_X's
-// PatchManager::loadPcmBankJson(), core/src/PatchManager.cpp: baseDir =
-// path.parent_path()). A missing/unparseable adpcm_json does NOT fail the
-// whole bank (the pcmbank.json itself is the thing that must exist and
-// parse - D-003 "read loosely"), but unlike other soft-fail cases in this
-// file it's surfaced as a warning via `warnings` rather than silently
-// leaving entries empty, since an unreachable adpcm_json means the bank's
-// entire patch list is missing (see docs/history/DESIGN.md D-013 - this is exactly
-// the condition hit by real FITOM_staging data at the time of writing).
+// Loads a *.pcmbank.json and builds its effective entry table the way
+// FITOM_X's PatchManager::loadPcmBankJson() does: the adpcm_json's entries
+// first (entry_no = position, adpcm_json resolved relative to the
+// pcmbank.json's own directory), then the file's own entries[] replacing by
+// entry_no (D-063). A missing/unparseable adpcm_json does NOT fail the whole
+// bank (D-003 "read loosely"), but it is surfaced as a warning rather than
+// silently leaving the table short, since it usually means the bank's
+// entire patch list is missing (see docs/history/DESIGN.md D-013).
 PcmBank loadPcmBank(const std::filesystem::path& path, const std::string& contextLabel,
                      std::vector<std::string>& warnings) {
+    constexpr int kMaxEntries = 128; // FITOM_X PCM_MAX_ENTRIES: WS is 7 bits
     PcmBank bank = loadJsonFile<PcmBank>(path);
-    if (bank.entries.empty() && !bank.adpcm_json.empty()) {
+    std::map<int, PcmBankEntry> table;
+    if (!bank.adpcm_json.empty()) {
         std::filesystem::path ajPath(bank.adpcm_json);
         if (ajPath.is_relative()) ajPath = path.parent_path() / ajPath;
         std::ifstream aj(ajPath, std::ios::binary);
@@ -104,7 +104,15 @@ PcmBank loadPcmBank(const std::filesystem::path& path, const std::string& contex
                 nlohmann::json ajJson;
                 aj >> ajJson;
                 if (ajJson.contains("entries") && ajJson["entries"].is_array()) {
-                    for (const auto& e : ajJson["entries"]) bank.entries.push_back(e.get<PcmBankEntry>());
+                    int no = 0;
+                    for (const auto& e : ajJson["entries"]) {
+                        if (no >= kMaxEntries) {
+                            warnings.push_back(contextLabel + ": adpcm_json has more than 128 entries; the rest are ignored");
+                            break;
+                        }
+                        table[no] = pcmEntryFromAdpcmPacker(e, no);
+                        ++no;
+                    }
                 } else {
                     warnings.push_back(contextLabel + ": adpcm_json has no entries[]: " + ajPath.string());
                 }
@@ -113,6 +121,16 @@ PcmBank loadPcmBank(const std::filesystem::path& path, const std::string& contex
             }
         }
     }
+    for (const auto& e : bank.ownEntries) {
+        if (e.entry_no < 0 || e.entry_no >= kMaxEntries) {
+            warnings.push_back(contextLabel + ": entries[] entry_no " + std::to_string(e.entry_no) +
+                               " is outside 0-127 and is ignored");
+            continue;
+        }
+        table[e.entry_no] = e;
+    }
+    bank.entries.clear();
+    for (auto& [no, e] : table) bank.entries.push_back(std::move(e));
     return bank;
 }
 
@@ -252,6 +270,7 @@ void PatchWorkspace::captureOriginalContent() {
     for (auto& b : hwBanks_) originalContent_[b.sourceFile] = b;
     for (auto& b : sampleZoneBanks_) originalContent_[b.sourceFile] = b;
     for (auto& b : pcmBanks_) originalContent_[b.sourceFile] = b;
+    for (auto& b : sccWaveBanks_) originalContent_[b.sourceFile] = b;
     for (auto& k : drumKits_) originalContent_[k.sourceFile] = k;
 }
 
@@ -309,6 +328,7 @@ void PatchWorkspace::loadBanks() {
     hwBanks_.clear();
     sampleZoneBanks_.clear();
     pcmBanks_.clear();
+    sccWaveBanks_.clear();
     drumKits_.clear();
 
     for (const auto& ref : profile_.patch_banks) {
@@ -400,6 +420,17 @@ void PatchWorkspace::loadBanks() {
         }
     }
 
+    for (const auto& ref : profile_.scc_wave_banks) {
+        try {
+            SccWaveBank bank = loadJsonFile<SccWaveBank>(resolve(ref.file));
+            bank.bankIndex = ref.bank;
+            bank.sourceFile = resolve(ref.file);
+            sccWaveBanks_.push_back(std::move(bank));
+        } catch (const std::exception& e) {
+            warnings_.push_back(std::string("scc_wave_banks[bank=") + std::to_string(ref.bank) + "]: " + e.what());
+        }
+    }
+
     for (const auto& ref : profile_.drum_banks) {
         try {
             DrumKit kit = loadJsonFile<DrumKit>(resolve(ref.file));
@@ -459,6 +490,7 @@ void PatchWorkspace::save() {
     // file itself alongside is rebaseSourceFiles()'s job (saveAs() calls it
     // before save()), since it needs both the old and new sourceFile.
     for (auto& b : pcmBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
+    for (auto& b : sccWaveBanks_) saveIfDirty(baseline, originalContent_, written, b.sourceFile, b);
     for (auto& k : drumKits_) saveIfDirty(baseline, originalContent_, written, k.sourceFile, k);
 }
 
@@ -481,6 +513,7 @@ void PatchWorkspace::rebaseSourceFiles(const std::filesystem::path& newRoot) {
         copyPcmBankSidecar(b.adpcm_json, oldSourceFile.parent_path(), b.sourceFile.parent_path());
         copyPcmBankSidecar(b.bin_file, oldSourceFile.parent_path(), b.sourceFile.parent_path());
     }
+    for (auto& b : sccWaveBanks_) rebase(b.sourceFile);
     for (auto& k : drumKits_) rebase(k.sourceFile);
 }
 
@@ -512,6 +545,7 @@ void PatchWorkspace::createNew(const std::filesystem::path& dir, const std::stri
     hwBanks_.clear();
     sampleZoneBanks_.clear();
     pcmBanks_.clear();
+    sccWaveBanks_.clear();
     drumKits_.clear();
     warnings_.clear();
     originalContent_.clear();
@@ -543,6 +577,11 @@ SampleZoneBank* PatchWorkspace::findSampleZoneBank(VoicePatchType type, int bank
 }
 PcmBank* PatchWorkspace::findPcmBank(VoicePatchType type, int bank) {
     for (auto& b : pcmBanks_) if (b.voicePatchType == type && b.bankIndex == bank) return &b;
+    return nullptr;
+}
+
+SccWaveBank* PatchWorkspace::findSccWaveBank(int bank) {
+    for (auto& b : sccWaveBanks_) if (b.bankIndex == bank) return &b;
     return nullptr;
 }
 DrumKit* PatchWorkspace::findDrumKit(int prog) {

@@ -77,7 +77,7 @@ MSVC では `/utf-8` を全ターゲットに付ける。ソースのコメン�
 | `*.samplezonebank.json`(AWM) | `SampleZoneBank` → `SampleZonePatch` → `SampleZone` | `sampleZoneBanks()` |
 | `*.pcmbank.json` と、それが指す `adpcm_json` | `PcmBank` → `PcmBankEntry`、`PcmSwPatchRef`(`swpatches[]`) | `pcmBanks()` |
 | `*.drumkit.json` | `DrumKit` → `DrumNote` | `drumKits()` |
-| `*.sccwave.json` | 参照(`SccWaveBankRef`)だけを保持し、中身は読まない | — |
+| `*.sccwave.json` | `SccWaveBank` → `SccWave`(`data` が16進文字列の形なら、変えない限りその文字列のまま書き戻す) | `sccWaveBanks()` |
 | `sf2_banks[]` | 生の JSON のまま保持し、マージも差分もしない | — |
 
 ### バンク登録表
@@ -178,7 +178,14 @@ SSG のタグで登録される。参照からバンクを探すときは
   残りは使えるようにする。
 - `banks.*[].file` の相対パスは、プロファイルファイルのあるディレクトリを
   基点に解決する。`adpcm_json` は `*.pcmbank.json` のあるディレクトリを
-  基点にする。`*.pcmbank.json` が `entries[]` を直接持つときはそちらを優先する。
+  基点にする。
+- PCM 波形バンクのエントリの一覧は、FITOM_X と同じく、`adpcm_json`
+  (adpcm_packer の出力。`entry_no` は並び順)の上に、`*.pcmbank.json` 自身の
+  `entries[]`(スキーマの形。`entry_no` / `start_offset` / `end_offset`)を
+  `entry_no` ごとに重ねて作る。範囲は 0〜127 で、外れたものは警告して無視する。
+  参照の `patch_prog` は `entry_no` で引く(`PcmBank::findByEntryNo()`)。
+  書き戻すのはファイル自身の `entries[]`(`ownEntries`)だけで、`adpcm_json` 由来の
+  エントリは書かない。
 - group の別名(`OPNA` / `OPNB` → OPN2、`SCCP` → SCC、`PSG` / `PCM` など)は
   読み込みでだけ受け付ける。`HwBankRef::group` は元の文字列をそのまま持ち、
   そのまま書き戻す。

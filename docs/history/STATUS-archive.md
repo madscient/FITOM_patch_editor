@@ -2708,3 +2708,25 @@
   (アーカイブ冒頭に注記)。`docs/DESIGN.md` の中の「STATUS.md の該当項目
   参照」は、移した先がアーカイブになったものがある。
 - 次にやること: 利用者の確認結果の報告を受けて、一覧を更新する。
+
+### 2026-10-23 (同マシン、文書構成の再編 第1段、D-059)
+- やったこと: 利用者と相談して文書を読み手と役割で分けることにした
+  (`docs/DECISIONS.md` D-059)。第1段として器だけ作った。
+  - `docs/DESIGN.md` → `docs/history/DESIGN.md`、`docs/STATUS-archive.md` →
+    `docs/history/STATUS-archive.md`。どちらも原文のまま(`git mv`。
+    旧 DESIGN.md には冒頭に保存用である旨の注記だけ足した)。
+  - `docs/DECISIONS.md`(書式、D-番号の引き方、D-059)と
+    `docs/ARCHITECTURE.md`(節の骨組みのみ)を新設した。
+  - コードコメントの `docs/DESIGN.md` を `docs/history/DESIGN.md` に
+    機械的に置き換えた(25箇所、パス文字列以外の変更が無いことを
+    `git diff` で確認済み)。`include/fpe/Profile.h` の古くなっていた
+    コメント(pcmbank の中身を読まないと書いていた)を直した。
+  - `CLAUDE.md` に文書の役割の表を入れ、読む順番と書く先を新構成に
+    合わせた。
+  - STATUS.md の課題一覧に、コードコメントが参照していたのに載せて
+    いなかった3件(仮想 MIDI コントローラ、AWM の編集画面、POSIX での
+    プリファレンス保存先)を足した。
+- 未完了・既知の問題: `docs/ARCHITECTURE.md` は中身が無い。進捗ログの
+  過去エントリ内の `docs/DESIGN.md` への言及は、記録なので書き換えて
+  いない(`docs/history/DESIGN.md` で引ける)。
+- 次にやること: D-059 の第2段。手順は上の「進行中の作業」節。

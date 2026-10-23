@@ -1260,12 +1260,10 @@ std::string describeDrumSourcePatch(fpe::PatchWorkspace& ws, fpe::VoicePatchType
                (bank ? bank->name : std::string("(N/A)")) + " / " + (patch ? patch->name : std::string("(N/A)"));
     }
     if (fpe::isPcmWaveformVoicePatchType(type)) {
-        // patch_prog is a plain 0-based entries[] array index for this
-        // family, not a `prog` field (PcmBank.h) - findByIndex(), not
-        // findByProg().
+        // patch_prog is the entry's entry_no for this family, not a `prog`
+        // field (PcmBank.h).
         fpe::PcmBank* bank = ws.findPcmBank(type, patchBank);
-        const fpe::PcmBankEntry* entry =
-            (bank && patchProg >= 0) ? bank->findByIndex(static_cast<size_t>(patchProg)) : nullptr;
+        const fpe::PcmBankEntry* entry = bank ? bank->findByEntryNo(patchProg) : nullptr;
         return "PCM " + fpe::voicePatchTypeToString(type) + " " + std::to_string(patchBank) + "/" +
                std::to_string(patchProg) + " : " + (bank ? bank->name : std::string("(N/A)")) + " / " +
                (entry ? entry->name : std::string("(N/A)"));
@@ -2508,9 +2506,9 @@ void renderDrumSourcePatchPicker(AppContext& ctx) {
                 }
                 if (bank) {
                     found = true;
-                    for (size_t i = 0; i < bank->entries.size(); ++i) {
-                        const std::string label = "[" + std::to_string(i) + "] " + bank->entries[i].name;
-                        const int prog = static_cast<int>(i);
+                    for (const auto& e : bank->entries) {
+                        const std::string label = "[" + std::to_string(e.entry_no) + "] " + e.name;
+                        const int prog = e.entry_no;
                         if (ImGui::Selectable(label.c_str(),
                                               isPending(bank->voicePatchType, bank->bankIndex, prog),
                                               ImGuiSelectableFlags_AllowDoubleClick)) {
@@ -5237,9 +5235,8 @@ void renderBankDetail(AppContext& ctx) {
             const std::string groupStr = fpe::voicePatchTypeToString(bank.voicePatchType);
             ImGui::Text("PCM波形バンク [%s bank %d] %s", groupStr.c_str(), bank.bankIndex, bank.name.c_str());
             ImGui::Separator();
-            for (size_t i = 0; i < bank.entries.size(); ++i) {
-                const auto& e = bank.entries[i];
-                ImGui::BulletText("[prog %zu] %s (root_note=%d, size=%u bytes)", i, e.name.c_str(), e.root_note,
+            for (const auto& e : bank.entries) {
+                ImGui::BulletText("[prog %d] %s (root_note=%d, size=%u bytes)", e.entry_no, e.name.c_str(), e.root_note,
                                    e.size);
             }
             break;
